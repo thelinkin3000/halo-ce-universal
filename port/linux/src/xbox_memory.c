@@ -115,7 +115,8 @@ void *platform_contiguous_alloc(unsigned long size, unsigned long alignment,
 	}
 	if (physical_address != PLATFORM_ANY_PHYSICAL_ADDRESS)
 	{
-		unsigned long wanted = (physical_address & ~PLATFORM_CONTIGUOUS_BASE) / PAGE_SIZE_BYTES;
+		/* an offset into the window, not an address in it */
+		unsigned long wanted = physical_address / PAGE_SIZE_BYTES;
 
 		if (pages_free(wanted, count))
 			first = wanted;
