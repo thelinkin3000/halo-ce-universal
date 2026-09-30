@@ -62,7 +62,7 @@ unsigned long *structure_bsp_get_cluster_pvs(
 
 	// Get pointer to bitvector starting at the cluster index
 	return (unsigned long *)(
-		(byte *)structure_bsp->cluster_data.address +
+		(byte *)TAG_DATA_ADDRESS(structure_bsp->cluster_data) +
 		sizeof(unsigned long) * cluster_index *
 		BIT_VECTOR_SIZE_IN_LONGS(structure_bsp->clusters.count));
 }
@@ -226,7 +226,7 @@ byte *structure_bsp_get_cluster_encoded_sound_data(
 		return NULL;
 	}
 
-	return &((byte *)structure_bsp->sound_cluster_data.address)[offset];
+	return &((byte *)TAG_DATA_ADDRESS(structure_bsp->sound_cluster_data))[offset];
 }
 
 byte structure_bsp_get_cluster_encoded_sound_distance(
