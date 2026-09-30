@@ -921,7 +921,7 @@ long hs_compile_expression(
 				0xA6,
 				global_scenario_get()->hs_string_constants.size>=HS_MAXIMUM_DYNAMIC_SOURCE_DATA_BYTES);
 			source_offset = global_scenario_get()->hs_string_constants.size - HS_MAXIMUM_DYNAMIC_SOURCE_DATA_BYTES;
-			hs_compile_globals.compiled_source = global_scenario_get()->hs_string_constants.address;
+			hs_compile_globals.compiled_source = TAG_DATA_ADDRESS(global_scenario_get()->hs_string_constants);
 		}
 		else
 		{
@@ -1089,7 +1089,7 @@ static void hs_compile_finish(
 
 	if (success)
 	{
-		hs_compile_globals.string_constant_buffer = scenario->hs_string_constants.address;
+		hs_compile_globals.string_constant_buffer = TAG_DATA_ADDRESS(scenario->hs_string_constants);
 		hs_compile_globals.string_constant_buffer_offset = 0;
 		hs_compile_globals.string_constant_buffer_size = hs_compile_globals.compiled_source_size;
 
@@ -1457,7 +1457,7 @@ static boolean hs_parse_tag_reference(
 			reference_index,
 			struct hs_reference);
 		if (csstrcmp(
-			reference->reference.name,
+			TAG_REFERENCE_NAME(reference->reference),
 			hs_compile_globals.compiled_source + expression->source_offset) == 0 &&
 			reference->reference.group_tag == group_tag)
 		{
@@ -2432,7 +2432,7 @@ boolean hs_compile_postprocess(
 	short resolved_type;
 	struct hs_script *script;
 
-	hs_compile_globals.compiled_source = global_scenario_get()->hs_string_constants.address;
+	hs_compile_globals.compiled_source = TAG_DATA_ADDRESS(global_scenario_get()->hs_string_constants);
 	hs_compile_globals.compiled_source_size =
 		global_scenario_get()->hs_string_constants.size - HS_MAXIMUM_DYNAMIC_SOURCE_DATA_BYTES;
 	hs_compile_globals.error = NULL;
