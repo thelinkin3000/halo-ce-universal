@@ -142,6 +142,30 @@ static uint64_t find_gap(uint64_t size, uint64_t minimum, uint64_t alignment)
 	return result;
 }
 
+/* reports whatever already occupies part of a range, so a refusal to use it
+says what was in the way rather than only that something was */
+static void log_conflicts(uint64_t address, uint64_t size)
+{
+	FILE *maps = fopen("/proc/self/maps", "r");
+	char line[512];
+
+	if (!maps)
+		return;
+	while (fgets(line, sizeof(line), maps))
+	{
+		unsigned long long start, end;
+
+		if (sscanf(line, "%llx-%llx", &start, &end) != 2)
+			continue;
+		if (end > address && start < address + size)
+		{
+			line[strcspn(line, "\n")] = 0;
+			host_logf(HOST_LOG_ERROR, "  in the way: %s", line);
+		}
+	}
+	fclose(maps);
+}
+
 /* claims a fixed range for the guest, or reports the address is taken */
 static int reserve(uint64_t address, uint64_t size)
 {
@@ -151,7 +175,13 @@ static int reserve(uint64_t address, uint64_t size)
 	if (result == (void *)address)
 		return 0;
 	if (result != MAP_FAILED)
+	{
+		/* some kernels honour the "no replace" part by handing back an
+		address elsewhere rather than by failing, so errno still says
+		whatever the last call left behind and cannot be trusted here */
 		munmap(result, size);
+		errno = EEXIST;
+	}
 	return -1;
 }
 
@@ -210,6 +240,7 @@ int host_memory_initialize(uint32_t base, uint32_t size)
 	{
 		host_logf(HOST_LOG_ERROR, "cannot reserve the guest image range at %08llx (%s)",
 			(unsigned long long)image_base, strerror(errno));
+		log_conflicts(image_base, image_end - image_base);
 		return -1;
 	}
 

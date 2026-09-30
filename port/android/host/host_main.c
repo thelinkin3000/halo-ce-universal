@@ -346,37 +346,6 @@ static void *game_main(void *unused)
 	environment_set(&environment, "HOME", save_root);
 	environment_set(&environment, "HALO_DATA_ROOT", data_root);
 	environment_set(&environment, "HALO_SAVE_ROOT", save_root);
-	{
-		/* the game renders 480 lines at the display's aspect ratio
-		(landscape) unless display.screen_width says otherwise (d3d8_gl.c) */
-		const SDL_DisplayMode *mode;
-		char width[16];
-
-		SDL_InitSubSystem(SDL_INIT_VIDEO);
-		mode = SDL_GetDesktopDisplayMode(SDL_GetPrimaryDisplay());
-		if (mode && mode->w > 0 && mode->h > 0)
-		{
-			int longer = mode->w > mode->h ? mode->w : mode->h;
-			int shorter = mode->w > mode->h ? mode->h : mode->w;
-
-			snprintf(width, sizeof(width), "%d", (480 * longer / shorter) & ~1);
-			environment_set(&environment, "HALO_DISPLAY_WIDTH", width);
-			host_logf(HOST_LOG_INFO, "display %dx%d: rendering %sx480", mode->w, mode->h, width);
-		}
-		{
-			/* dp for the touch controls (port/linux/src/touch_input.c): SDL
-			gives Android's densityDpi / 160 */
-			float density = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
-			char text[16];
-
-			if (density > 0.0f)
-			{
-				snprintf(text, sizeof(text), "%g", density);
-				environment_set(&environment, "HALO_DISPLAY_DENSITY", text);
-				host_logf(HOST_LOG_INFO, "display density %s", text);
-			}
-		}
-	}
 	time_zone(zone, sizeof(zone));
 	environment_set(&environment, "TZ", zone);
 	/* internet play's MQTT brokers (network.brokers_file): the APK's list,
@@ -413,6 +382,42 @@ static void *game_main(void *unused)
 			"memory_map.txt from\n%s\n(or adb logcat -s halo).", data_root);
 	}
 	SDL_free(image);
+
+	/* only now that the image holds its address: bringing the display up
+	maps memory of its own, and on a device where one of those mappings
+	lands on the image's address there is nowhere else to put it, because
+	the image is an executable linked to run there (host_loader.c) */
+	{
+		/* the game renders 480 lines at the display's aspect ratio
+		(landscape) unless display.screen_width says otherwise (d3d8_gl.c) */
+		const SDL_DisplayMode *mode;
+		char width[16];
+
+		SDL_InitSubSystem(SDL_INIT_VIDEO);
+		mode = SDL_GetDesktopDisplayMode(SDL_GetPrimaryDisplay());
+		if (mode && mode->w > 0 && mode->h > 0)
+		{
+			int longer = mode->w > mode->h ? mode->w : mode->h;
+			int shorter = mode->w > mode->h ? mode->h : mode->w;
+
+			snprintf(width, sizeof(width), "%d", (480 * longer / shorter) & ~1);
+			environment_set(&environment, "HALO_DISPLAY_WIDTH", width);
+			host_logf(HOST_LOG_INFO, "display %dx%d: rendering %sx480", mode->w, mode->h, width);
+		}
+		{
+			/* dp for the touch controls (port/linux/src/touch_input.c): SDL
+			gives Android's densityDpi / 160 */
+			float density = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+			char text[16];
+
+			if (density > 0.0f)
+			{
+				snprintf(text, sizeof(text), "%g", density);
+				environment_set(&environment, "HALO_DISPLAY_DENSITY", text);
+				host_logf(HOST_LOG_INFO, "display density %s", text);
+			}
+		}
+	}
 
 	{
 		char seconds[32];
