@@ -188,7 +188,7 @@ static void *pal_tags_get(
 static byte *pal_tags_first_element(
 	struct tag_block const *block)
 {
-	return block->count > 0 && block->address ? (byte *)block->address : NULL;
+	return block->count > 0 && block->address ? (byte *)TAG_BLOCK_ADDRESS_AT(block) : NULL;
 }
 
 static void pal_tags_restore_bipeds(
