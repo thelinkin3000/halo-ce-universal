@@ -226,6 +226,7 @@ static uint32_t make_boot(const struct environment *environment)
 	boot->argv = (uint32_t)(uintptr_t)argv;
 	boot->environment = (uint32_t)(uintptr_t)environ_list;
 	boot->page_size = (uint32_t)getpagesize();
+	boot->contiguous_base = host_memory_window_base();
 	return (uint32_t)(uintptr_t)boot;
 }
 
@@ -307,6 +308,7 @@ int main(int argc, char *argv[])
 	(void)argv;
 	host_logf(HOST_LOG_INFO, "Halo for Android starting");
 	host_install_signal_handlers();
+
 	if (host_native_thread_create(game_main, NULL, MAIN_STACK_SIZE) != 0)
 		host_fatal("cannot start the game thread");
 	/* the game ends the process itself (host_exit) */
