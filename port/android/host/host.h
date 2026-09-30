@@ -39,6 +39,11 @@ mappings) from pools of address space it reserves below 4 GB on demand. */
 uint32_t host_memory_window_base(void);
 
 int host_memory_initialize(uint32_t image_base, uint32_t image_size);
+/* starts the thread that reports the window's own contents (host_probe.c) */
+void host_probe_start(void);
+/* 1 if a fault on this thread, inside the window, is the probe's to
+handle, and has been sent back to it */
+int host_probe_skip_fault(uintptr_t address);
 /* page-granular allocations below 4 GB; NULL on failure */
 void *host_low_map(size_t size, int protection);
 void host_low_unmap(void *address, size_t size);
