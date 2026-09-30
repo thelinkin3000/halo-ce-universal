@@ -35,7 +35,9 @@ Xbox window and the image's range at start-up, and hands out pages for
 everything else (the guest's malloc arenas, thread stacks, anonymous
 mappings) from pools of address space it reserves below 4 GB on demand. */
 
-/* reserves the fixed ranges; returns 0 on success */
+/* where the window was placed, for the guest's boot structure */
+uint32_t host_memory_window_base(void);
+
 int host_memory_initialize(uint32_t image_base, uint32_t image_size);
 /* Makes the write tracking compare page contents instead of catching page
 faults (host_watch_hash.h), for when the app cannot receive its own
@@ -58,6 +60,10 @@ struct host_guest_image
 {
 	const struct halo_guest_header *header;
 	uint32_t base, end;
+	/* addresses of named guest globals, found in the ELF's symbol table when
+	the image was read, so that host-side diagnostics do not carry addresses
+	that a rebuild would move (0 for a name the build does not have) */
+	uint32_t cache_file_globals, global_tag_instances;
 };
 
 extern struct host_guest_image host_image;
