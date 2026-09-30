@@ -38,9 +38,13 @@ extern unsigned long platform_contiguous_base;
 #define PORT_WINDOW_ADDRESS(xbox_address) \
 	((unsigned long)(xbox_address) - 0x80000000UL + PORT_WINDOW_BASE)
 
-/* what XPhysicalAlloc takes: the game's addresses have bit 31 clear */
+/* what XPhysicalAlloc takes: an offset into the window, which is where the
+game state and tag cache live. This has to be the distance from the window's
+own base and nothing else: masking off bit 31 only gives the right answer
+while the base is 0x80000000, and the point of moving the window is that it
+is not */
 #define PORT_WINDOW_PHYSICAL_ADDRESS(xbox_address) \
-	((unsigned long)(xbox_address) & 0x7fffffffUL)
+	((unsigned long)(xbox_address) - 0x80000000UL)
 
 #define PORT_WINDOW_SHIFT (PORT_WINDOW_BASE - 0x80000000UL)
 
