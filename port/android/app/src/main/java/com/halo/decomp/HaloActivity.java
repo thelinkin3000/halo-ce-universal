@@ -12,6 +12,7 @@ import android.view.Display;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.widget.Toast;
 
@@ -57,6 +58,7 @@ public class HaloActivity extends SDLActivity {
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        hideSystemBars();
         preferHighestRefreshRate();
         trackGestureInsets();
         acquireMulticastLock();
@@ -268,6 +270,36 @@ public class HaloActivity extends SDLActivity {
             // (no Wi-Fi, or not allowed: the local network may miss games)
             multicastLock = null;
         }
+    }
+
+    /**
+     * Keeps the status and navigation bars out of the way. The manifest's
+     * fullscreen theme does this on older releases, but Android 15 and later
+     * draw apps edge to edge regardless, so the bars have to be asked away.
+     * Swiping brings them back transiently and they leave again on their own.
+     */
+    private void hideSystemBars() {
+        WindowInsetsController controller = getWindow().getInsetsController();
+
+        if (controller != null) {
+            controller.hide(WindowInsets.Type.systemBars());
+            controller.setSystemBarsBehavior(
+                    WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_FULLSCREEN |
+                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_STABLE |
+                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
+                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+        }
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        // they come back after a swipe or after the launcher was over them
+        if (hasFocus)
+            hideSystemBars();
     }
 
     /**
