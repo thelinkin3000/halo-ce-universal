@@ -69,15 +69,20 @@ static int in_range(uint64_t address, uint64_t size, uint64_t base, uint64_t end
 
 /* ---------- reserving address space below 4 GB */
 
-/* the lowest free gap of at least size bytes at or above minimum, from
-/proc/self/maps; 0 if none */
-static uint64_t find_gap(uint64_t size, uint64_t minimum)
+/* the lowest gap of at least size bytes at or above minimum, from
+/proc/self/maps, starting on an alignment boundary; 0 if none. The window is
+placed on one because the game turns a window offset into an address by
+masking, which only holds while the window is a whole number of its own
+size from the bottom. */
+static uint64_t find_gap(uint64_t size, uint64_t minimum, uint64_t alignment)
 {
 	FILE *maps = fopen("/proc/self/maps", "r");
 	char line[512];
 	uint64_t previous_end = minimum;
 	uint64_t result = 0;
 
+	if (alignment > 1)
+		minimum = round_up(minimum) & ~(alignment - 1);
 	if (!maps)
 		return 0;
 	while (fgets(line, sizeof(line), maps))
@@ -96,6 +101,8 @@ static uint64_t find_gap(uint64_t size, uint64_t minimum)
 	}
 	fclose(maps);
 	previous_end = round_up(previous_end);
+	if (alignment > 1)
+		previous_end = (previous_end + alignment - 1) & ~(alignment - 1);
 	if (previous_end + size <= LOW_LIMIT)
 		result = previous_end;
 	return result;
@@ -250,12 +257,12 @@ static struct pool *pool_new(void)
 		return NULL;
 	for (attempt = 0; attempt < 64; attempt++)
 	{
-		uint64_t address = find_gap(POOL_SIZE, minimum);
+		uint64_t address = find_gap(POOL_SIZE, minimum, 1);
 
 		if (!address && minimum != LOW_START)
 		{
 			minimum = LOW_START;
-			address = find_gap(POOL_SIZE, minimum);
+			address = find_gap(POOL_SIZE, minimum, 1);
 		}
 		if (!address)
 			return NULL;
@@ -274,16 +281,57 @@ static struct pool *pool_new(void)
 	return NULL;
 }
 
+uint32_t host_memory_window_base(void)
+{
+	return (uint32_t)window_base;
+}
+
 int host_memory_initialize(uint32_t base, uint32_t size)
 {
-	window_base = HALO_GUEST_WINDOW_BASE;
-	window_end = window_base + HALO_GUEST_WINDOW_SIZE;
-	if (reserve(window_base, HALO_GUEST_WINDOW_SIZE, 1) != 0)
+	uint64_t minimum = LOW_START;
+	int attempt;
+
+	/* the window where the game and its data expect it, taking ART's large
+	object space back over it if that space is idle */
+	if (reserve(HALO_GUEST_WINDOW_BASE, HALO_GUEST_WINDOW_SIZE, 1) == 0)
 	{
-		host_logf(HOST_LOG_ERROR, "cannot reserve the Xbox memory window at %08llx (%s)",
-			(unsigned long long)window_base, strerror(errno));
-		return -1;
+		window_base = HALO_GUEST_WINDOW_BASE;
 	}
+	else
+	{
+		/* the reclaim was refused: ART has something else in the way, or its
+		pages over the window are in use. The game can still run with the
+		window elsewhere, as long as the map data is moved with it, which the
+		port does and is told about here. */
+		host_logf(HOST_LOG_INFO, "the window at %08llx is taken and cannot be reclaimed;"
+			" putting it somewhere free", (unsigned long long)HALO_GUEST_WINDOW_BASE);
+		window_base = 0;
+		for (attempt = 0; attempt < 128 && !window_base; attempt++)
+		{
+			uint64_t candidate = find_gap(HALO_GUEST_WINDOW_SIZE, minimum,
+				HALO_GUEST_WINDOW_ALIGNMENT);
+
+			if (!candidate)
+				break;
+			/* never reclaim here: a mapping in the way of a free gap is one
+			ART has just made, and may be live */
+			if (reserve(candidate, HALO_GUEST_WINDOW_SIZE, 0) != 0)
+			{
+				minimum = candidate + PAGE;
+				continue;
+			}
+			window_base = candidate;
+		}
+		if (!window_base)
+		{
+			host_logf(HOST_LOG_ERROR, "no free range of %u MB for the Xbox memory window",
+				(unsigned int)(HALO_GUEST_WINDOW_SIZE / (1024 * 1024)));
+			return -1;
+		}
+	}
+	window_end = window_base + HALO_GUEST_WINDOW_SIZE;
+	host_logf(HOST_LOG_INFO, "Xbox memory window at %08llx-%08llx, guest image at %08x",
+		(unsigned long long)window_base, (unsigned long long)window_end, base);
 	image_base = base;
 	image_end = base + round_up(size);
 	if (reserve(image_base, image_end - image_base, 1) != 0)
