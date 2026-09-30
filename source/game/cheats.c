@@ -415,10 +415,10 @@ count was cast to one, and wrapped) */
 static void cheat_objects_from_block(
 	struct tag_block const *block)
 {
-	if (block->count > 0 && block->address)
+	if (block->count > 0 && TAG_BLOCK_ADDRESS_AT(block))
 	{
 		cheat_objects(
-			(struct tag_reference *)block->address,
+			(struct tag_reference *)TAG_BLOCK_ADDRESS_AT(block),
 			(short)MIN(block->count, SHORT_MAX));
 	}
 

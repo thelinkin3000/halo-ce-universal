@@ -392,7 +392,7 @@ void animation_get_x_offsets(
 	short frame_index;
 	real x_offset = 0.f;
 	real key_x_offset = 0.f;
-	byte const *frame_info = animation->frame_info.address;
+	byte const *frame_info = TAG_DATA_ADDRESS(animation->frame_info);
 	short frame_count = animation->frame_count;
 	long frame_info_size =
 		animation->frame_info_type==1 ? (long)sizeof(struct animation_frame_info_dx_dy) :
