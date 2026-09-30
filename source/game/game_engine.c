@@ -8283,7 +8283,7 @@ static long item_collection_get_total(
 	struct tag_block const *permutations)
 {
 	struct item_permutation_definition const *permutation =
-		(struct item_permutation_definition const *)permutations->address;
+		(struct item_permutation_definition const *)TAG_BLOCK_ADDRESS_AT(permutations);
 	long permutation_count = permutations->count;
 	long result = 0;
 	long permutation_index;
@@ -8311,7 +8311,7 @@ static long random_item(
 		0,
 		(short)item_collection_get_total(permutations));
 	struct item_permutation_definition const *permutation =
-		permutations->address;
+		(struct item_permutation_definition const *)TAG_BLOCK_ADDRESS_AT(permutations);
 	long permutation_index = 0;
 
 	while (permutation_index < permutation_count)

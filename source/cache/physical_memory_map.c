@@ -77,11 +77,11 @@ static struct physical_memory_map_globals physical_memory_map_globals;
 void physical_memory_allocate(
 	void)
 {
-	physical_memory_map_globals.game_state_base_address = XPhysicalAlloc(GAME_STATE_SIZE, GAME_STATE_BASE_ADDRESS & 0x7FFFFFFF, 0, PAGE_READWRITE);
+	physical_memory_map_globals.game_state_base_address = XPhysicalAlloc(GAME_STATE_SIZE, PORT_WINDOW_PHYSICAL_ADDRESS(HALO_PORT_GAME_STATE_BASE_ADDRESS), 0, PAGE_READWRITE);
 #line 46 "c:\\halo\\SOURCE\\cache\\physical_memory_map.c"
 	match_assert(__FILE__, __LINE__, (unsigned long)physical_memory_map_globals.game_state_base_address==GAME_STATE_BASE_ADDRESS);
 
-	physical_memory_map_globals.tag_cache_base_address = XPhysicalAlloc(TAG_CACHE_SIZE, TAG_CACHE_BASE_ADDRESS & 0x7FFFFFFF, 0, PAGE_READWRITE);
+	physical_memory_map_globals.tag_cache_base_address = XPhysicalAlloc(TAG_CACHE_SIZE, PORT_WINDOW_PHYSICAL_ADDRESS(0x803A6000), 0, PAGE_READWRITE);
 #line 50 "c:\\halo\\SOURCE\\cache\\physical_memory_map.c"
 	match_assert(__FILE__, __LINE__, (unsigned long)physical_memory_map_globals.tag_cache_base_address==TAG_CACHE_BASE_ADDRESS);
 

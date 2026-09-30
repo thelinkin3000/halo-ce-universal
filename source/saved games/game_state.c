@@ -1039,7 +1039,7 @@ void game_state_initialize(
 	crc_new(&game_state_globals.allocation_size_checksum);
 	/* the native builds place their larger game state above the tag cache
 	(halo_port_capacity.h, cache/physical_memory_map.c) */
-	game_state_globals.base_address = game_state_allocate_buffer(HALO_PORT_GAME_STATE_BASE_ADDRESS, GAME_STATE_CPU_SIZE, GAME_STATE_GPU_SIZE);
+	game_state_globals.base_address = game_state_allocate_buffer(PORT_WINDOW_ADDRESS(HALO_PORT_GAME_STATE_BASE_ADDRESS), GAME_STATE_CPU_SIZE, GAME_STATE_GPU_SIZE);
 	game_state_create_or_open_file();
 	game_state_globals.header = game_state_malloc("header", NULL, sizeof(*game_state_globals.header));
 
