@@ -38,15 +38,19 @@ symbols in this file:
 #include "cseries_windows.h"
 #include "cache/physical_memory_map.h"
 
+/* where the window is in this process, and how big the tag cache is */
+#include "halo_port_window.h"
+#include "halo_port_capacity.h"
+
 /* ---------- constants */
 
-/* the native builds' larger game state, placed above the tag cache
-(halo_port_capacity.h); the verified part is the CPU part, as on the Xbox */
-#define GAME_STATE_BASE_ADDRESS HALO_PORT_GAME_STATE_BASE_ADDRESS
+/* the larger game state, placed above the tag cache (halo_port_capacity.h);
+the verified part is the CPU part, as on the Xbox */
+#define GAME_STATE_BASE_ADDRESS PORT_WINDOW_ADDRESS(HALO_PORT_GAME_STATE_BASE_ADDRESS)
 #define GAME_STATE_SIZE HALO_PORT_GAME_STATE_SIZE
 #define GAME_STATE_VERIFY_SIZE HALO_PORT_GAME_STATE_CPU_SIZE
-#define TAG_CACHE_BASE_ADDRESS 0x803A6000
-#define TAG_CACHE_SIZE 0x1600000
+#define TAG_CACHE_BASE_ADDRESS PORT_WINDOW_ADDRESS(0x803A6000)
+#define TAG_CACHE_SIZE HALO_PORT_TAG_CACHE_SIZE
 #define TEXTURE_CACHE_SIZE 0x1600000
 #define SOUND_CACHE_SIZE 0x400000
 

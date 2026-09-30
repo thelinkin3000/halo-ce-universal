@@ -96,6 +96,7 @@ symbols in this file:
 
 #include "cseries.h"
 #include "cseries_windows.h"
+#include "halo_port_window.h"
 #include "real_math.h"
 #include "console.h"
 #include "game_state.h"
