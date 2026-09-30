@@ -262,6 +262,21 @@ static void *game_main(void *unused)
 	environment_set(&environment, "HOME", save_root);
 	environment_set(&environment, "HALO_DATA_ROOT", data_root);
 	environment_set(&environment, "HALO_SAVE_ROOT", save_root);
+	time_zone(zone, sizeof(zone));
+	environment_set(&environment, "TZ", zone);
+	snprintf(path, sizeof(path), "%s/config.toml", data_root);
+
+	image = SDL_LoadFile("halo_guest.elf", &image_size);
+	if (!image)
+		host_fatal("cannot read the game image from the APK: %s", SDL_GetError());
+	if (host_load_image(image, image_size) != 0)
+		host_fatal("cannot load the game image; see logcat (tag \"halo\") for details");
+	SDL_free(image);
+
+	/* only now that the image holds its address: bringing the display up
+	maps memory of its own, and on a device where one of those mappings
+	lands on the image's address there is nowhere else to put it, because
+	the image is an executable linked to run there (host_loader.c) */
 	{
 		/* the game renders 480 lines at the display's aspect ratio
 		(landscape) unless display.screen_width says otherwise (d3d8_gl.c) */
@@ -280,16 +295,6 @@ static void *game_main(void *unused)
 			host_logf(HOST_LOG_INFO, "display %dx%d: rendering %sx480", mode->w, mode->h, width);
 		}
 	}
-	time_zone(zone, sizeof(zone));
-	environment_set(&environment, "TZ", zone);
-	snprintf(path, sizeof(path), "%s/config.toml", data_root);
-
-	image = SDL_LoadFile("halo_guest.elf", &image_size);
-	if (!image)
-		host_fatal("cannot read the game image from the APK: %s", SDL_GetError());
-	if (host_load_image(image, image_size) != 0)
-		host_fatal("cannot load the game image; see logcat (tag \"halo\") for details");
-	SDL_free(image);
 
 	{
 		char seconds[32];
