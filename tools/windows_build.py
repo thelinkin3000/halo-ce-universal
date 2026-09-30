@@ -333,6 +333,11 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
             f"-include {tags_header}",
             f"-I{crt_include}",
             f"-I{PORT_DIR / 'include'}",
+            # the shared port headers (halo_port_window.h, and the capacity
+            # limits they build on) are reached by a quoted include, as below
+            # for the platform sources: -I would shadow the Windows SDK's own
+            # headers of the same names
+            f"-iquote {LINUX_DIR / 'include'}",
             game_defines_and_includes(linux_config),
             # the Xbox SDK declarations (port/include/xdk) come before the
             # Windows SDK, which has headers of the same names
