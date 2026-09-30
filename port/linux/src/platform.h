@@ -147,8 +147,22 @@ void *platform_contiguous_alloc(unsigned long size, unsigned long alignment,
 	unsigned long physical_address, DWORD protect);
 void platform_contiguous_free(void *address);
 BOOL platform_is_contiguous(const void *address);
-#define PLATFORM_PHYSICAL_TO_VIRTUAL(physical) ((void *)((unsigned long)(physical) | PLATFORM_CONTIGUOUS_BASE))
-#define PLATFORM_VIRTUAL_TO_PHYSICAL(address) ((unsigned long)(address) & ~PLATFORM_CONTIGUOUS_BASE)
+/* A window address and an offset into the window name the same place, and the
+port carries both: a resource the game allocated holds the address it asked
+for, and the port's own allocations hold an offset. On the Xbox the two could
+not be told apart, and setting bit 31 converted either, which is why this used
+to be an OR. That is only right while the base is 0x80000000: once the window
+moves, an address still written as 0x80...... has to be moved with it and an
+offset has the base added. Where the window did not move, both forms are the
+same arithmetic as before. */
+#define PLATFORM_PHYSICAL_TO_VIRTUAL(physical) \
+	((void *)(((unsigned long)(physical) & 0x80000000UL) ? \
+		((unsigned long)(physical) - 0x80000000UL + PLATFORM_CONTIGUOUS_BASE) : \
+		(PLATFORM_CONTIGUOUS_BASE + (unsigned long)(physical))))
+#define PLATFORM_VIRTUAL_TO_PHYSICAL(address) \
+	(((unsigned long)(address) >= PLATFORM_CONTIGUOUS_BASE && \
+	  (unsigned long)(address) - PLATFORM_CONTIGUOUS_BASE < PLATFORM_CONTIGUOUS_SIZE) ? \
+	 (unsigned long)(address) - PLATFORM_CONTIGUOUS_BASE : (unsigned long)(address))
 
 /* The window Halo Custom Edition tag data are linked to (0x40440000):
 reserved at start-up when the game.custom_edition setting is on, else NULL

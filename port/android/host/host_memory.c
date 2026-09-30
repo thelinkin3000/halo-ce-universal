@@ -23,6 +23,7 @@ passed on to the previous handler.
 #include "host.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
@@ -65,6 +66,36 @@ static uint64_t round_up(uint64_t value)
 static int in_range(uint64_t address, uint64_t size, uint64_t base, uint64_t end)
 {
 	return address >= base && address + size <= end && address + size >= address;
+}
+
+/* ---------- moving the window */
+
+/* The guest was built for the window at HALO_GUEST_WINDOW_BASE and works in
+guest addresses throughout, so every address it hands the host through a
+system call is in its own address space. When the window had to be placed
+elsewhere those calls name the address the game expects, and the host has to
+put them where the window actually is before touching the page tables, and
+report results back in guest addresses. Where the window did not move, both
+are the identity and nothing here changes. */
+
+static int guest_window_address(uint64_t address)
+{
+	return address >= HALO_GUEST_WINDOW_BASE &&
+		address - HALO_GUEST_WINDOW_BASE < HALO_GUEST_WINDOW_SIZE;
+}
+
+static uint64_t to_host(uint64_t address)
+{
+	if (window_base != HALO_GUEST_WINDOW_BASE && guest_window_address(address))
+		return window_base + (address - HALO_GUEST_WINDOW_BASE);
+	return address;
+}
+
+static uint64_t to_guest(uint64_t address)
+{
+	if (window_base != HALO_GUEST_WINDOW_BASE && guest_window_address(window_base + (address - window_base)))
+		return HALO_GUEST_WINDOW_BASE + (address - window_base);
+	return address;
 }
 
 /* ---------- reserving address space below 4 GB */
@@ -333,6 +364,7 @@ int host_low_owns(uintptr_t address, size_t size)
 long host_guest_mmap(uint64_t address, uint64_t size, int protection, int flags, int fd, int64_t offset)
 {
 	uint64_t length = round_up(size);
+	uint64_t host = to_host(address);
 	void *result;
 
 	if (!length)
@@ -341,20 +373,20 @@ long host_guest_mmap(uint64_t address, uint64_t size, int protection, int flags,
 	{
 		int fixed_flags = (flags & ~MAP_FIXED_NOREPLACE) | MAP_FIXED;
 
-		if (address + length > LOW_LIMIT)
+		if (host + length > LOW_LIMIT)
 			return -ENOMEM;
 		/* inside a range the host reserved for the guest, a "no replace"
 		request replaces the reservation */
-		if (!host_low_owns(address, length))
+		if (!host_low_owns(host, length))
 		{
 			if (!(flags & MAP_FIXED_NOREPLACE))
 				return -EINVAL;
 			fixed_flags = flags;
 		}
-		result = mmap((void *)address, length, protection, fixed_flags, fd, offset);
+		result = mmap((void *)host, length, protection, fixed_flags, fd, offset);
 		if (result == MAP_FAILED)
 			return -errno;
-		return (long)(uintptr_t)result;
+		return (long)to_guest((uintptr_t)result);
 	}
 	result = host_low_map(length, PROT_NONE);
 	if (!result)
@@ -372,29 +404,32 @@ long host_guest_mmap(uint64_t address, uint64_t size, int protection, int flags,
 long host_guest_munmap(uint64_t address, uint64_t size)
 {
 	uint64_t length = round_up(size);
+	uint64_t host = to_host(address);
 
-	if (address + length > LOW_LIMIT)
+	if (host + length > LOW_LIMIT)
 		return -EINVAL;
-	if (in_range(address, length, window_base, window_end))
+	if (in_range(host, length, window_base, window_end))
 	{
-		mmap((void *)address, length, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
+		mmap((void *)host, length, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
 		return 0;
 	}
-	if (in_range(address, length, image_base, image_end))
+	if (in_range(host, length, image_base, image_end))
 		return -EINVAL;
-	if (host_low_owns(address, length))
+	if (host_low_owns(host, length))
 	{
-		host_low_unmap((void *)address, length);
+		host_low_unmap((void *)host, length);
 		return 0;
 	}
-	return munmap((void *)address, length) ? -errno : 0;
+	return munmap((void *)host, length) ? -errno : 0;
 }
 
 long host_guest_mprotect(uint64_t address, uint64_t size, int protection)
 {
-	if (address + size > LOW_LIMIT)
+	uint64_t host = to_host(address);
+
+	if (host + size > LOW_LIMIT)
 		return -EINVAL;
-	return mprotect((void *)address, size, protection) ? -errno : 0;
+	return mprotect((void *)host, size, protection) ? -errno : 0;
 }
 
 /* ---------- write tracking (port/linux/src/memory_watch.c) */
@@ -406,21 +441,24 @@ static uint32_t page_generation[WATCH_PAGE_COUNT];
 static volatile uint32_t current_generation = 1;
 static int watch_active;
 
+/* The guest reaches this with addresses that are already in the window
+wherever it was placed (platform_contiguous_base), so the tracking follows
+the window the host actually reserved, not the one the game was built for. */
 static int in_window(uint64_t address)
 {
-	return address >= HALO_GUEST_WINDOW_BASE && address - HALO_GUEST_WINDOW_BASE < HALO_GUEST_WINDOW_SIZE;
+	return address >= window_base && address - window_base < HALO_GUEST_WINDOW_SIZE;
 }
 
 static uint64_t watch_page(uint64_t address)
 {
-	return (address - HALO_GUEST_WINDOW_BASE) / PAGE;
+	return (address - window_base) / PAGE;
 }
 
 static void mark_written(uint64_t page)
 {
 	page_generation[page] = __sync_add_and_fetch(&current_generation, 1);
 	page_protected[page] = 0;
-	mprotect((void *)(HALO_GUEST_WINDOW_BASE + page * PAGE), PAGE, PROT_READ | PROT_WRITE);
+	mprotect((void *)(window_base + page * PAGE), PAGE, PROT_READ | PROT_WRITE);
 }
 
 static struct sigaction previous_segv, previous_bus, previous_ill;
@@ -543,7 +581,7 @@ void host_memory_watch_protect(uint32_t address, uint32_t size)
 		if (!page_protected[page])
 		{
 			page_protected[page] = 1;
-			mprotect((void *)(HALO_GUEST_WINDOW_BASE + page * PAGE), PAGE, PROT_READ);
+			mprotect((void *)(window_base + page * PAGE), PAGE, PROT_READ);
 		}
 	}
 }
@@ -578,10 +616,10 @@ void host_memory_watch_prepare_write(uint32_t address, uint32_t size)
 
 	if (!watch_active || !size)
 		return;
-	if (start + size <= HALO_GUEST_WINDOW_BASE || start >= (uint64_t)HALO_GUEST_WINDOW_BASE + HALO_GUEST_WINDOW_SIZE)
+	if (start + size <= window_base || start >= window_base + HALO_GUEST_WINDOW_SIZE)
 		return;
-	if (start < HALO_GUEST_WINDOW_BASE)
-		start = HALO_GUEST_WINDOW_BASE;
+	if (start < window_base)
+		start = window_base;
 	first = watch_page(start);
 	last = watch_page((uint64_t)address + size - 1);
 	if (last >= WATCH_PAGE_COUNT)
