@@ -500,6 +500,11 @@ static boolean cache_file_tag_header_verify(
 		{
 			void const *base_address = tag_header->tag_instances[absolute_index].base_address;
 
+#ifdef HALO_ANDROID
+			/* (checked where it is moved to, as it is once this passes) */
+			base_address = cache_file_rebase_address((void *)base_address);
+#endif
+
 			if (base_address &&
 				!cache_file_region_contains(tag_header, TAG_CACHE_SIZE, base_address, 1, 1))
 			{
