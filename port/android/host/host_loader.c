@@ -79,7 +79,7 @@ static uint32_t host_image_find_symbol(
 				if (found)
 					continue;
 			}
-			else if (bind != STB_GLOBAL && bind != STB_WEAK)
+			else if (bind != STB_GLOBAL && bind != STB_WEAK && bind != STB_LOCAL)
 			{
 				continue;
 			}
