@@ -31,18 +31,8 @@ fill 3,165,260 of its 0x305000 bytes); the GPU part holds only the decal
 vertices, as on the Xbox. A change to a pool's size changes the game state's
 layout: saved games of builds before it no longer load. */
 
-/* A map's tag data runs from the tag cache up to wherever that map puts its
-level data, and the largest maps shipped need more than the Xbox's 0x1600000
-(the cache ends at 0x819A6000 on the Xbox): one is measured at 0x167C800, half
-a megabyte over. Reading it walks off the end of the mapping into the part
-of the window the host left reserved, which faults. */
-#define HALO_PORT_TAG_CACHE_SIZE 0x1E00000 /* (0x1600000) */
-
-/* where the port places the game state: above the enlarged tag cache, and
-above where maps put their level data, which starts just past that cache's
-end. Moved with the window where the host had to move it
-(halo_port_window.h). */
-#define HALO_PORT_GAME_STATE_BASE_ADDRESS 0x86000000 /* (0x80061000) */
+#define HALO_PORT_TAG_CACHE_SIZE 0x1600000 /* (0x1600000) */
+#define HALO_PORT_GAME_STATE_BASE_ADDRESS 0x81A00000 /* (0x80061000) */
 #define HALO_PORT_GAME_STATE_CPU_SIZE 0x13C0000 /* (0x305000) */
 #define HALO_PORT_GAME_STATE_GPU_SIZE 0x40000 /* (0x40000) */
 #define HALO_PORT_GAME_STATE_SIZE (HALO_PORT_GAME_STATE_CPU_SIZE+HALO_PORT_GAME_STATE_GPU_SIZE)
