@@ -43,6 +43,10 @@ static void tag_index_error(
 
 	return;
 }
+#include "halo_port_window.h"
+#ifdef HALO_ANDROID
+#include "platform.h"
+#endif
 
 /* ---------- public code */
 
@@ -75,7 +79,12 @@ long verify_tag_reference(
 	(port/linux/game/custom_edition_cache.c) */
 	if (custom_edition_cache_tags_loaded())
 		return tag_index_is_group(reference->index, reference->group_tag) ? reference->index : NONE;
+#ifdef HALO_ANDROID
+	/* the map data names this string as the window was linked */
+	index = tag_loaded(reference->group_tag, TAG_REFERENCE_NAME(*reference));
+#else
 	index = tag_loaded(reference->group_tag, reference->name);
+#endif
 	
 	match_vassert(
 		"c:\\halo\\SOURCE\\tag_files\\tag_groups.c", 3061, reference->index==index,
@@ -87,6 +96,26 @@ long verify_tag_reference(
 
 	return index;
 }
+
+#ifdef HALO_ANDROID
+char const *tag_reference_name(
+	struct tag_reference const *reference)
+{
+	return (char const *)PORT_WINDOW_REBASE(reference->name);
+}
+
+void *tag_data_address(
+	struct tag_data const *data)
+{
+	return PORT_WINDOW_REBASE(data->address);
+}
+
+void *tag_block_address(
+	struct tag_block const *block)
+{
+	return PORT_WINDOW_REBASE(block->address);
+}
+#endif
 
 void* tag_data_get_pointer(
 	const struct tag_data *data,
@@ -110,7 +139,7 @@ void* tag_data_get_pointer(
 		return size <= TAG_EMPTY_DATA_SIZE ? tag_empty_data() : NULL;
 	}
 
-	return (void *)((byte *)data->address + offset);
+	return (void *)((byte *)TAG_DATA_ADDRESS(*data) + offset);
 }
 
 void *tag_block_get_element_with_size(
@@ -137,5 +166,5 @@ void *tag_block_get_element_with_size(
 		return element_size <= TAG_EMPTY_DATA_SIZE ? tag_empty_data() : NULL;
 	}
 
-	return (void *)((byte *)block->address + (index * element_size));
+	return (void *)((byte *)TAG_BLOCK_ADDRESS(*block) + (index * element_size));
 }
