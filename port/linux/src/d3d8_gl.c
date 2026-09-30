@@ -4911,11 +4911,15 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 	if (screenshot_every < 0)
 		screenshot_every = config_integer("debug.screenshot_every");
 
-	if (device.gl_ready)
-	{
-		struct render_target_entry *back_buffer = render_target_get(&device.back_buffer);
-		int window_width, window_height, width, height, x, y;
+	/* the back buffer's memory comes out of the window. If the window could
+	not give it, there is nothing to draw into and every line below would
+	fault on it, so the frame is counted and presented without drawing */
+	struct render_target_entry *back_buffer =
+		device.gl_ready ? render_target_get(&device.back_buffer) : NULL;
+	int window_width, window_height, width, height, x, y;
 
+	if (back_buffer)
+	{
 		if (trace_frame())
 			platform_log("present back buffer %08lx texture %u", (unsigned long)device.back_buffer.Data,
 				back_buffer->target.texture);
