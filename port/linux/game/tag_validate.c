@@ -42,6 +42,7 @@ data and which the game takes as models (tag_schema_custom_edition_groups).
 #include "cseries.h"
 #include "cache/physical_memory_map.h"
 #include "tag_schema.h"
+#include "halo_port_window.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -87,6 +88,22 @@ enum
 	/* the checks (tag_schema_check_proc), after every tag's other passes */
 	_pass_checks,
 };
+
+/* ---------- macros */
+
+/* Where the host could not put the memory window where the game expects it
+(Android, the Switch: port/linux/include/halo_port_window.h), a map's
+addresses are where the tags were linked, not where they were read. The
+validator is what follows every one of them, so it moves each in place as it
+reads it, before checking or following it: the tags are then this process's
+(the game's accessors, TAG_BLOCK_ADDRESS and the rest, leave a moved address
+as it is). A Custom Edition map's addresses lie outside the window and are
+left alone. */
+#ifdef HALO_ANDROID
+#define VALIDATE_MOVE(pointer) ((pointer) = PORT_WINDOW_REBASE(pointer))
+#else
+#define VALIDATE_MOVE(pointer) ((void)0)
+#endif
 
 /* ---------- structures */
 
@@ -573,6 +590,7 @@ static void validate_block_extent(
 {
 	struct tag_schema_definition const *definition = field->definition;
 
+	VALIDATE_MOVE(block->address);
 	block->definition = NULL;
 	if (block->count < 0)
 	{
@@ -632,6 +650,7 @@ static void validate_data_extent(
 		}
 		return;
 	}
+	VALIDATE_MOVE(data->address);
 	if (data->size &&
 		(!region_contains(validation, data->address, data->size) || !claim(data->address, data->size)))
 	{
@@ -699,6 +718,8 @@ static void validate_value(
 	case _tag_schema_reference:
 	{
 		struct tag_reference *reference = (struct tag_reference *)address;
+
+		VALIDATE_MOVE(reference->name);
 
 		/* (a reference to no tag often has a name pointer that is not one,
 		in the retail maps too: only one to a tag counts as a correction) */
@@ -1040,7 +1061,10 @@ static boolean validate_buffers(
 			vertex_buffers + index * BUFFER_SIZE :
 			index_buffers + (index - vertex_buffer_count) * BUFFER_SIZE;
 		/* (the buffer's Data, its bytes' address before it is registered) */
-		void *data = *(void **)(buffer + 4);
+		void *data;
+
+		VALIDATE_MOVE(*(void **)(buffer + 4));
+		data = *(void **)(buffer + 4);
 
 		if (!region_contains(validation, data, 1))
 		{
@@ -1072,6 +1096,8 @@ static boolean validate_tag_table(
 		struct tag_schema_group const *group = schema_group_get(instance->group_tag);
 		unsigned long parent_group_tags[2];
 
+		VALIDATE_MOVE(instance->name);
+		VALIDATE_MOVE(instance->base_address);
 		validation->tag_index = instance->tag_index;
 		if ((short)instance->tag_index != absolute_index)
 		{
@@ -1171,6 +1197,9 @@ boolean tag_validate_tags(
 		tag_validate_refuse(&validation, "cannot be checked: a tag schema is wrong");
 		return FALSE;
 	}
+	VALIDATE_MOVE(header->instances);
+	VALIDATE_MOVE(header->vertex_buffers);
+	VALIDATE_MOVE(header->index_buffers);
 	if (tag_data_size < (long)sizeof(*header) || tag_data_size > TAG_CACHE_SIZE ||
 		header->signature != TAG_HEADER_SIGNATURE ||
 		header->tag_count <= 0 || header->tag_count > UNSIGNED_SHORT_MAX ||
@@ -1257,6 +1286,9 @@ boolean tag_validate_structure_bsp(
 	}
 	/* (another bsp may have been where this one is) */
 	unclaim(tag_validate_globals.tag_data_size, tag_validate_globals.tag_cache_size - tag_validate_globals.tag_data_size);
+	VALIDATE_MOVE(bsp_header->base_address);
+	VALIDATE_MOVE(bsp_header->vertex_buffers);
+	VALIDATE_MOVE(bsp_header->index_buffers);
 
 	if (bsp_header->signature != STRUCTURE_BSP_HEADER_SIGNATURE ||
 		!claim(bsp_header, sizeof(*bsp_header)) ||
