@@ -2770,7 +2770,10 @@ static void handoff_readable(void)
 	p2p_invite_received(invite);
 }
 
-#ifdef HALO_ANDROID
+/* (not on the Switch, which builds as Android too: there is no app to write
+the file, and the Switch host has no renameat, so the look every second failed
+and filled the log; its invite comes on the command line, host_lobby.c) */
+#if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
 /* the app's activity writes a link it was opened with here */
 static void poll_invite_file(void)
 {
@@ -2997,7 +3000,7 @@ static void *p2p_thread(void *unused)
 		update_joining();
 		update_upnp();
 		p2p_discord_update();
-#ifdef HALO_ANDROID
+#if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
 		poll_invite_file();
 #endif
 	}
