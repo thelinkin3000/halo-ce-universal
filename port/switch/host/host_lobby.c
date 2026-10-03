@@ -17,10 +17,8 @@ The list is fetched over HTTPS - the site answers plain HTTP with a redirect
 - through the console's own TLS (host_https.c). Before the menu, the updater
 (host_update.c) offers a newer release of the port if there is one.
 
-The menu is libnx's text console, drawn on the default window before SDL takes
-that window for the game; consoleExit gives it back. The console takes over
-stdout only (the log is on stderr and in the file), and nothing may be printed
-to stdout once it has gone.
+The screens are host_ui.c's, drawn on the default window before SDL takes that
+window for the game; host_ui_close gives it back.
 */
 
 #include "host.h"
@@ -34,6 +32,8 @@ to stdout once it has gone.
 
 #include <switch.h>
 
+#include "host_ui.h"
+
 #define LOBBY_HOST "halo.milenko.org"
 #define LOBBY_PATH "/v1/games.txt"
 
@@ -43,8 +43,6 @@ enum
 	/* a few hundred games' lines; the list holds a handful */
 	MAXIMUM_RESPONSE_SIZE = 128 * 1024,
 	INVITE_DIGITS = 64,
-	/* the console is 80 columns by 45 rows at 1280x720 */
-	VISIBLE_GAMES = 32,
 };
 
 struct lobby_game
@@ -238,59 +236,46 @@ static const char *engine_name(int engine)
 	}
 }
 
-/* the console's colours: reverse video for the selected line */
-#define SELECTED "\x1b[7m"
-#define PLAIN "\x1b[0m"
-#define DIM "\x1b[2m"
+static const char *const choice_keys[] = { "A", "Select", "+", "Quit", NULL };
 
 static void draw_choice(int selected)
 {
-	consoleClear();
-	printf("\x1b[3;3HHalo: Combat Evolved");
-	printf("\x1b[6;3H%s Campaign and system link  " PLAIN, selected == 0 ? SELECTED : "");
-	printf("\x1b[7;3H%s Internet games            " PLAIN, selected == 1 ? SELECTED : "");
-	printf("\x1b[10;3H" DIM "Internet games are the ones listed at %s." PLAIN, LOBBY_HOST);
-	printf("\x1b[43;3HA select   + quit");
-}
+	static const char *const items[] = { "Campaign and system link", "Internet games" };
 
-static void draw_message(const char *title, const char *message, const char *keys)
-{
-	consoleClear();
-	printf("\x1b[3;3H%s", title);
-	printf("\x1b[6;3H%.76s", message);
-	if (strlen(message) > 76)
-		printf("\x1b[7;3H%.76s", message + 76);
-	printf("\x1b[43;3H%s", keys);
+	host_ui_choice("HALO: COMBAT EVOLVED", items, 2, selected, "Internet games are the ones listed at " LOBBY_HOST ".",
+		choice_keys);
 }
 
 static void draw_list(int selected, int first)
 {
-	int row;
+	static const char *const headings[] = { "NAME", "MAP", "TYPE", "PLAYERS" };
+	static const int columns[] = { 0, 470, 730, 930 };
+	static struct host_ui_row rows[MAXIMUM_GAMES];
+	static char players[MAXIMUM_GAMES][16];
+	char aside[32], status[96];
+	int index;
 
-	consoleClear();
-	printf("\x1b[3;3HInternet games");
-	printf("\x1b[3;60H%3d to join", game_count);
-	printf("\x1b[5;3H" DIM "  %-24s %-16s %-8s %s" PLAIN, "Name", "Map", "Type", "Players");
-	for (row = 0; row < VISIBLE_GAMES && first + row < game_count; row++)
+	for (index = 0; index < game_count; index++)
 	{
-		const struct lobby_game *game = &games[first + row];
-
-		printf("\x1b[%d;3H%s  %-24s %-16s %-8s %3d/%-3d " PLAIN, 6 + row, first + row == selected ? SELECTED : "",
-			game->name, game->map, engine_name(game->engine), game->players, game->maximum_players);
+		snprintf(players[index], sizeof(players[index]), "%d/%d", games[index].players, games[index].maximum_players);
+		rows[index].columns[0] = games[index].name;
+		rows[index].columns[1] = games[index].map;
+		rows[index].columns[2] = engine_name(games[index].engine);
+		rows[index].columns[3] = players[index];
 	}
-	if (!game_count)
-		printf("\x1b[7;5HNo games this build can join are being hosted right now.");
-	if (games_left_out)
-		printf("\x1b[40;3H" DIM "%d more listed games are full or need another version." PLAIN, games_left_out);
-	printf("\x1b[43;3HA join   Y refresh   B back");
+	snprintf(aside, sizeof(aside), "%d to join", game_count);
+	snprintf(status, sizeof(status), "%d more listed games are full or need another version.", games_left_out);
 	/* the list is Milenko's, run for the community alongside ChupaThingyCe */
-	printf("\x1b[45;3H" DIM "Thanks Milenko! Go check out ChupaThingyCe!" PLAIN);
+	host_ui_list("INTERNET GAMES", aside, headings, columns, 4, rows, game_count, selected, first,
+		"No games this build can join are being hosted right now.", games_left_out ? status : NULL,
+		"Thanks Milenko! Go check out ChupaThingyCe!",
+		(const char *const[]){ "A", "Join", "Y", "Refresh", "B", "Back", NULL });
 }
 
 static void quit_from_the_menu(void)
 {
 	host_logf(HOST_LOG_INFO, "lobby: quit from the menu");
-	consoleExit(NULL);
+	host_ui_close();
 	host_exit(0);
 }
 
@@ -309,7 +294,8 @@ static u64 wait_for_buttons(PadState *pad)
 			quit_from_the_menu();
 		if (down)
 			return down;
-		consoleUpdate(NULL);
+		/* a frame: the screen is drawn only when it changes */
+		svcSleepThread(16666667);
 	}
 }
 
@@ -323,11 +309,10 @@ static int choose_a_game(PadState *pad)
 	{
 		u64 down;
 
-		draw_message("Internet games", "Fetching the list from " LOBBY_HOST "...", "");
-		consoleUpdate(NULL);
+		host_ui_message("INTERNET GAMES", "Fetching the list from " LOBBY_HOST "...", NULL);
 		if (!refresh(error, sizeof(error)))
 		{
-			draw_message("Internet games", error, "Y try again   B back");
+			host_ui_message("INTERNET GAMES", error, (const char *const[]){ "Y", "Try again", "B", "Back", NULL });
 			do
 				down = wait_for_buttons(pad);
 			while (!(down & (HidNpadButton_Y | HidNpadButton_B)));
@@ -360,8 +345,8 @@ static int choose_a_game(PadState *pad)
 				selected--;
 			if (selected < first)
 				first = selected;
-			if (selected >= first + VISIBLE_GAMES)
-				first = selected - VISIBLE_GAMES + 1;
+			if (selected >= first + host_ui_list_rows())
+				first = selected - host_ui_list_rows() + 1;
 		}
 	}
 }
@@ -372,8 +357,14 @@ void host_lobby_choose(void)
 	int selected = 0;
 
 	padInitializeDefault(&pad);
-	consoleInit(NULL);
-	/* a newer release first: taking it restarts the program from here */
+	if (!host_ui_open())
+	{
+		/* without its screens the menu cannot be shown: play as before it */
+		host_logf(HOST_LOG_ERROR, "lobby: the menu's screens could not be set up; starting the game");
+		host_ui_close();
+		return;
+	}
+	/* a newer release first */
 	host_update_offer(&pad);
 	for (;;)
 	{
@@ -389,9 +380,7 @@ void host_lobby_choose(void)
 			break;
 	}
 	/* the window goes back to SDL, for the game */
-	consoleClear();
-	consoleUpdate(NULL);
-	consoleExit(NULL);
+	host_ui_close();
 	if (!join_link[0])
 		host_logf(HOST_LOG_INFO, "lobby: playing without joining an internet game");
 }
