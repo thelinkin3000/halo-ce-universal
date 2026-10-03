@@ -373,8 +373,24 @@ static uint64_t swap_ticks;
 
 /* The frame rate and the longest frame in the log every 5 seconds, or every
 HALO_FPS_LOG seconds (0 turns it off) */
+/* The ticks the calling thread has run for, on any core; 0 if the kernel
+will not say. The game thread's share of the time is what tells a game bound
+by its own work (near all of it) from one waiting on something else - the
+GPU, through the driver's calls - which a short swap does not rule out. */
+static u64 thread_ticks(void)
+{
+	u64 ticks = 0;
+
+	if (R_FAILED(svcGetInfo(&ticks, InfoType_ThreadTickCount, CUR_THREAD_HANDLE, TickCountInfo_Total)) &&
+		R_FAILED(svcGetInfo(&ticks, InfoType_ThreadTickCountDeprecated, CUR_THREAD_HANDLE, TickCountInfo_Total)))
+		return 0;
+	return ticks;
+}
+
 static void frame_statistics(void)
 {
+	/* the game thread's own run time, and the clock's, at the window's start */
+	static u64 busy_start, wall_start;
 	static double interval = -1.0;
 	static uint64_t start, previous;
 	static uint64_t longest;
@@ -394,6 +410,8 @@ static void frame_statistics(void)
 	if (!start)
 	{
 		start = previous = now;
+		busy_start = thread_ticks();
+		wall_start = armGetSystemTick();
 		return;
 	}
 	frames++;
@@ -423,6 +441,17 @@ static void frame_statistics(void)
 		host_logf(HOST_LOG_INFO, "frame times: %u under 15 ms, %u 15-18, %u 18-22, %u 22-28, %u 28-35, %u over 35",
 			frame_buckets[0], frame_buckets[1], frame_buckets[2], frame_buckets[3], frame_buckets[4], frame_buckets[5]);
 		memset(frame_buckets, 0, sizeof(frame_buckets));
+		{
+			u64 busy = thread_ticks();
+			u64 wall = armGetSystemTick();
+
+			if (busy && wall > wall_start)
+				host_logf(HOST_LOG_INFO, "game thread: running %.0f%% of the time, %.1f ms a frame",
+					100.0 * (double)(busy - busy_start) / (double)(wall - wall_start),
+					frames ? (double)(busy - busy_start) * 1000.0 / (double)armGetSystemTickFreq() / frames : 0.0);
+			busy_start = busy;
+			wall_start = wall;
+		}
 		start = now;
 		frames = 0;
 		longest = 0;
