@@ -269,6 +269,34 @@ uint64_t host_memory_reserved_region(uint64_t size)
 	return best_base;
 }
 
+/* The guest image's fixed address, kept from libnx from the start of main.
+ *
+ * reserve() tells libnx about the image's range when the image is loaded, and
+ * that is too late: threads already exist by then - the game thread, which
+ * falls back to a stack libnx places itself, and the reaper - and libnx puts
+ * each thread's stack (128 KB and its TLS, 0x21000 bytes) at a random free
+ * address in its stack region. Usually that is not inside the image's 18 MB.
+ * One run it was, at 0x409ad000, and since the thread lives as long as the
+ * game, waiting for the space to come back could never work. The earlier
+ * 0x400af000-0x400d0000 conflict was the same size, and very likely the same
+ * thing.
+ *
+ * Held for the whole run: libnx does not mind reservations that overlap, so
+ * the image's own reservation simply lands on top of this one. */
+#define IMAGE_HOLD_SIZE (32u * 1024 * 1024)
+
+void host_memory_hold_image_range(void)
+{
+	VirtmemReservation *hold;
+
+	virtmemLock();
+	hold = virtmemAddReservation((void *)(uintptr_t)HALO_GUEST_IMAGE_BASE, IMAGE_HOLD_SIZE);
+	virtmemUnlock();
+	if (!hold)
+		host_logf(HOST_LOG_ERROR, "libnx would not hold the guest image's range at %08x; a thread's stack may "
+			"land in it", HALO_GUEST_IMAGE_BASE);
+}
+
 static int reserve(uint64_t address, uint64_t size, int for_a_purpose)
 {
 	/* taken by anything already mapped, or by another reservation */
