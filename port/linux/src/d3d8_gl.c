@@ -434,6 +434,35 @@ xgpu_gl_state_invalidate, after which every value is set again. Unknown
 values are all ones, which no real value matches (floats become NaN, which
 compares unequal to everything). */
 
+#ifdef HALO_ANDROID
+/* OpenGL ES 3.1's vertex bindings: an attribute's format and the binding it
+reads from are set apart from where the binding's data is (state_vertex_buffer,
+state_attribute_format). A draw's streams move every draw - the streamed ones
+into the ring at a new offset, the mirrored ones by their first vertex - and
+with glVertexAttribPointer that was every attribute set again, some ten calls a
+draw and 3,000 to 12,000 a frame on the Switch, each making the driver check the
+whole vertex setup at the next draw. With bindings it is one call a stream; the
+attributes' formats stay as they were. One binding per Direct3D stream (16, the
+least ES 3.1 allows); immediate mode's single buffer uses binding 0. */
+#define VERTEX_BINDING_COUNT 16
+
+struct attribute_format
+{
+	GLuint binding;
+	GLint size;
+	GLenum type;
+	GLboolean normalized;
+	GLboolean integer;
+	GLuint relative_offset;
+};
+
+struct vertex_binding
+{
+	GLuint buffer;
+	unsigned long offset;
+	GLsizei stride;
+};
+#else
 struct attribute_pointer
 {
 	GLuint buffer;
@@ -444,6 +473,7 @@ struct attribute_pointer
 	GLsizei stride;
 	unsigned long offset;
 };
+#endif
 
 static struct
 {
@@ -474,7 +504,12 @@ static struct
 	GLuint array_buffer;
 	GLuint element_array_buffer;
 	unsigned char attribute_enabled[XGPU_VERTEX_ATTRIBUTE_COUNT];
+#ifdef HALO_ANDROID
+	struct attribute_format attribute_formats[XGPU_VERTEX_ATTRIBUTE_COUNT];
+	struct vertex_binding vertex_bindings[VERTEX_BINDING_COUNT];
+#else
 	struct attribute_pointer attribute_pointers[XGPU_VERTEX_ATTRIBUTE_COUNT];
+#endif
 	/* a disabled attribute's value; kind 1 is the integer zero */
 	unsigned char attribute_value_kind[XGPU_VERTEX_ATTRIBUTE_COUNT];
 	float attribute_values[XGPU_VERTEX_ATTRIBUTE_COUNT][4];
@@ -558,6 +593,54 @@ static void state_element_array_buffer(GLuint buffer)
 	}
 }
 
+#ifdef HALO_ANDROID
+/* where binding's data starts, and its stride (a stride of 0 is the same
+element for every vertex, as Direct3D means it: glVertexAttribPointer took 0 as
+tightly packed) */
+static void state_vertex_buffer(GLuint binding, GLuint buffer, unsigned long offset, GLsizei stride)
+{
+	struct vertex_binding *bound = &gl_state.vertex_bindings[binding];
+
+	if (bound->buffer == buffer && bound->offset == offset && bound->stride == stride)
+		return;
+	glBindVertexBuffer(binding, buffer, (GLintptr)offset, stride);
+	bound->buffer = buffer;
+	bound->offset = offset;
+	bound->stride = stride;
+}
+
+/* the attribute's format, at relative_offset into each of binding's vertices */
+static void state_attribute_format(GLuint index, GLuint binding, GLint size, GLenum type, GLboolean normalized,
+	BOOL integer, GLuint relative_offset)
+{
+	struct attribute_format *format = &gl_state.attribute_formats[index];
+	GLboolean is_integer = integer ? GL_TRUE : GL_FALSE;
+
+	if (gl_state.attribute_enabled[index] != 1)
+	{
+		gl_state.attribute_enabled[index] = 1;
+		glEnableVertexAttribArray(index);
+	}
+	if (format->size != size || format->type != type || format->normalized != normalized ||
+		format->integer != is_integer || format->relative_offset != relative_offset)
+	{
+		if (integer)
+			glVertexAttribIFormat(index, size, type, relative_offset);
+		else
+			glVertexAttribFormat(index, size, type, normalized, relative_offset);
+		format->size = size;
+		format->type = type;
+		format->normalized = normalized;
+		format->integer = is_integer;
+		format->relative_offset = relative_offset;
+	}
+	if (format->binding != binding)
+	{
+		glVertexAttribBinding(index, binding);
+		format->binding = binding;
+	}
+}
+#else
 static void state_attribute_pointer(GLuint index, GLuint buffer, GLint size, GLenum type, GLboolean normalized,
 	BOOL integer, GLsizei stride, unsigned long offset)
 {
@@ -587,6 +670,7 @@ static void state_attribute_pointer(GLuint index, GLuint buffer, GLint size, GLe
 	pointer->stride = stride;
 	pointer->offset = offset;
 }
+#endif
 
 /* disables the attribute, which then reads value, or the integer zero */
 static void state_attribute_value(GLuint index, const float *value)
@@ -3449,6 +3533,22 @@ static void setup_streams(unsigned long first, unsigned long count)
 			stream_buffers[stream] = device.stream_buffer;
 			stats.streamed_bytes += bytes;
 		}
+#ifdef HALO_ANDROID
+		/* the stream's data once (it is the same for each of its elements),
+		and the element's format at its place in the vertex */
+		state_vertex_buffer((GLuint)stream, stream_buffers[stream], stream_offsets[stream], (GLsizei)stride);
+		if (element->type == D3DVSDT_NORMPACKED3)
+		{
+			state_attribute_format(element->reg, (GLuint)stream, 1, GL_UNSIGNED_INT, GL_FALSE, TRUE,
+				(GLuint)element->offset);
+		}
+		else
+		{
+			attribute_format(element, &size, &type, &normalized);
+			state_attribute_format(element->reg, (GLuint)stream, size, type, normalized, FALSE,
+				(GLuint)element->offset);
+		}
+#else
 		if (element->type == D3DVSDT_NORMPACKED3)
 		{
 			state_attribute_pointer(element->reg, stream_buffers[stream], 1, GL_UNSIGNED_INT, GL_FALSE, TRUE,
@@ -3460,6 +3560,7 @@ static void setup_streams(unsigned long first, unsigned long count)
 			state_attribute_pointer(element->reg, stream_buffers[stream], size, type, normalized, FALSE,
 				(GLsizei)stride, stream_offsets[stream] + element->offset);
 		}
+#endif
 		enabled[element->reg] = TRUE;
 	}
 	for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
@@ -3639,11 +3740,18 @@ void WINAPI D3DDevice_End(void)
 		return;
 	trace_draw("immediate", type, count, device.immediate_vertices);
 	offset = stream_upload(device.immediate_vertices, count * stride);
+#ifdef HALO_ANDROID
+	/* every attribute, four floats each, from the one buffer: binding 0 */
+	state_vertex_buffer(0, device.stream_buffer, offset, (GLsizei)stride);
+	for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
+		state_attribute_format(index, 0, 4, GL_FLOAT, GL_FALSE, FALSE, (GLuint)(index * 4 * sizeof(float)));
+#else
 	for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
 	{
 		state_attribute_pointer(index, device.stream_buffer, 4, GL_FLOAT, GL_FALSE, FALSE, (GLsizei)stride,
 			offset + index * 4 * sizeof(float));
 	}
+#endif
 	if (type == D3DPT_QUADLIST)
 	{
 		unsigned long index_count;
