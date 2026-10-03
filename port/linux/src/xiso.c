@@ -60,7 +60,17 @@ includes software developed by in <in@fishtank.com>.
 /* (the desktop ports only: the Android app imports the game data itself) */
 #ifndef HALO_ANDROID
 
+#ifdef HALO_EXTRACTOR_STANDALONE
+/* Built for the Switch host, which calls this from its own start-up rather
+ * than from inside the game. platform.h is the game's platform layer and
+ * brings the SDK's headers with it, which the host build has no business
+ * seeing; of everything in it this file uses one function, declared here and
+ * supplied by the host. posix.h and xiso.h are its own and are used as they
+ * are. */
+void platform_log(const char *format, ...) __attribute__((format(printf, 1, 2)));
+#else
 #include "platform.h"
+#endif
 #include "posix.h"
 #include "xiso.h"
 

@@ -24,6 +24,8 @@ Paths, each overridable from the environment:
 
 #include "host.h"
 
+#include "xiso.h"
+
 #include <SDL2/SDL.h>
 #include <errno.h>
 #include <limits.h>
@@ -31,9 +33,11 @@ Paths, each overridable from the environment:
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <malloc.h>
 #include <pthread.h>
@@ -187,6 +191,21 @@ int __android_log_vprint(int priority, const char *tag, const char *format, va_l
 	return __android_log_write(priority, tag, text);
 }
 
+/* The one thing the disc image reader (xiso.c) uses from the game's platform
+ * layer, which it declares rather than includes here - see the guard in that
+ * file. It is the port's own logging with the guest's prefix on it, so the
+ * two read the same in the log. */
+void platform_log(const char *format, ...)
+{
+	va_list arguments;
+	char text[2048];
+
+	va_start(arguments, format);
+	vsnprintf(text, sizeof(text), format, arguments);
+	va_end(arguments);
+	host_logf(HOST_LOG_INFO, "%s", text);
+}
+
 int __android_log_print(int priority, const char *tag, const char *format, ...)
 {
 	va_list arguments;
@@ -327,6 +346,8 @@ static void rotate_the_log(void)
 	rename(from, to);
 }
 
+static struct timespec extraction_started;
+
 static int directory_has_maps(const char *root)
 {
 	char path[PATH_MAX + 32];
@@ -334,6 +355,121 @@ static int directory_has_maps(const char *root)
 
 	snprintf(path, sizeof(path), "%s/maps/ui.map", root);
 	return stat(path, &information) == 0;
+}
+
+/* The disc image to unpack, if there is one beside the port.
+ *
+ * A fixed name first, because that is the one the README tells people to use
+ * and the one that keeps working when the card holds several images; then any
+ * image in the folder, so that someone who copied one over under its own name
+ * does not have to rename it. The console has no file browser, so this cannot
+ * ask - which is why the names are fixed and the search is in one directory. */
+static const char *find_disc_image(const char *root)
+{
+	static const char *const names[] = { "halo.iso", "halo.xiso", "maps.iso", "halo-xbox.iso" };
+	char path[PATH_MAX + 32];
+	struct stat information;
+	unsigned index;
+
+	for (index = 0; index < sizeof(names) / sizeof(*names); index++)
+	{
+		snprintf(path, sizeof(path), "%s/%s", root, names[index]);
+		if (stat(path, &information) == 0)
+			return names[index];
+	}
+	/* anything else that looks like an image, in whatever order the card
+	 * gives them back */
+	{
+		static char found[256];
+		DIR *directory = opendir(root);
+		struct dirent *entry;
+
+		if (!directory)
+			return NULL;
+		while ((entry = readdir(directory)) != NULL)
+		{
+			const char *dot = strrchr(entry->d_name, '.');
+			size_t length = strlen(entry->d_name);
+
+			if (!dot || length < 5 || strlen(dot) != 4 ||
+				(strcasecmp(dot, ".iso") != 0 && strcasecmp(dot, ".bin") != 0))
+				continue;
+			snprintf(found, sizeof(found), "%s", entry->d_name);
+			closedir(directory);
+			return found;
+		}
+		closedir(directory);
+	}
+	return NULL;
+}
+
+/* Progress as the copy goes, which for a game-sized folder on a memory card is
+ * minutes rather than seconds. Saying nothing for that long looks like a hang,
+ * so it says every time the file being copied changes and every megabyte or so
+ * within it. */
+static unsigned long long extraction_last_done;
+static const char *extraction_last_file;
+static unsigned long long extraction_total;
+static unsigned extraction_seconds;
+
+static void extraction_progress(void *context, const char *file, unsigned long long done, unsigned long long total)
+{
+	(void)context;
+	extraction_total = total;
+	if (file != extraction_last_file)
+	{
+		extraction_last_file = file;
+		extraction_last_done = done;
+		host_logf(HOST_LOG_INFO, "unpacking %s", file);
+		return;
+	}
+	if (done - extraction_last_done < 16 * 1024 * 1024)
+		return;
+	extraction_last_done = done;
+	/* seconds since it started, so a stall reads as a stall rather than as a
+	 * percentage that never moves */
+	{
+		struct timespec now;
+		struct timespec started = extraction_started;
+		double elapsed;
+
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		elapsed = (double)(now.tv_sec - started.tv_sec) + (double)(now.tv_nsec - started.tv_nsec) / 1e9;
+		host_logf(HOST_LOG_INFO, "  %llu of %llu MB (%llu s)", done / (1024 * 1024),
+			total / (1024 * 1024), (unsigned long long)elapsed);
+		extraction_seconds = (unsigned)elapsed;
+	}
+}
+
+/* Make sure the game data is there, unpacking a disc image if that is how it
+ * arrived.
+ *
+ * Both routes stay: a maps folder that is already in place is used as it is,
+ * and an .iso beside the port is unpacked into one. The second is here because
+ * the first asks for a gigabyte and a half of somebody else's files, and most
+ * people who want to run this have the disc image instead. */
+static void ensure_game_data(const char *root)
+{
+	char image[PATH_MAX + 32];
+	char error[512];
+	const char *name;
+
+	if (directory_has_maps(root))
+		return;
+	name = find_disc_image(root);
+	if (!name)
+		host_fatal("The Halo game data was not found: %s/maps/ui.map is missing, and no disc image is "
+			"beside the port. Either put the maps folder of an Xbox disc image at %s/maps, or put the "
+			"image itself at %s/halo.iso and the port will unpack it.", root, root, root);
+	snprintf(image, sizeof(image), "%s/%s", root, name);
+	host_logf(HOST_LOG_INFO, "no maps folder; unpacking %s into %s/maps", name, root);
+	clock_gettime(CLOCK_MONOTONIC, &extraction_started);
+	if (!xiso_extract_maps(image, root, extraction_progress, NULL, error, sizeof(error)))
+		host_fatal("could not unpack %s: %s", name, error);
+	host_logf(HOST_LOG_INFO, "unpacked %llu MB from %s in %u s", extraction_total / (1024 * 1024), name,
+		extraction_seconds);
+	if (!directory_has_maps(root))
+		host_fatal("%s was unpacked but %s/maps/ui.map is still not there", name, root);
 }
 
 /* The columns of the 480-line picture for the display's shape. SDL2's
@@ -621,9 +757,7 @@ static void *game_main(void *unused)
 		snprintf(save_root, sizeof(save_root), "%s/save", data_root);
 	mkdir(save_root, 0755);
 	log_marker("marker: data paths resolved");
-	if (!directory_has_maps(data_root))
-		host_fatal("The Halo game data was not found: %s/maps/ui.map is missing. Put the maps folder of an Xbox "
-			"disc image there (halo_extract.py pulls it out of a .iso in the same folder).", data_root);
+	ensure_game_data(data_root);
 
 	environment_copy_halo(&environment);
 	environment_set(&environment, "HOME", save_root);
