@@ -79,12 +79,14 @@ enum host_gl_attribute
 	_host_gl_context_profile_mask,
 };
 
-/* the generic timer: its count, and its counts a second */
+/* the generic timer: its count, and its counts a second. The physical count,
+as libnx's armGetSystemTick reads it: the console does not let a program read
+the virtual one (cntvct_el0), and reading it faults */
 static inline uint64_t host_ticks(void)
 {
 	uint64_t value;
 
-	__asm__ volatile("isb; mrs %0, cntvct_el0" : "=r"(value) :: "memory");
+	__asm__ volatile("isb; mrs %0, cntpct_el0" : "=r"(value) :: "memory");
 	return value;
 }
 
