@@ -511,9 +511,13 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
         command="$switch_host_cc -c " + host_arch + " -o $out $in",
         description="SWITCH HOST AS $out",
     )
+    # the menus' fonts and panel, which host_ui_assets.S includes as they are
+    ui_assets = [Path("port/assets/fonts/OpenCE-Regular.ttf"), Path("port/assets/fonts/Overpass-750.ttf"),
+                 PORT_DIR / "art" / "menu_panel.svg"]
     for source in host_assembly:
         obj = host_obj_dir / (source.name + ".o")
-        n.build(outputs=obj, rule="switch_host_as", inputs=source)
+        n.build(outputs=obj, rule="switch_host_as", inputs=source,
+                implicit=ui_assets if source.name == "host_ui_assets.S" else None)
         host_objects.append(obj)
 
     table_obj = host_obj_dir / "host_import_table.c.o"
