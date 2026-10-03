@@ -91,8 +91,31 @@ offer.
 
 static __thread int last_error;
 
+/* Socket buffers on the console come out of one budget per process, which
+the bsd service is given when sockets are initialised (libnx's default: four
+times the largest TCP and UDP buffers, about 2.2 MB). Running out of it is
+WSAENOBUFS to the game, which gives up whatever it was making - the first
+internet join failed that way, on creating its client - so it is always
+said. It is rare by nature, unlike the per-datagram failures, so saying it
+costs nothing in an ordinary run. */
+#define BUFFER_FAILURES_LOGGED 20
+/* the most a socket's buffer is set to (posix_socket_setsockopt): libnx's
+default tcp_tx_buf_max_size and tcp_rx_buf_max_size */
+#define SOCKET_BUFFER_LIMIT (256 * 1024)
+
 static int fail(void)
 {
+	if (errno == ENOBUFS || errno == ENOMEM)
+	{
+		static volatile int said;
+
+		if (said < BUFFER_FAILURES_LOGGED)
+		{
+			said++;
+			host_logf(HOST_LOG_WARN, "socket: out of buffer space (%s); the console's socket budget is used up",
+				strerror(errno));
+		}
+	}
 	switch (errno)
 	{
 	case EINTR: last_error = WSAEINTR; break;
@@ -391,9 +414,23 @@ int posix_socket_setsockopt(int socket, int level, int name, const void *value, 
 		last_error = 0;
 		return 0;
 	}
+	/* The game asks for at least 1 MB each way on its sockets
+	(transport_endpoint_winsock.c), as internet play does on its tunnel
+	(p2p.c), sized for hosting 128 players. Here those limits are counted
+	against the socket budget (fail(), above) when they are set, so two
+	sockets granted that much leave too little for the next one: joining
+	from the list opened the signalling brokers' connections as well, and
+	the game's own client then could not make its sockets. The console only
+	joins, and a joiner's traffic is the host's to one machine, so the
+	sizes are held to libnx's largest TCP buffer. */
+	if (host_level == SOL_SOCKET && (host_name == SO_SNDBUF || host_name == SO_RCVBUF) &&
+		value && length >= (int)sizeof(int) && *(const int *)value > SOCKET_BUFFER_LIMIT)
 	{
-		return succeed(setsockopt(socket, host_level, host_name, value, (socklen_t)length));
+		int limited = SOCKET_BUFFER_LIMIT;
+
+		return succeed(setsockopt(socket, host_level, host_name, &limited, sizeof(limited)));
 	}
+	return succeed(setsockopt(socket, host_level, host_name, value, (socklen_t)length));
 }
 
 int posix_socket_getsockopt(int socket, int level, int name, void *value, int *length)
