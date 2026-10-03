@@ -180,7 +180,7 @@ int host_https_get(const char *url, int follow_redirects, host_https_body body, 
 /* the folder the port's files are in: sdmc:/switch/halo (host_main.c) */
 const char *host_executable_root(void);
 
-/* in the menu before the game, with the console up: offers a newer release
+/* in the menu before the game, with its screens up: offers a newer release
 of the port if there is one, and installs it if the player agrees, for the
 next start; returns in every case, the session going on as it was. pad is the
 menu's PadState. */
