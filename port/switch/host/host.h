@@ -68,6 +68,10 @@ uint32_t host_memory_image_base(void);
  * happened to land. See host_memory.c. */
 uint64_t host_memory_reserved_region(uint64_t size);
 
+/* Keeps libnx's own mappings (thread stacks) out of the guest image's fixed
+ * address. Called first thing in main, before any thread exists. */
+void host_memory_hold_image_range(void);
+
 /* Whether this port has set [address, address+size) aside, for the image, a
  * pool or the window. host_mman's allocator asks this before handing an
  * address out, so that the guest's heap does not grow into a range the rest

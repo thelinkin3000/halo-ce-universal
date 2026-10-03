@@ -883,6 +883,9 @@ int main(int argc, char *argv[])
 {
 	(void)argc;
 	(void)argv;
+	/* before any thread exists: libnx places their stacks at random, and one
+	in the guest image's range keeps the image from loading (host_memory.c) */
+	host_memory_hold_image_range();
 	/* The log goes to a file on the card, as well as to the standard
 	error stream.
 
