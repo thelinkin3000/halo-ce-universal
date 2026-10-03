@@ -1,0 +1,167 @@
+/*
+HOST.H
+
+Internals of the Android port's host library (libmain.so). See
+port/android/README.md for the overall design and
+port/android/include/halo_android_abi.h for the guest contract.
+*/
+
+#ifndef __HALO_ANDROID_HOST_H
+#define __HALO_ANDROID_HOST_H
+
+#include <stdarg.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "halo_android_abi.h"
+
+/* ---------- logging (logcat tag "halo")
+
+The priorities are the NDK's android/log.h values, because the guest is
+told what they are (port/android/guest/runtime/guest_host.h) and passes them
+to host_logf; on the Switch they only choose the letter the log line starts
+with, but keeping the numbers means the shared files need no changes. */
+
+void host_logf(int priority, const char *format, ...) __attribute__((format(printf, 2, 3)));
+#define HOST_LOG_INFO 4
+#define HOST_LOG_WARN 5
+#define HOST_LOG_ERROR 6
+/* the NDK's ANDROID_LOG_FATAL, which the Android host gets from
+<android/log.h>; here it is spelled out so host_main.c needs no change */
+#define HOST_LOG_FATAL 7
+/* guest services also used inside the host (host_main.c) */
+void host_exit(int code) __attribute__((noreturn));
+/* puts back the clocks host_sdl2.c raised for the game */
+void host_restore_clocks(void);
+int host_errno(void);
+
+/* One lock around every entry into the SD card driver. The logger already
+ * holds its lock across each line's write and fsync; the guest's file calls
+ * reach the same driver, which is not known to be thread-safe, so they take
+ * the same lock rather than a second one - a second lock would still let a
+ * guest read meet the logger's fsync inside the driver. Nothing that holds
+ * this lock may log. */
+void host_sd_lock(void);
+void host_sd_unlock(void);
+
+/* the host descriptor behind a guest one, or -1 (host_syscall.c) */
+int host_guest_fd(int guest_fd);
+
+/* logs, shows the message to the player and terminates */
+void host_fatal(const char *format, ...) __attribute__((format(printf, 1, 2), noreturn));
+
+/* ---------- guest memory (host_memory.c)
+
+All memory the guest can address lies below 4 GB. The host reserves the
+Xbox window and the image's range at start-up, and hands out pages for
+everything else (the guest's malloc arenas, thread stacks, anonymous
+mappings) from pools of address space it reserves below 4 GB on demand. */
+
+/* where the window was placed, for the guest's boot structure */
+uint32_t host_memory_window_base(void);
+uint32_t host_memory_image_base(void);
+
+/* The base of the largest range this port has reserved and not yet used,
+ * when one is at least `size`; 0 if none is. host_mman's allocator asks
+ * for this so that a large mapping - the Xbox contiguous window - lands
+ * where the rest of the port expects it rather than wherever its own search
+ * happened to land. See host_memory.c. */
+uint64_t host_memory_reserved_region(uint64_t size);
+
+/* Whether this port has set [address, address+size) aside, for the image, a
+ * pool or the window. host_mman's allocator asks this before handing an
+ * address out, so that the guest's heap does not grow into a range the rest
+ * of the port is relying on. See host_memory.c. */
+int host_memory_range_is_reserved(uint64_t address, uint64_t size);
+
+/* Whether this console will actually map a range at that address. Reports
+ * a range as usable only if a mapping was tried and accepted: asking the
+ * kernel whether anything is there is not enough, because the console
+ * refuses some addresses outright - 0x80000000, where the port wanted the
+ * Xbox contiguous window, is reported free and cannot be mapped at any
+ * size. The mapping made to find out is handed straight back. */
+int host_can_map_at(uint64_t address, uint64_t length);
+
+/* Lists the ranges this port has set aside, for the log. */
+void host_memory_log_reservations(void);
+/* Lists every extent the console can see, including the ones this port did
+ * not make - libraries, heaps, the loader - so that an address in a crash
+ * report can be attributed rather than guessed at. */
+
+int host_memory_initialize(uint32_t image_base, uint32_t image_size);
+/* starts the thread that reports the window's own contents (host_probe.c) */
+void host_probe_start(void);
+/* 1 if a fault on this thread, inside the window, is the probe's to
+handle, and has been sent back to it */
+int host_probe_skip_fault(uintptr_t address);
+/* page-granular allocations below 4 GB; NULL on failure */
+void *host_low_map(size_t size, int protection);
+void host_low_unmap(void *address, size_t size);
+/* 1 if [address, address + size) was handed out by host_low_map or is one of
+the fixed ranges */
+int host_low_owns(uintptr_t address, size_t size);
+/* the guest's mmap/munmap/mprotect/madvise/mremap (host_syscall.c) */
+long host_guest_mmap(uint64_t address, uint64_t size, int protection, int flags, int fd, int64_t offset);
+long host_guest_munmap(uint64_t address, uint64_t size);
+long host_guest_mprotect(uint64_t address, uint64_t size, int protection);
+
+/* ---------- the guest image (host_loader.c) */
+
+struct host_guest_image
+{
+	const struct halo_guest_header *header;
+	uint32_t base, end;
+	/* addresses of named guest globals, found in the ELF's symbol table when
+	the image was read, so that host-side diagnostics do not carry addresses
+	that a rebuild would move (0 for a name the build does not have) */
+	uint32_t cache_file_globals, global_tag_instances;
+};
+
+extern struct host_guest_image host_image;
+
+/* maps the image from the ELF file in memory; returns 0 on success */
+int host_load_image(const void *elf, size_t size);
+
+/* ---------- entering guest code (host_thread.c) */
+
+/* Runs the guest on a stack below 4 GB (guest_stack.S). One way: the old
+stack pointer is not saved and the call does not return, because the guest
+ends the process and this is only used by the game thread. */
+void guest_stack_enter(void *stack, void (*function)(void *), void *argument) __attribute__((noreturn));
+
+/* calls the guest function at address with up to four 32-bit arguments on
+this thread, which must have been made by host_native_thread_create (giving
+the thread a guest struct pthread first if it has none); returns the
+guest's w0 */
+uint32_t host_call_guest(uint32_t function, uint32_t a, uint32_t b, uint32_t c, uint32_t d);
+/* starts a thread running function(argument) with its stack in guest
+memory, so that it can call guest code; the stack is freed after it exits.
+Returns 0 or an errno value */
+int host_native_thread_create(void *(*function)(void *), void *argument, size_t stack_size);
+/* runs the guest's __guest_start on the calling thread (one made by
+host_native_thread_create); does not return */
+void host_run_guest_main(uint32_t boot) __attribute__((noreturn));
+
+/* ---------- debugging (host_debug.c) */
+
+void host_debug_thread_started(void);
+void host_debug_thread_exited(void);
+/* config.toml's debug.sample_seconds: seconds between samples of the guest
+threads, as text */
+void host_debug_start_sampler(const char *setting);
+
+/* The host's own stack, at the moment it decides it cannot continue. Called
+ * from host_fatal and anywhere else that has a failure worth attributing. */
+void host_backtrace(const char *reason);
+
+
+/* ---------- import table (host_imports.c) */
+
+/* the host function for an import name, or NULL */
+void *host_resolve_import(const char *name);
+
+/* ---------- SDL / GL (host_sdl.c, host_gl.c) */
+
+void *host_gl_resolve(const char *name);
+
+#endif
