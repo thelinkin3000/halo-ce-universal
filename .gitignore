@@ -30,3 +30,9 @@ original/
 
 # CI build outputs (tools/ci_build.py)
 dist/
+
+# Reference material kept alongside the tree, not part of it: another Switch
+# port of this game and a third-party homebrew development guide, with their
+# screenshots. Thirteen megabytes of someone else's repository, useful to
+# read and no business in ours.
+reference/
