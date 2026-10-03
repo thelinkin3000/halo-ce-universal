@@ -271,6 +271,30 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     # window, and changing it would be a larger edit than the Switch needs.
     guest_abi = " ".join(GUEST_ABI_FLAGS + ["-DHALO_ANDROID", "-DHALO_SWITCH"] +
                          (["-DHALO_RELEASE"] if getattr(sln, "port_release", False) else []))
+
+    # musl is configured for an Apple target and passes
+    # -fno-define-target-os-macros, which tells clang not to define that
+    # target's OS macros. Which clangs have it is not something to assume:
+    # Ubuntu's clang 18 has it and builds this port, the NDK's clang 17.0.2
+    # does not, and neither does the clang a Debian-based image installs. All
+    # three were tried from this one build file.
+    #
+    # So the compiler is asked instead. Dropping the flag is safe here because
+    # the two macros it suppresses, __APPLE__ and __MACH__, are already
+    # undefined on the next line of GUEST_ABI_FLAGS; what it does beyond that
+    # is decide whether a target macro is predefined, and this guest is not
+    # Apple's and does not care.
+    #
+    # Only the Switch build is changed. The Android build keeps the flag
+    # because the compiler it uses has always had it.
+    if "-fno-define-target-os-macros" in guest_abi:
+        probe = subprocess.run(
+            [guest_cc, "--target=arm64_32-apple-watchos", "-fno-define-target-os-macros",
+             "-E", "-x", "c", os.devnull, "-o", os.devnull],
+            capture_output=True)
+        if probe.returncode != 0:
+            n.comment("Switch build: this clang has no -fno-define-target-os-macros; leaving it out")
+            guest_abi = guest_abi.replace(" -fno-define-target-os-macros", "")
     # No -g on the guest, and that is a decision rather than an oversight.
     #
     # The guest has a symbol table either way, so a backtrace through the game
