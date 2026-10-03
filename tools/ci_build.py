@@ -29,6 +29,11 @@ OUTPUTS = {
     "linux": ["build/linux/halo"],
     "windows": ["build/windows/halo.exe", "build/windows/SDL3.dll"],
     "android": [],  # the APK, below
+    # the Switch is a host and a guest, and both are wanted: the NRO is the
+    # program the console runs, and the ELF is the ILP32 game image it loads
+    # from the card. A release with only the NRO is a release that cannot
+    # start.
+    "switch": ["build/switch/halo.nro", "build/switch/halo_guest.elf"],
 }
 APKS = {
     "debug": "port/android/app/build/outputs/apk/debug/app-debug.apk",
