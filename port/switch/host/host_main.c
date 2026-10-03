@@ -304,48 +304,6 @@ static void find_executable_root(void)
 	strcpy(executable_root, "sdmc:/switch/halo");
 }
 
-/* Move the previous run's log aside, keeping the last LOG_RUNS_KEPT of them.
- *
- * One log per launch overwrote the one before, so a run that worked was
- * destroyed by the next run that did not. That is a poor way to work when
- * the failure cannot be reproduced on demand: the interesting comparison is
- * between runs, and it cannot be made if only the latest one survives.
- *
- * So each run keeps its own file - halo.log for the current one, halo.1.log
- * for the one before, and so on. Twenty renames at start-up is nothing, and
- * a fixed number of files stops the card filling over a long session.
- *
- * Shifting rather than numbering with a stored counter is deliberate: slot
- * 1 always holds the newest complete run, so the set can be read
- * newest-first with no state anywhere, and nothing is lost if a run is
- * interrupted halfway through the shift. */
-#define LOG_RUNS_KEPT 20
-
-static void rotate_the_log(void)
-{
-	char from[PATH_MAX + 32];
-	char to[PATH_MAX + 32];
-	int index;
-
-	snprintf(from, sizeof(from), "%s/halo.log", executable_root);
-	if (access(from, F_OK) != 0)
-		return;
-	/* halo.19 goes first and is simply deleted, then each slot is shifted
-	 * up by one, and the live log becomes halo.1 */
-	for (index = LOG_RUNS_KEPT - 1; index >= 1; index--)
-	{
-		snprintf(from, sizeof(from), "%s/halo.%d.log", executable_root, index);
-		snprintf(to, sizeof(to), "%s/halo.%d.log", executable_root, index + 1);
-		if (access(from, F_OK) == 0)
-			rename(from, to);
-	}
-	snprintf(to, sizeof(to), "%s/halo.%d.log", executable_root, LOG_RUNS_KEPT);
-	remove(to);
-	snprintf(from, sizeof(from), "%s/halo.log", executable_root);
-	snprintf(to, sizeof(to), "%s/halo.1.log", executable_root);
-	rename(from, to);
-}
-
 static struct timespec extraction_started;
 
 static int directory_has_maps(const char *root)
@@ -967,7 +925,6 @@ int main(int argc, char *argv[])
 
 	setvbuf(stderr, NULL, _IOLBF, 0);
 	find_executable_root();
-	rotate_the_log();
 	{
 		char log_path[PATH_MAX + 32];
 

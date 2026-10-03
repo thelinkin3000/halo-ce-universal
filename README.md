@@ -64,8 +64,8 @@ The game finds it there on the first run and unpacks `maps/` itself, which
 takes a few minutes and writes about 1.7 GB, so leave the card in and keep that
 much space free. The log says which file it is copying and how far it has got.
 If you would rather unpack it yourself, `maps/` still works: put it at
-`sdmc:/switch/halo/maps/` and the game uses it as it is. Refer to
-[port/switch/README.md](port/switch/README.md).
+`sdmc:/switch/halo/maps/` and the game uses it as it is. The log is at
+`sdmc:/switch/halo/halo.log`.
 
 ## Platforms
 
@@ -76,7 +76,7 @@ Each platform has its own instructions:
 | Linux (32-bit x86 executable, OpenGL 4.5, SDL3) | [port/linux/README.md](port/linux/README.md) |
 | Windows (32-bit x86 executable, OpenGL 4.5, SDL3) | [port/windows/README.md](port/windows/README.md) |
 | Android (arm64 app, OpenGL ES 3, SDL3) | [port/android/README.md](port/android/README.md) |
-| Nintendo Switch (homebrew program, OpenGL ES 3, SDL2) | [port/switch/README.md](port/switch/README.md) |
+| Nintendo Switch (homebrew program, OpenGL ES 3, SDL2) | see the notes below |
 
 The Linux README also gives the controls, the settings and the multiplayer
 functions. These are almost the same on all platforms.
@@ -112,6 +112,22 @@ To build the game:
 | `ninja windows` (on Windows) | `build/windows/halo.exe` and `SDL3.dll` |
 | `ninja android_apk` | `port/android/app/build/outputs/apk/debug/app-debug.apk` |
 | `ninja switch` | `build/switch/halo.nro` and `build/switch/halo_guest.elf` |
+
+The Switch needs two toolchains and neither can be replaced by the other.
+devkitPro builds the host (`devkitA64`, `libnx`, `switch-sdl2`,
+`switch-mesa`, `switch-libdrm_nouveau`), and the Android NDK builds the game
+image, which is ILP32 AArch64 - 32-bit pointers, because the Xbox data
+formats embed them and have to keep their layout. devkitA64 cannot build it,
+being LP64 only. So the Switch build wants the same NDK as the Android build,
+found as it is there, plus devkitPro:
+
+```
+sudo dkp-pacman -S --needed devkitA64 libnx switch-sdl2 switch-mesa switch-libdrm_nouveau
+```
+
+`configure.py` finds devkitPro through `DEVKITPRO`, or `/opt/devkitpro`, or
+`~/devkitpro`. Both files are needed to run: the NRO is the program, and the
+ELF is the game image it loads from the card.
 
 If you enter `ninja` without a target, ninja builds the game for the
 computer that you use.
