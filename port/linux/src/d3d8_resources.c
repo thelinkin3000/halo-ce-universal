@@ -235,6 +235,15 @@ static void lock_level(const DWORD *resource, unsigned long face, unsigned long 
 	}
 	locked->Pitch = (INT)pitch;
 	locked->pBits = bits;
+#ifdef HALO_SWITCH
+	/* The console will not write-protect guest memory, so the renderer's
+	write watch cannot see the game write a texture; a lock is taken to
+	mean one is coming (the glyph cache's characters, every hardware bitmap
+	the game updates, go through here), and the texture up to this face is
+	drawn again from memory at its next use. */
+	if (resource_data(resource[1]))
+		memory_watch_prepare_write(resource_data(resource[1]), xgpu_texture_face_size(&description) * (face + 1));
+#endif
 }
 
 void WINAPI D3DTexture_LockRect(D3DTexture *texture, UINT level, D3DLOCKED_RECT *locked, CONST RECT *rectangle, DWORD flags)
@@ -270,6 +279,11 @@ void WINAPI D3DVolumeTexture_LockBox(D3DVolumeTexture *texture, UINT level, D3DL
 	locked->RowPitch = (INT)row_pitch;
 	locked->SlicePitch = (INT)slice;
 	locked->pBits = bits;
+#ifdef HALO_SWITCH
+	/* as lock_level */
+	if (resource_data(resource[1]))
+		memory_watch_prepare_write(resource_data(resource[1]), xgpu_texture_face_size(&description));
+#endif
 }
 
 static void describe_level(const DWORD *resource, unsigned long level, D3DSURFACE_DESC *description)
@@ -355,9 +369,26 @@ HRESULT WINAPI D3DDevice_CreateVertexBuffer(UINT length, DWORD usage, DWORD fvf,
 
 void WINAPI D3DVertexBuffer_Lock(D3DVertexBuffer *buffer, UINT offset, UINT size, BYTE **data, DWORD flags)
 {
-	(void)size;
 	(void)flags;
 	*data = buffer->Data ? (BYTE *)resource_data(buffer->Data) + offset : NULL;
+#ifdef HALO_SWITCH
+	/* as lock_level: the vertex mirror (d3d8_gl.c) cannot see the write
+	coming, so the lock says it (the detail objects - grass - rebuild their
+	vertices in a locked buffer every frame). Size 0 is the whole buffer. */
+	if (*data)
+	{
+		if (!size)
+		{
+			unsigned long length = platform_contiguous_block_size(resource_data(buffer->Data));
+
+			size = length > offset ? (UINT)(length - offset) : 0;
+		}
+		if (size)
+			memory_watch_prepare_write(*data, size);
+	}
+#else
+	(void)size;
+#endif
 }
 
 HRESULT WINAPI D3DDevice_CreateIndexBuffer(UINT length, DWORD usage, D3DFORMAT format, D3DPOOL pool, D3DIndexBuffer **result)
@@ -421,6 +452,15 @@ void WINAPI D3DPalette_Lock(D3DPalette *palette, D3DCOLOR **colors, DWORD flags)
 {
 	(void)flags;
 	*colors = (D3DCOLOR *)resource_data(palette->Data);
+#ifdef HALO_SWITCH
+	/* as lock_level */
+	if (*colors)
+	{
+		unsigned long length = platform_contiguous_block_size(*colors);
+
+		memory_watch_prepare_write(*colors, length ? length : 256 * sizeof(D3DCOLOR));
+	}
+#endif
 }
 
 /* ---------- D3DX */
