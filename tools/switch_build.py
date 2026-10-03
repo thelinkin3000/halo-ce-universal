@@ -93,7 +93,21 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
         n.comment("Switch build: no devkitPro found (set DEVKITPRO and DEVKITA64)")
         return
     portlibs = devkitpro / "portlibs" / "switch"
-    nacptool_author = os.environ.get("USER") or os.environ.get("LOGNAME") or "carlo"
+    # What the console shows for this program in its menus. Fixed rather than
+    # taken from the environment: $USER on a build machine is whoever's account
+    # ran it, which would put a different publisher on every release and on CI
+    # whatever the runner happens to be called.
+    nacp_title = "Halo: Combat Evolved"
+    nacp_author = "thelinkin3000"
+    nacp_version = "1.0.0"
+    # The icon does not go in the NACP: it is an asset, embedded by elf2nro
+    # below. A 256x256 JPEG, converted from the same master the Android icon
+    # comes from (port/android/art/android-icon.png, via tools/android_icon.py),
+    # so the launcher on the console and the one on the phone show the same
+    # picture rather than two pictures that happen to be a port of each other.
+    # absolute, for the same reason the paths below are: elf2nro reports
+    # "Failed to open input!" for a relative one
+    nro_icon = (Path.cwd() / PORT_DIR / "art" / "icon.jpg").resolve()
     if not (portlibs / "lib" / "libSDL2.a").is_file():
         n.comment("Switch build: devkitPro has no SDL2 (dkp-pacman -S switch-sdl2 switch-mesa)")
         return
@@ -444,12 +458,21 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
         LINUX_DIR / "src" / "posix_files.c",
         TOML_DIR / "tomlc17.c",
     ]
+    # the disc image reader, so a retail .iso on the card can be unpacked into
+    # the maps folder by the port itself rather than copied there by hand. It is
+    # the same source the desktop port and the guest use, built here without
+    # the game's platform layer (see the guard in xiso.c).
+    extractor_cflags = f"{host_cflags} -DHALO_EXTRACTOR_STANDALONE"
     host_objects: List[Path] = []
     for source in host_sources:
         obj = host_obj_dir / (source.name + ".o")
         n.build(outputs=obj, rule="switch_host_cc", inputs=source, variables={"cflags": host_cflags},
                 implicit=[syscall_h])
         host_objects.append(obj)
+    extractor = host_obj_dir / "xiso.c.o"
+    n.build(outputs=extractor, rule="switch_host_cc", inputs=LINUX_DIR / "src" / "xiso.c",
+            variables={"cflags": extractor_cflags}, implicit=[syscall_h])
+    host_objects.append(extractor)
 
     # the host dispatches on the guest's own syscall numbers, read from the
     # generated header rather than written out, so its objects depend on it
@@ -491,7 +514,8 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     # devkitPro's own tools, which live beside the compiler
     n.rule(
         name="switch_nacp",
-        command=f"{devkitpro / 'tools' / 'bin' / 'nacptool'} --create Halo {nacptool_author} 0.1.0 $out",
+        command=f"{devkitpro / 'tools' / 'bin' / 'nacptool'} "
+                f"--create '{nacp_title}' '{nacp_author}' {nacp_version} $out",
         description="SWITCH NACP $out",
     )
     n.build(outputs=nacp, rule="switch_nacp")
@@ -500,12 +524,17 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
         name="switch_nro",
         # elf2nro is given absolute paths: with relative ones it reports
         # success and writes nothing, which ninja does not notice.
+        #
+        # --icon goes after the two paths, not before them. Given first it
+        # answers "Failed to open input!" and builds nothing, which is a
+        # confusing way to say that an option has to follow the files it
+        # applies to.
         command=(f"{devkitpro / 'tools' / 'bin' / 'elf2nro'} "
                  f"{(Path.cwd() / str(elf)).resolve()} {(Path.cwd() / str(nro)).resolve()}"
-                 f" --nacp={(Path.cwd() / str(nacp)).resolve()}"),
+                 f" --icon={nro_icon} --nacp={(Path.cwd() / str(nacp)).resolve()}"),
         description="SWITCH NRO $out",
     )
-    n.build(outputs=nro, rule="switch_nro", inputs=[elf, nacp])
+    n.build(outputs=nro, rule="switch_nro", inputs=[elf, nacp, nro_icon])
 
     n.build(outputs="switch", rule="phony", inputs=[nro, image])
     n.newline()
