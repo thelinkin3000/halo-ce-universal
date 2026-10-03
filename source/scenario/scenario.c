@@ -1210,6 +1210,17 @@ boolean scenario_load(
 				tag_loaded(GAME_GLOBALS_TAG, "globals\\globals"));
 			if (scenario_switch_structure_bsp(0))
 				result = TRUE;
+#ifdef HALO_SWITCH
+			/* port: the renderer links the programs this map used last
+			time now, under the loading screen, rather than at their first
+			draw (port/linux/src/d3d8_gl.c, program records) */
+			if (result)
+			{
+				extern void d3d8_gl_map_loaded(const char *name);
+
+				d3d8_gl_map_loaded(name);
+			}
+#endif
 		}
 		else
 		{

@@ -189,6 +189,8 @@ do all generations */
 unsigned long memory_watch_serial(void);
 /* call before the host itself (read(), the kernel) writes into the range */
 void memory_watch_prepare_write(void *address, unsigned long size);
+/* the length of the contiguous block starting at address, or 0 */
+unsigned long platform_contiguous_block_size(const void *address);
 /* the range was remapped or reprotected: treat it as written and unwatched */
 void memory_watch_forget(void *address, unsigned long size);
 
