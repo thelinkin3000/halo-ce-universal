@@ -39,6 +39,8 @@ Sphaira the new build stopped as soon as it had started.
 
 #include "tomlc17.h"
 
+#include "host_ui.h"
+
 /* (given for this file by the build: tools/switch_build.py) */
 #ifndef HALO_BUILD_NUMBER
 #define HALO_BUILD_NUMBER 0
@@ -224,14 +226,11 @@ struct unpack
 
 static void draw_progress(const struct unpack *unpack)
 {
-	consoleClear();
-	printf("\x1b[3;3HUpdating to build %ld", unpack->build);
-	if (unpack->total > 0)
-		printf("\x1b[6;3H%lld of %lld MB", unpack->received / (1024 * 1024), unpack->total / (1024 * 1024));
-	else
-		printf("\x1b[6;3H%lld MB", unpack->received / (1024 * 1024));
-	printf("\x1b[43;3HB stop");
-	consoleUpdate(NULL);
+	char message[64];
+
+	snprintf(message, sizeof(message), "Downloading build %ld...", unpack->build);
+	host_ui_progress("UPDATING", message, unpack->received, unpack->total,
+		(const char *const[]){ "B", "Stop", NULL });
 }
 
 static int unpack_failed(struct unpack *unpack, const char *format, const char *detail)
@@ -394,26 +393,15 @@ static u64 wait_for(u64 buttons)
 
 		if (!appletMainLoop())
 		{
-			consoleExit(NULL);
+			host_ui_close();
 			host_exit(0);
 		}
 		padUpdate(menu_pad);
 		down = padGetButtonsDown(menu_pad);
 		if (down & buttons)
 			return down;
-		consoleUpdate(NULL);
+		svcSleepThread(16666667);
 	}
-}
-
-static void show(const char *title, const char *message, const char *keys)
-{
-	consoleClear();
-	printf("\x1b[3;3H%s", title);
-	printf("\x1b[6;3H%.76s", message);
-	if (strlen(message) > 76)
-		printf("\x1b[7;3H%.76s", message + 76);
-	printf("\x1b[43;3H%s", keys);
-	consoleUpdate(NULL);
 }
 
 /* new_path in place of target: the card will not rename onto a file that
@@ -534,7 +522,7 @@ void host_update_offer(void *pad)
 		host_logf(HOST_LOG_INFO, "update: update.auto is off in config.toml");
 		return;
 	}
-	show("Halo: Combat Evolved", "Looking for an update...", "");
+	host_ui_message("HALO: COMBAT EVOLVED", "Looking for an update...", NULL);
 	build = latest_build();
 	if (build <= HALO_BUILD_NUMBER)
 	{
@@ -544,7 +532,7 @@ void host_update_offer(void *pad)
 	}
 	host_logf(HOST_LOG_INFO, "update: build %ld is available (this is build %d)", build, HALO_BUILD_NUMBER);
 	snprintf(message, sizeof(message), "Build %ld is available; this is build %d.", build, HALO_BUILD_NUMBER);
-	show("An update is available", message, "A update now   B not now");
+	host_ui_message("AN UPDATE IS AVAILABLE", message, (const char *const[]){ "A", "Update now", "B", "Not now", NULL });
 	if (wait_for(HidNpadButton_A | HidNpadButton_B) & HidNpadButton_B)
 	{
 		host_logf(HOST_LOG_INFO, "update: not now");
@@ -552,7 +540,7 @@ void host_update_offer(void *pad)
 	}
 	if (!download_and_install(build, error, sizeof(error)))
 	{
-		show("The update did not finish", error, "B continue without it");
+		host_ui_message("THE UPDATE DID NOT FINISH", error, (const char *const[]){ "B", "Continue without it", NULL });
 		wait_for(HidNpadButton_B);
 		return;
 	}
@@ -560,6 +548,6 @@ void host_update_offer(void *pad)
 	/* the session goes on with this build (install, above) */
 	snprintf(message, sizeof(message), "Build %ld is installed. To use it, quit the game and start it again.",
 		build);
-	show("Update installed", message, "A continue");
+	host_ui_message("UPDATE INSTALLED", message, (const char *const[]){ "A", "Continue", NULL });
 	wait_for(HidNpadButton_A);
 }

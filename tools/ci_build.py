@@ -100,6 +100,10 @@ def main() -> int:
     # the text's fonts (port/assets/fonts), embedded in every build, whose
     # SIL Open Font License asks each copy to carry it
     shutil.copy2(ROOT / "port/assets/fonts/Overpass-OFL.txt", dist / "Overpass-OFL.txt")
+    if args.platform == "switch":
+        # and the Switch's menus' title font (port/switch/host/host_ui.c),
+        # under the same license
+        shutil.copy2(ROOT / "port/assets/fonts/OpenCE-OFL.txt", dist / "OpenCE-OFL.txt")
     return 0
 
 
