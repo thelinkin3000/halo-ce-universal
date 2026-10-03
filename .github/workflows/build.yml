@@ -278,14 +278,19 @@ jobs:
           curl -fsSL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
           unzip -q ndk.zip -d /opt
           rm ndk.zip
+          # ANDROID_NDK_HOME only. Its bin directory is deliberately *not* on
+          # PATH: musl is compiled by clang, and the NDK's clang 17 does not
+          # know -fno-define-target-os-macros, which musl's Apple-target
+          # configuration passes. The runner's own clang (18) does. The build
+          # calls the NDK's llvm-ar and ld.lld by path, so nothing needs it
+          # on PATH.
           echo "ANDROID_NDK_HOME=/opt/android-ndk-r26d" >> "$GITHUB_ENV"
-          echo "PATH=/opt/android-ndk-r26d/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH" >> "$GITHUB_ENV"
 
       - name: Install the build tools
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends python3 ninja-build ccache unzip curl zip
-          ccache --version | head -1
+          apt-get install -y --no-install-recommends python3 ninja-build ccache clang unzip curl zip
+          clang --version | head -1
 
       - uses: actions/checkout@v4
 
