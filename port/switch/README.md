@@ -78,20 +78,36 @@ docked or undocked while the game runs.
 
 ## Game data
 
-The game needs the `maps/` folder from an Xbox disc image (`.xiso` or
-`.iso`) of any version of the game, which this port does not include.
-`halo_extract.py`, from the Anbernic port in `reference/`, pulls `maps/`
-out of a disc image; put the disc image beside it and run it with Python 3.
+The game needs the `maps/` folder out of an Xbox disc image (`.xiso` or
+`.iso`) of any version of the game. The disc image itself is not included, and
+neither is `maps/`.
 
-The data goes in:
+Put the disc image on the card:
+
+```
+sdmc:/switch/halo/halo.iso
+```
+
+`halo.xiso`, `maps.iso` and `halo-xbox.iso` are also recognised, as is any
+other `.iso` or `.bin` in the same folder. There is no file browser on the
+console, so the name and the folder are fixed.
+
+The game unpacks `maps/` itself on the first run. That is about 1.7 GB written
+to the card and takes a few minutes, so leave the card in and make sure there
+is that much free; the log says which file it is copying and how far it has
+got. It reads the image the same way `extract-xiso` does, so all three disc
+formats work.
+
+Unpacking it yourself works too. If `maps/` is already there the game uses it
+and never looks for an image:
 
 ```
 sdmc:/switch/halo/maps/
 ```
 
-The game checks for `sdmc:/switch/halo/maps/ui.map` and refuses to start
-without it. Saves go in `sdmc:/switch/halo/save/`, and the settings file
-`config.toml` goes in `sdmc:/switch/halo/`.
+The game checks for `sdmc:/switch/halo/maps/ui.map` and, with no image
+either, refuses to start and says so. Saves go in `sdmc:/switch/halo/save/`,
+and the settings file `config.toml` goes in `sdmc:/switch/halo/`.
 
 ## The memory model
 
