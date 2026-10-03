@@ -1,12 +1,15 @@
 """Pull the run logs off the console, newest first, and clear them there.
 
-The port keeps the last twenty runs: halo.log is the current one, halo.1.log
-the run before it, and so on down to halo.19.log. Fetching only halo.log
-throws away the comparison, which is most of what there is to look at while
-the failure still comes and goes.
+Pulls the run log off the card and summarises it.
 
-    python3 tools/switch_logs.py            # fetch everything, summarise, clear the card
-    python3 tools/switch_logs.py 5          # ...and show the newest run in full
+The port keeps one log, halo.log, which it opens afresh on every run, so what
+comes back is the last run and not an accumulation. Earlier it kept twenty
+runs per card because the failures could not be reproduced on demand and
+comparing them was the only way to characterise one; that is a development
+aid and it does not belong on a player's card.
+
+    python3 tools/switch_logs.py            # fetch, summarise, clear the card
+    python3 tools/switch_logs.py 5          # ...and show the run in full
     python3 tools/switch_logs.py --keep     # fetch but leave the card alone
     python3 tools/switch_logs.py --no-fetch # just summarise what is already here
     python3 tools/switch_logs.py --atmosphere  # also fetch the port's crash reports
@@ -52,7 +55,7 @@ USAGE = "usage: switch_logs.py [N] [--keep] [--no-fetch] [--atmosphere]"
 
 
 def run_number(name):
-    """Sort key: halo.log is the newest, then halo.1.log, and so on."""
+    """Sort key, for any halo.N.log left over from an older build."""
     if name == "halo.log":
         return 0
     match = re.match(r"halo\.(\d+)\.log$", name)
