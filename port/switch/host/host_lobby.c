@@ -14,10 +14,8 @@ the desktop builds read a halo://join/ link they were opened with. Nothing in
 the guest knows the list exists.
 
 The list is fetched over HTTPS - the site answers plain HTTP with a redirect
-- through the console's own TLS (the ssl service), so the build carries no TLS
-library. The site's certificate leads to ISRG Root X1 through cross-signed
-intermediates; that root and X2 are imported into the connection's context,
-so the fetch does not depend on which roots this console's firmware carries.
+- through the console's own TLS (host_https.c). Before the menu, the updater
+(host_update.c) offers a newer release of the port if there is one.
 
 The menu is libnx's text console, drawn on the default window before SDL takes
 that window for the game; consoleExit gives it back. The console takes over
@@ -29,21 +27,15 @@ to stdout once it has gone.
 
 #include "../../linux/include/halo_port_limits.h"
 
-#include <errno.h>
-#include <netdb.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <unistd.h>
 
 #include <switch.h>
 
 #define LOBBY_HOST "halo.milenko.org"
 #define LOBBY_PATH "/v1/games.txt"
-#define LOBBY_TIMEOUT_SECONDS 10
 
 enum
 {
@@ -54,54 +46,6 @@ enum
 	/* the console is 80 columns by 45 rows at 1280x720 */
 	VISIBLE_GAMES = 32,
 };
-
-/* ISRG Root X1 and X2, which the site's chain ends at */
-static const char isrg_roots[] =
-	"-----BEGIN CERTIFICATE-----\n"
-	"MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw\n"
-	"TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh\n"
-	"cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4\n"
-	"WhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJu\n"
-	"ZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBY\n"
-	"MTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHP0FDfzm54rVygc\n"
-	"h77ct984kIxuPOZXoHj3dcKi/vVqbvYATyjb3miGbESTtrFj/RQSa78f0uoxmyF+\n"
-	"0TM8ukj13Xnfs7j/EvEhmkvBioZxaUpmZmyPfjxwv60pIgbz5MDmgK7iS4+3mX6U\n"
-	"A5/TR5d8mUgjU+g4rk8Kb4Mu0UlXjIB0ttov0DiNewNwIRt18jA8+o+u3dpjq+sW\n"
-	"T8KOEUt+zwvo/7V3LvSye0rgTBIlDHCNAymg4VMk7BPZ7hm/ELNKjD+Jo2FR3qyH\n"
-	"B5T0Y3HsLuJvW5iB4YlcNHlsdu87kGJ55tukmi8mxdAQ4Q7e2RCOFvu396j3x+UC\n"
-	"B5iPNgiV5+I3lg02dZ77DnKxHZu8A/lJBdiB3QW0KtZB6awBdpUKD9jf1b0SHzUv\n"
-	"KBds0pjBqAlkd25HN7rOrFleaJ1/ctaJxQZBKT5ZPt0m9STJEadao0xAH0ahmbWn\n"
-	"OlFuhjuefXKnEgV4We0+UXgVCwOPjdAvBbI+e0ocS3MFEvzG6uBQE3xDk3SzynTn\n"
-	"jh8BCNAw1FtxNrQHusEwMFxIt4I7mKZ9YIqioymCzLq9gwQbooMDQaHWBfEbwrbw\n"
-	"qHyGO0aoSCqI3Haadr8faqU9GY/rOPNk3sgrDQoo//fb4hVC1CLQJ13hef4Y53CI\n"
-	"rU7m2Ys6xt0nUW7/vGT1M0NPAgMBAAGjQjBAMA4GA1UdDwEB/wQEAwIBBjAPBgNV\n"
-	"HRMBAf8EBTADAQH/MB0GA1UdDgQWBBR5tFnme7bl5AFzgAiIyBpY9umbbjANBgkq\n"
-	"hkiG9w0BAQsFAAOCAgEAVR9YqbyyqFDQDLHYGmkgJykIrGF1XIpu+ILlaS/V9lZL\n"
-	"ubhzEFnTIZd+50xx+7LSYK05qAvqFyFWhfFQDlnrzuBZ6brJFe+GnY+EgPbk6ZGQ\n"
-	"3BebYhtF8GaV0nxvwuo77x/Py9auJ/GpsMiu/X1+mvoiBOv/2X/qkSsisRcOj/KK\n"
-	"NFtY2PwByVS5uCbMiogziUwthDyC3+6WVwW6LLv3xLfHTjuCvjHIInNzktHCgKQ5\n"
-	"ORAzI4JMPJ+GslWYHb4phowim57iaztXOoJwTdwJx4nLCgdNbOhdjsnvzqvHu7Ur\n"
-	"TkXWStAmzOVyyghqpZXjFaH3pO3JLF+l+/+sKAIuvtd7u+Nxe5AW0wdeRlN8NwdC\n"
-	"jNPElpzVmbUq4JUagEiuTDkHzsxHpFKVK7q4+63SM1N95R1NbdWhscdCb+ZAJzVc\n"
-	"oyi3B43njTOQ5yOf+1CceWxG1bQVs5ZufpsMljq4Ui0/1lvh+wjChP4kqKOJ2qxq\n"
-	"4RgqsahDYVvTH9w7jXbyLeiNdd8XM2w9U/t7y0Ff/9yi0GE44Za4rF2LN9d11TPA\n"
-	"mRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57d\n"
-	"emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=\n"
-	"-----END CERTIFICATE-----\n"
-	"-----BEGIN CERTIFICATE-----\n"
-	"MIICGzCCAaGgAwIBAgIQQdKd0XLq7qeAwSxs6S+HUjAKBggqhkjOPQQDAzBPMQsw\n"
-	"CQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJuZXQgU2VjdXJpdHkgUmVzZWFyY2gg\n"
-	"R3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBYMjAeFw0yMDA5MDQwMDAwMDBaFw00\n"
-	"MDA5MTcxNjAwMDBaME8xCzAJBgNVBAYTAlVTMSkwJwYDVQQKEyBJbnRlcm5ldCBT\n"
-	"ZWN1cml0eSBSZXNlYXJjaCBHcm91cDEVMBMGA1UEAxMMSVNSRyBSb290IFgyMHYw\n"
-	"EAYHKoZIzj0CAQYFK4EEACIDYgAEzZvVn4CDCuwJSvMWSj5cz3es3mcFDR0HttwW\n"
-	"+1qLFNvicWDEukWVEYmO6gbf9yoWHKS5xcUy4APgHoIYOIvXRdgKam7mAHf7AlF9\n"
-	"ItgKbppbd9/w+kHsOdx1ymgHDB/qo0IwQDAOBgNVHQ8BAf8EBAMCAQYwDwYDVR0T\n"
-	"AQH/BAUwAwEB/zAdBgNVHQ4EFgQUfEKWrt5LSDv6kviejM9ti6lyN5UwCgYIKoZI\n"
-	"zj0EAwMDaAAwZQIwe3lORlCEwkSHRhtFcP9Ymd70/aTSVaYgLXTWNLxBo1BfASdW\n"
-	"tL4ndQavEi51mI38AjEAi/V3bNTIZargCyzuFJ0nN6T5U6VR5CmD1/iQMVtCnwr1\n"
-	"/q4AaOeMSQ+2b1tbFfLn\n"
-	"-----END CERTIFICATE-----\n";
 
 struct lobby_game
 {
@@ -126,7 +70,8 @@ const char *host_join_link(void)
 	return join_link[0] ? join_link : NULL;
 }
 
-/* ---------- fetching the list */
+
+/* ---------- fetching the list (host_https.c) */
 
 static int fail(char *error, size_t error_size, const char *format, ...) __attribute__((format(printf, 3, 4)));
 
@@ -141,201 +86,40 @@ static int fail(char *error, size_t error_size, const char *format, ...)
 	return 0;
 }
 
-static int connect_to_the_list(char *error, size_t error_size)
+struct list_buffer
 {
-	struct addrinfo hints;
-	struct addrinfo *addresses = NULL;
-	struct addrinfo *address;
-	struct timeval timeout = { LOBBY_TIMEOUT_SECONDS, 0 };
-	int descriptor = -1;
-	int found;
+	char *text;
+	size_t length;
+};
 
-	memset(&hints, 0, sizeof(hints));
-	hints.ai_family = AF_INET;
-	hints.ai_socktype = SOCK_STREAM;
-	found = getaddrinfo(LOBBY_HOST, "443", &hints, &addresses);
-	if (found != 0 || !addresses)
-	{
-		fail(error, error_size, "Cannot look up %s. Is the console connected to the internet?", LOBBY_HOST);
-		return -1;
-	}
-	for (address = addresses; address && descriptor < 0; address = address->ai_next)
-	{
-		descriptor = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
-		if (descriptor < 0)
-			continue;
-		setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-		setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-		if (connect(descriptor, address->ai_addr, address->ai_addrlen) != 0)
-		{
-			close(descriptor);
-			descriptor = -1;
-		}
-	}
-	freeaddrinfo(addresses);
-	if (descriptor < 0)
-		fail(error, error_size, "Cannot reach %s (%s).", LOBBY_HOST, strerror(errno));
-	return descriptor;
+static int list_body(void *context, const void *data, size_t size, long long total)
+{
+	struct list_buffer *buffer = context;
+
+	(void)total;
+	if (buffer->length + size >= MAXIMUM_RESPONSE_SIZE)
+		return 0;
+	memcpy(buffer->text + buffer->length, data, size);
+	buffer->length += size;
+	return 1;
 }
 
-/* the body's length, once the headers are all there and say it; else -1 */
-static long content_length(const char *response, size_t length, size_t *body_offset)
+/* the list, null-terminated, in response (MAXIMUM_RESPONSE_SIZE); 0 with
+error said */
+static int fetch_the_list(char *response, char *error, size_t error_size)
 {
-	const char *end = NULL;
-	const char *field;
-	size_t index;
+	struct list_buffer buffer = { response, 0 };
+	int status = host_https_get("https://" LOBBY_HOST LOBBY_PATH, 1, list_body, &buffer, NULL, 0, error,
+		error_size);
 
-	for (index = 0; index + 4 <= length; index++)
-	{
-		if (!memcmp(response + index, "\r\n\r\n", 4))
-		{
-			end = response + index;
-			break;
-		}
-	}
-	if (!end)
-		return -1;
-	*body_offset = (size_t)(end - response) + 4;
-	for (field = response; field && field < end; field = strstr(field, "\r\n"), field = field ? field + 2 : NULL)
-	{
-		if (!strncasecmp(field, "Content-Length:", 15))
-			return strtol(field + 15, NULL, 10);
-	}
-	return -1;
-}
-
-/* the list's body, null-terminated, in response; returns its offset there,
-or -1 with error said */
-static long fetch_the_list(char *response, size_t size, char *error, size_t error_size)
-{
-	static const char request[] =
-		"GET " LOBBY_PATH " HTTP/1.1\r\n"
-		"Host: " LOBBY_HOST "\r\n"
-		"User-Agent: halo-ce-universal-switch\r\n"
-		"Accept: text/plain\r\n"
-		"Connection: close\r\n"
-		"\r\n";
-	SslContext context;
-	SslConnection connection;
-	int have_ssl = 0, have_context = 0, have_connection = 0;
-	int descriptor;
-	long result = -1;
-	size_t length = 0;
-	size_t body_offset = 0;
-	long body_length = -1;
-	Result status;
-
-	descriptor = connect_to_the_list(error, error_size);
-	if (descriptor < 0)
-		return -1;
-	status = sslInitialize(1);
-	if (R_FAILED(status))
-	{
-		fail(error, error_size, "The console's TLS service is not available (0x%08x).", (unsigned)status);
-		goto done;
-	}
-	have_ssl = 1;
-	status = sslCreateContext(&context, SslVersion_Auto);
-	if (R_FAILED(status))
-	{
-		fail(error, error_size, "Cannot set up TLS (0x%08x).", (unsigned)status);
-		goto done;
-	}
-	have_context = 1;
-	/* not fatal: the firmware's own roots may be enough */
-	status = sslContextImportServerPki(&context, isrg_roots, sizeof(isrg_roots), SslCertificateFormat_Pem, NULL);
-	if (R_FAILED(status))
-		host_logf(HOST_LOG_WARN, "lobby: could not import the ISRG roots (0x%08x)", (unsigned)status);
-	status = sslContextCreateConnection(&context, &connection);
-	if (R_FAILED(status))
-	{
-		fail(error, error_size, "Cannot set up TLS (0x%08x).", (unsigned)status);
-		goto done;
-	}
-	have_connection = 1;
-	/* the socket stays this file's to close, whatever the service does */
-	sslConnectionSetOption(&connection, SslOptionType_DoNotCloseSocket, true);
-	if (socketSslConnectionSetSocketDescriptor(&connection, descriptor) < 0 && errno != ENOENT)
-	{
-		fail(error, error_size, "Cannot hand the connection to TLS (%s).", strerror(errno));
-		goto done;
-	}
-	sslConnectionSetHostName(&connection, LOBBY_HOST, sizeof(LOBBY_HOST) - 1);
-	status = sslConnectionDoHandshake(&connection, NULL, NULL, NULL, 0);
-	if (R_FAILED(status))
-	{
-		fail(error, error_size, "The secure connection to %s failed (0x%08x).", LOBBY_HOST, (unsigned)status);
-		goto done;
-	}
-	{
-		u32 written = 0;
-		size_t sent = 0;
-
-		while (sent < sizeof(request) - 1)
-		{
-			status = sslConnectionWrite(&connection, request + sent, (u32)(sizeof(request) - 1 - sent), &written);
-			if (R_FAILED(status) || !written)
-			{
-				fail(error, error_size, "Cannot send the request to %s (0x%08x).", LOBBY_HOST, (unsigned)status);
-				goto done;
-			}
-			sent += written;
-		}
-	}
-	/* to the end of the body, or until the server closes */
-	while (length < size - 1)
-	{
-		u32 received = 0;
-
-		status = sslConnectionRead(&connection, response + length, (u32)(size - 1 - length), &received);
-		if (R_FAILED(status) || !received)
-			break;
-		length += received;
-		if (body_length < 0)
-			body_length = content_length(response, length, &body_offset);
-		if (body_length >= 0 && length >= body_offset + (size_t)body_length)
-			break;
-	}
-	response[length] = 0;
-	if (body_length < 0)
-		body_length = content_length(response, length, &body_offset);
-	if (strncmp(response, "HTTP/1.", 7) || length < 12)
-	{
-		fail(error, error_size, "%s sent no answer.", LOBBY_HOST);
-		goto done;
-	}
-	{
-		int code = atoi(response + 9);
-
-		if (code == 429)
-		{
-			fail(error, error_size, "The list is busy (too many requests). Try again in a minute.");
-			goto done;
-		}
-		if (code != 200)
-		{
-			fail(error, error_size, "The list answered with error %d.", code);
-			goto done;
-		}
-	}
-	if (!body_offset)
-	{
-		fail(error, error_size, "The list's answer was cut off.");
-		goto done;
-	}
-	if (body_length >= 0 && body_offset + (size_t)body_length < length)
-		response[body_offset + (size_t)body_length] = 0;
-	result = (long)body_offset;
-
-done:
-	if (have_connection)
-		sslConnectionClose(&connection);
-	if (have_context)
-		sslContextClose(&context);
-	if (have_ssl)
-		sslExit();
-	close(descriptor);
-	return result;
+	if (status < 0)
+		return 0;
+	if (status == 429)
+		return fail(error, error_size, "The list is busy (too many requests). Try again in a minute.");
+	if (status != 200)
+		return fail(error, error_size, "The list answered with error %d.", status);
+	response[buffer.length] = 0;
+	return 1;
 }
 
 /* ---------- reading it
@@ -425,18 +209,18 @@ static void read_the_list(char *body)
 static int refresh(char *error, size_t error_size)
 {
 	char *response = malloc(MAXIMUM_RESPONSE_SIZE);
-	long body;
+	int fetched;
 
 	if (!response)
 		return fail(error, error_size, "Out of memory for the list.");
-	body = fetch_the_list(response, MAXIMUM_RESPONSE_SIZE, error, error_size);
-	if (body >= 0)
+	fetched = fetch_the_list(response, error, error_size);
+	if (fetched)
 	{
-		read_the_list(response + body);
+		read_the_list(response);
 		host_logf(HOST_LOG_INFO, "lobby: %d games to join (%d left out)", game_count, games_left_out);
 	}
 	free(response);
-	return body >= 0;
+	return fetched;
 }
 
 /* ---------- the menu */
@@ -589,6 +373,8 @@ void host_lobby_choose(void)
 
 	padInitializeDefault(&pad);
 	consoleInit(NULL);
+	/* a newer release first: taking it restarts the program from here */
+	host_update_offer(&pad);
 	for (;;)
 	{
 		u64 down;

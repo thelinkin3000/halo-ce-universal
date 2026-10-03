@@ -31,7 +31,7 @@ from .android_build import (ANDROID_API, GUEST_ABI_FLAGS, GUEST_CODE_FLAGS, MUSL
 from .linux_build import (LINUX_PROFILE, MINIUPNPC_DEFINES, MINIUPNPC_DIR, MUSL_MATH_DIR, XDK_INCLUDE,
                           compile_launcher, game_defines_and_includes, game_sources, miniupnpc_sources,
                           musl_math_sources, pgo_mode, pgo_profile,
-                          profile_use_flags, xdk_headers)
+                          profile_use_flags, updater_defines, xdk_headers)
 from .embed_assets import hud_assets_build, hud_configure_inputs
 from .ninja_syntax import Writer
 
@@ -490,7 +490,13 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     host_objects: List[Path] = []
     for source in host_sources:
         obj = host_obj_dir / (source.name + ".o")
-        n.build(outputs=obj, rule="switch_host_cc", inputs=source, variables={"cflags": host_cflags},
+        cflags = host_cflags
+        # the self-updater knows its build number and flavour (as the
+        # desktop's and Android's do), and only it, so a new number rebuilds
+        # one file
+        if source.name == "host_update.c":
+            cflags = f"{host_cflags} {updater_defines(getattr(sln, 'port_release', False))}"
+        n.build(outputs=obj, rule="switch_host_cc", inputs=source, variables={"cflags": cflags},
                 implicit=[syscall_h])
         host_objects.append(obj)
     extractor = host_obj_dir / "xiso.c.o"
