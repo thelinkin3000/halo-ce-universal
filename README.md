@@ -19,10 +19,10 @@ builds of the latest release:
 
 | Platform | Release | Debug |
 | --- | --- | --- |
-| Linux | [halo-linux-release.zip](https://github.com/OpenCommunityEdition/OpenCE/releases/latest/download/halo-linux-release.zip) | [halo-linux-debug.zip](https://github.com/OpenCommunityEdition/OpenCE/releases/latest/download/halo-linux-debug.zip) |
-| Windows | [halo-windows-release.zip](https://github.com/OpenCommunityEdition/OpenCE/releases/latest/download/halo-windows-release.zip) | [halo-windows-debug.zip](https://github.com/OpenCommunityEdition/OpenCE/releases/latest/download/halo-windows-debug.zip) |
-| Android | [halo-android-release.zip](https://github.com/OpenCommunityEdition/OpenCE/releases/latest/download/halo-android-release.zip) | [halo-android-debug.zip](https://github.com/OpenCommunityEdition/OpenCE/releases/latest/download/halo-android-debug.zip) |
-| Nintendo Switch | [halo-switch-release.zip](https://github.com/OpenCommunityEdition/OpenCE/releases/latest/download/halo-switch-release.zip) | [halo-switch-debug.zip](https://github.com/OpenCommunityEdition/OpenCE/releases/latest/download/halo-switch-debug.zip) |
+| Linux | [halo-linux-release.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/halo-linux-release.zip) | [halo-linux-debug.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/halo-linux-debug.zip) |
+| Windows | [halo-windows-release.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/halo-windows-release.zip) | [halo-windows-debug.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/halo-windows-debug.zip) |
+| Android | [halo-android-release.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/halo-android-release.zip) | [halo-android-debug.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/halo-android-debug.zip) |
+| Nintendo Switch | [halo-switch-release.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/halo-switch-release.zip) | [halo-switch-debug.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/halo-switch-debug.zip) |
 
 Use the release build to play. The debug build stops at the first failed
 assertion and writes it to the log. Use the debug build to find and report
@@ -33,7 +33,7 @@ if you want to install it. Refer to "Updates" in
 [port/linux/README.md](port/linux/README.md#updates).
 
 Each build of the `main` branch that passes on all four platforms is a new
-release. The [Releases](https://github.com/OpenCommunityEdition/OpenCE/releases)
+release. The [Releases](https://github.com/thelinkin3000/halo-ce-universal/releases)
 page keeps the last five releases. If the latest build has a problem, get
 an older build from that page.
 
