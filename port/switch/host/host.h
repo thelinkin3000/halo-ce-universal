@@ -159,6 +159,14 @@ void host_debug_start_sampler(const char *setting);
 void host_backtrace(const char *reason);
 
 
+/* ---------- the menu before the game (host_lobby.c) */
+
+/* asks whether to play as usual or join an internet game from the community
+list, and returns once the game should start; quits the program if asked */
+void host_lobby_choose(void);
+/* the halo://join/ link of the internet game chosen there, or NULL */
+const char *host_join_link(void);
+
 /* ---------- import table (host_imports.c) */
 
 /* the host function for an import name, or NULL */
