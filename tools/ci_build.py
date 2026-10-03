@@ -133,6 +133,10 @@ def main() -> int:
     # Android's APK has its own copy)
     if args.platform != "android":
         shutil.copy2(ROOT / "port/assets/network/brokers.txt", dist / "brokers.txt")
+    if args.platform == "switch":
+        # and the Switch's menus' title font (port/switch/host/host_ui.c),
+        # under the same license
+        shutil.copy2(ROOT / "port/assets/fonts/OpenCE-OFL.txt", dist / "OpenCE-OFL.txt")
     return 0
 
 
