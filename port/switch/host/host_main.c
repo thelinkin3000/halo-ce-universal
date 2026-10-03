@@ -304,6 +304,12 @@ static void find_executable_root(void)
 	strcpy(executable_root, "sdmc:/switch/halo");
 }
 
+/* the folder the guest image is loaded from (the updater replaces it there) */
+const char *host_executable_root(void)
+{
+	return executable_root;
+}
+
 static struct timespec extraction_started;
 
 static int directory_has_maps(const char *root)
@@ -988,6 +994,8 @@ int main(int argc, char *argv[])
 	log_marker("marker: main() entered");
 	log_marker("marker: log file opened");
 	host_logf(HOST_LOG_INFO, "Halo for Switch starting (%s)", executable_root);
+	/* the game image an update installed last time, before anything loads it */
+	host_update_finish();
 	/* Ask for more memory than the console's default for a homebrew
 	 * process.
 	 *

@@ -159,6 +159,36 @@ void host_debug_start_sampler(const char *setting);
 void host_backtrace(const char *reason);
 
 
+/* ---------- HTTPS (host_https.c) */
+
+/* the longest link followed or handed back (GitHub's signed download links
+are some 900 characters) */
+#define HOST_HTTPS_MAXIMUM_URL 2048
+
+/* takes a piece of a body as it arrives (total is its whole length, or -1 if
+the server did not say); returns 0 to stop */
+typedef int (*host_https_body)(void *context, const void *data, size_t size, long long total);
+
+/* GET url (https://...). A 200's body goes to body, in pieces; redirects are
+followed if follow_redirects, and the last Location seen is copied to location
+either way. Returns the last status, or -1 with error said. */
+int host_https_get(const char *url, int follow_redirects, host_https_body body, void *context, char *location,
+	size_t location_size, char *error, size_t error_size);
+
+/* ---------- the updater (host_update.c) */
+
+/* the folder the port's files are in: sdmc:/switch/halo (host_main.c) */
+const char *host_executable_root(void);
+
+/* in the menu before the game, with the console up: offers a newer release
+of the port if there is one, and installs it if the player agrees, for the
+next start; returns in every case, the session going on as it was. pad is the
+menu's PadState. */
+void host_update_offer(void *pad);
+/* first thing at start, before the game image is loaded: puts in place the
+image an update left waiting (halo_guest.elf.new), if there is one */
+void host_update_finish(void);
+
 /* ---------- the menu before the game (host_lobby.c) */
 
 /* asks whether to play as usual or join an internet game from the community
