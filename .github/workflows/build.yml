@@ -256,18 +256,40 @@ jobs:
       DEVKITPRO: /opt/devkitpro
       DEVKITA64: /opt/devkitpro/devkitA64
     steps:
-      - name: Install the toolchain
+      # devkitPro through its apt repository and its own pacman, rather than
+      # through install-devkitpro-pacman. That script asks questions - where to
+      # install, whether to proceed - and a step that waits for an answer fails
+      # a build with no explanation worth having. The repository is the same one
+      # that script configures, and this way every step is non-interactive.
+      - name: Install devkitPro
         run: |
+          sudo mkdir -p /etc/apt/keyrings
+          curl -fsSL https://apt.devkitpro.org/devkitpro-pub.gpg \
+            | sudo gpg --dearmor -o /etc/apt/keyrings/devkitpro.gpg
+          echo "deb [signed-by=/etc/apt/keyrings/devkitpro.gpg] https://apt.devkitpro.org stable main" \
+            | sudo tee /etc/apt/sources.list.d/devkitpro.list
           sudo apt-get update
-          sudo apt-get install -y wget pkg-config libarchive-dev
-          wget -q https://apt.devkitpro.org/install-devkitpro-pacman
-          chmod +x ./install-devkitpro-pacman
-          sudo ./install-devkitpro-pacman
-          # devkitA64 for the compiler and libnx, SDL2 for the window and the
-          # shim above it, Mesa for the OpenGL ES the game's rasterizer ends up
-          # calling
-          sudo dkp-pacman -Syu --noconfirm devkitA64 switch-sdl2 switch-mesa
-          echo "/opt/devkitpro/tools/bin" >> "$GITHUB_PATH"
+          sudo apt-get install -y --no-install-recommends devkitpro-pacman
+
+      # devkitA64 for the compiler and libnx, SDL2 for the window and the shim
+      # above it, Mesa for the OpenGL ES the game's rasterizer ends up calling
+      - name: Install the Switch packages
+        run: |
+          # dkp-pacman is not on the runner's PATH by default; it comes with
+          # the repository above, and naming it by path keeps this step from
+          # depending on which of the two places it landed in.
+          DKP="$(command -v dkp-pacman || echo /opt/devkitpro/pacman/bin/dkp-pacman)"
+          sudo "$DKP" -Syu --noconfirm devkitA64 switch-sdl2 switch-mesa
+          # prove the three things the build needs are actually there, with a
+          # message that says which one is missing rather than leaving it to a
+          # confusing failure two steps later
+          /opt/devkitpro/devkitA64/bin/aarch64-none-elf-gcc --version
+          test -f /opt/devkitpro/portlibs/switch/lib/libSDL2.a || { echo "::error::SDL2 not installed"; exit 1; }
+          test -f /opt/devkitpro/portlibs/switch/lib/libGLESv2.a || { echo "::error::Mesa not installed"; exit 1; }
+          test -f /opt/devkitpro/libnx/lib/libnx.a || { echo "::error::libnx not installed"; exit 1; }
+
+      - name: Install the build tools
+        run: |
           mkdir -p "$RUNNER_TEMP/tools"
           curl -fsSL -o ninja.zip https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-linux.zip
           unzip -q ninja.zip -d "$RUNNER_TEMP/tools" && rm ninja.zip
