@@ -91,22 +91,6 @@ offer.
 
 static __thread int last_error;
 
-/* the first failures, said: the game turns them into Winsock codes it
-handles quietly, so without this a network that does nothing says nothing */
-#define SOCKET_FAILURES_LOGGED 30
-
-static int fail_noted(const char *what)
-{
-	static volatile int said;
-
-	if (said < SOCKET_FAILURES_LOGGED)
-	{
-		said++;
-		host_logf(HOST_LOG_WARN, "socket: %s failed: %s (errno %d)", what, strerror(errno), errno);
-	}
-	return 0;
-}
-
 static int fail(void)
 {
 	switch (errno)
@@ -220,25 +204,6 @@ static uint32_t directed_broadcast(void)
 	return (address & mask) | ~mask;
 }
 
-static void socket_note(const char *what, int socket, const struct sockaddr_storage *address)
-{
-	static volatile int said;
-
-	if (said >= 40)
-		return;
-	said++;
-	if (address && address->ss_family == AF_INET)
-	{
-		const struct sockaddr_in *in = (const struct sockaddr_in *)address;
-		char text[INET_ADDRSTRLEN] = "?";
-
-		inet_ntop(AF_INET, &in->sin_addr, text, sizeof(text));
-		host_logf(HOST_LOG_INFO, "socket %d: %s %s:%u", socket, what, text, (unsigned)ntohs(in->sin_port));
-	}
-	else
-		host_logf(HOST_LOG_INFO, "socket %d: %s", socket, what);
-}
-
 int posix_socket_last_error(void)
 {
 	return last_error;
@@ -246,13 +211,7 @@ int posix_socket_last_error(void)
 
 int posix_socket(int family, int type, int protocol)
 {
-	int result = socket(family, type, protocol);
-
-	if (result >= 0)
-		socket_note(type == SOCK_DGRAM ? "created (datagram)" : "created (stream)", result, NULL);
-	else
-		fail_noted("socket");
-	return succeed(result);
+	return succeed(socket(family, type, protocol));
 }
 
 int posix_socket_close(int socket)
@@ -267,10 +226,6 @@ int posix_socket_bind(int socket, const void *address, int address_length)
 
 	int result = bind(socket, (struct sockaddr *)&converted, length);
 
-	if (result >= 0)
-		socket_note("bound to", socket, &converted);
-	else
-		fail_noted("bind");
 	return succeed(result);
 }
 
@@ -334,18 +289,6 @@ int posix_socket_sendto(int socket, const void *buffer, int length, int flags,
 	}
 	result = (int)sendto(socket, buffer, (size_t)length, flags | MSG_NOSIGNAL,
 		address ? (struct sockaddr *)&converted : NULL, converted_length);
-	if (broadcast)
-	{
-		static int said;
-
-		if (said < 5)
-		{
-			said++;
-			socket_note(result >= 0 ? "broadcast sent to" : "broadcast failed to", socket, &converted);
-		}
-	}
-	if (result < 0)
-		fail_noted("sendto");
 	return succeed(result);
 }
 
@@ -371,18 +314,7 @@ int posix_socket_recvfrom(int socket, void *buffer, int length, int flags,
 	message.msg_iovlen = 1;
 	result = (int)recvmsg(socket, &message, flags);
 	if (result >= 0 && address && address_length)
-	{
-		static int said;
-
-		if (said < 10)
-		{
-			said++;
-			socket_note("received a datagram from", socket, &converted);
-		}
 		address_out(&converted, message.msg_namelen, address, address_length);
-	}
-	if (result < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
-		fail_noted("recvfrom");
 	/* a datagram larger than the buffer: both give its start, but Winsock
 	with WSAEMSGSIZE, which the game takes as an error, not as the datagram */
 	if (result >= 0 && (message.msg_flags & MSG_TRUNC))
@@ -460,11 +392,7 @@ int posix_socket_setsockopt(int socket, int level, int name, const void *value, 
 		return 0;
 	}
 	{
-		int result = setsockopt(socket, host_level, host_name, value, (socklen_t)length);
-
-		if (result < 0)
-			fail_noted("setsockopt");
-		return succeed(result);
+		return succeed(setsockopt(socket, host_level, host_name, value, (socklen_t)length));
 	}
 }
 
