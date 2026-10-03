@@ -1,0 +1,8 @@
+# the probes' build outputs (make)
+*.o
+*.d
+*.elf
+*.nro
+*.nacp
+*.lst
+*.map

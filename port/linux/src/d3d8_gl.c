@@ -174,6 +174,10 @@ struct vertex_shader_object
 	unsigned long packed_mask;
 	/* [0] streams per the declaration, [1] immediate mode (all floats) */
 	GLuint shader[2];
+	/* the declaration's packed mask each was compiled with: the source
+	depends on it, and a shader is compiled once (the Switch's program
+	records replay it) */
+	unsigned long compiled_mask[2];
 };
 
 /* ---------- programs */
@@ -1694,6 +1698,10 @@ static void parse_declaration(struct vertex_shader_object *object, const DWORD *
 	}
 }
 
+#ifdef HALO_SWITCH
+static void vertex_shader_note(struct vertex_shader_object *object);
+#endif
+
 HRESULT WINAPI D3DDevice_CreateVertexShader(CONST DWORD *declaration, CONST DWORD *function, DWORD *handle, DWORD usage)
 {
 	struct vertex_shader_object *object = calloc(1, sizeof(*object));
@@ -1711,6 +1719,9 @@ HRESULT WINAPI D3DDevice_CreateVertexShader(CONST DWORD *declaration, CONST DWOR
 		memcpy(object->instructions, function + 1, object->instruction_count * 4 * sizeof(DWORD));
 	}
 	parse_declaration(object, declaration);
+#ifdef HALO_SWITCH
+	vertex_shader_note(object);
+#endif
 	/* odd values are FVF codes; programmable shader handles are even */
 	*handle = (DWORD)object;
 	return S_OK;
@@ -1799,15 +1810,13 @@ static unsigned long hash_words(const void *data, unsigned long size)
 	return hash;
 }
 
-static GLuint vertex_shader_get(struct vertex_shader_object *program, BOOL immediate)
+static void vertex_shader_compile(struct vertex_shader_object *program, int variant, unsigned long packed_mask)
 {
-	int variant = immediate ? 1 : 0;
-
-	if (!program->shader[variant])
 	{
 		char *source = nv2a_vertex_shader_to_glsl(program->instructions, program->instruction_count,
-			immediate ? 0 : device.vertex_shader->packed_mask);
+			packed_mask);
 
+		program->compiled_mask[variant] = packed_mask;
 		program->shader[variant] = compile_shader(GL_VERTEX_SHADER, source, "vertex");
 		if (debug_settings.dump_shaders)
 		{
@@ -1823,6 +1832,14 @@ static GLuint vertex_shader_get(struct vertex_shader_object *program, BOOL immed
 		}
 		free(source);
 	}
+}
+
+static GLuint vertex_shader_get(struct vertex_shader_object *program, BOOL immediate)
+{
+	int variant = immediate ? 1 : 0;
+
+	if (!program->shader[variant])
+		vertex_shader_compile(program, variant, immediate ? 0 : device.vertex_shader->packed_mask);
 	return program->shader[variant];
 }
 
@@ -1873,6 +1890,191 @@ static GLuint fragment_shader_get(const struct nv2a_pixel_shader_key *key)
 	return entry->shader;
 }
 
+#ifdef HALO_SWITCH
+/* ---------- program records (Switch)
+
+Linking a program costs Mesa 20 to 56 ms here, because the nouveau compiler
+runs at link time, and a new area or effect asks for ten or twenty at once:
+the game's hitches, 300 to 900 ms. Mesa on the Switch is built without its
+shader cache, so neither it nor GL_OES_get_program_binary can keep a compiled
+program between runs. What can be kept is which programs each map needed:
+the vertex shader (by its id - the game creates them once, from a fixed
+table, in the same order every time), its variant and the packed mask it was
+compiled with, and the pixel shader's key. When a map loads, its programs are
+compiled and linked there and then, under the loading screen, instead of in
+the middle of play. */
+#define PROGRAM_RECORD_MAGIC 0x31435350UL /* "PSC1" */
+#define PROGRAM_RECORD_PATH "z:\\shader_programs.bin"
+#define PROGRAM_RECORD_SAVE_FRAMES 600
+
+struct program_record
+{
+	DWORD map_hash;
+	DWORD vertex_id;
+	DWORD variant;
+	DWORD packed_mask;
+	struct nv2a_pixel_shader_key key;
+};
+
+static struct program_record *program_records;
+static unsigned long program_record_count, program_record_capacity, program_records_saved;
+static BOOL program_records_loaded;
+static DWORD program_record_map;
+static BOOL program_linked_now;
+static struct vertex_shader_object **vertex_shaders_by_id;
+static unsigned long vertex_shaders_by_id_count;
+
+static void program_records_path(char *path, unsigned long size)
+{
+	platform_translate_path(PROGRAM_RECORD_PATH, path, size);
+}
+
+/* (a record read from the file is not checked against the others: the file
+holds each once, and checking every one on loading is quadratic in a list
+that a whole campaign makes thousands long) */
+static BOOL program_record_add(const struct program_record *record, BOOL check)
+{
+	unsigned long index;
+
+	for (index = 0; check && index < program_record_count; index++)
+	{
+		if (!memcmp(&program_records[index], record, sizeof(*record)))
+			return FALSE;
+	}
+	if (program_record_count == program_record_capacity)
+	{
+		unsigned long capacity = program_record_capacity ? program_record_capacity * 2 : 256;
+		struct program_record *grown = realloc(program_records, capacity * sizeof(*grown));
+
+		if (!grown)
+			return FALSE;
+		program_records = grown;
+		program_record_capacity = capacity;
+	}
+	program_records[program_record_count++] = *record;
+	return TRUE;
+}
+
+static void program_records_load(void)
+{
+	char path[512];
+	FILE *file;
+	DWORD header[2];
+	struct program_record record;
+
+	if (program_records_loaded)
+		return;
+	program_records_loaded = TRUE;
+	program_records_path(path, sizeof(path));
+	if ((file = fopen(path, "rb")) == NULL)
+		return;
+	/* a record from a build whose key differs in size is no use */
+	if (fread(header, sizeof(header), 1, file) == 1 && header[0] == PROGRAM_RECORD_MAGIC &&
+		header[1] == sizeof(record))
+	{
+		while (fread(&record, sizeof(record), 1, file) == 1)
+			program_record_add(&record, FALSE);
+	}
+	fclose(file);
+	program_records_saved = program_record_count;
+}
+
+static void program_records_save(void)
+{
+	char path[512];
+	FILE *file;
+
+	if (program_records_saved == program_record_count)
+		return;
+	program_records_path(path, sizeof(path));
+	if (program_records_saved == 0)
+	{
+		DWORD header[2] = { PROGRAM_RECORD_MAGIC, sizeof(struct program_record) };
+
+		if ((file = fopen(path, "wb")) == NULL)
+			return;
+		fwrite(header, sizeof(header), 1, file);
+	}
+	else if ((file = fopen(path, "ab")) == NULL)
+		return;
+	fwrite(&program_records[program_records_saved], sizeof(struct program_record),
+		program_record_count - program_records_saved, file);
+	fclose(file);
+	program_records_saved = program_record_count;
+}
+
+static void vertex_shader_note(struct vertex_shader_object *object)
+{
+	if (object->id >= vertex_shaders_by_id_count)
+	{
+		unsigned long count = object->id + 64;
+		struct vertex_shader_object **grown = realloc(vertex_shaders_by_id, count * sizeof(*grown));
+
+		if (!grown)
+			return;
+		memset(grown + vertex_shaders_by_id_count, 0, (count - vertex_shaders_by_id_count) * sizeof(*grown));
+		vertex_shaders_by_id = grown;
+		vertex_shaders_by_id_count = count;
+	}
+	vertex_shaders_by_id[object->id] = object;
+}
+
+static DWORD program_record_map_hash(const char *name)
+{
+	DWORD hash = 2166136261UL;
+
+	for (; *name; name++)
+		hash = (hash ^ (unsigned char)*name) * 16777619UL;
+	return hash ? hash : 1;
+}
+
+static struct program_entry *program_get(GLuint vertex_shader, GLuint fragment_shader);
+
+/* the game finished loading a map (scenario_load): link its programs now */
+void d3d8_gl_map_loaded(const char *name)
+{
+	unsigned long index;
+
+	program_records_load();
+	program_records_save();
+	program_record_map = program_record_map_hash(name);
+	for (index = 0; index < program_record_count; index++)
+	{
+		const struct program_record *record = &program_records[index];
+		struct vertex_shader_object *object;
+		GLuint fragment;
+
+		if (record->map_hash != program_record_map || record->variant > 1 ||
+			record->vertex_id >= vertex_shaders_by_id_count ||
+			!(object = vertex_shaders_by_id[record->vertex_id]))
+			continue;
+		if (!object->shader[record->variant])
+			vertex_shader_compile(object, (int)record->variant, record->packed_mask);
+		fragment = fragment_shader_get(&record->key);
+		program_get(object->shader[record->variant], fragment);
+	}
+	program_linked_now = FALSE;
+}
+
+/* a draw linked a program: keep it for the next time this map loads */
+static void program_record_note(struct vertex_shader_object *program, BOOL immediate,
+	const struct nv2a_pixel_shader_key *key)
+{
+	struct program_record record;
+	int variant = immediate ? 1 : 0;
+
+	if (!program_record_map)
+		return;
+	memset(&record, 0, sizeof(record));
+	record.map_hash = program_record_map;
+	record.vertex_id = program->id;
+	record.variant = variant;
+	record.packed_mask = program->compiled_mask[variant];
+	record.key = *key;
+	program_record_add(&record, TRUE);
+}
+#endif
+
 static struct program_entry *program_get(GLuint vertex_shader, GLuint fragment_shader)
 {
 	static struct program_entry *last;
@@ -1903,6 +2105,9 @@ static struct program_entry *program_get(GLuint vertex_shader, GLuint fragment_s
 	if (!vertex_shader || !fragment_shader)
 		return NULL;
 
+#ifdef HALO_SWITCH
+	program_linked_now = TRUE;
+#endif
 	entry->program = glCreateProgram();
 	glAttachShader(entry->program, vertex_shader);
 	glAttachShader(entry->program, fragment_shader);
@@ -2534,7 +2739,15 @@ static struct program_entry *prepare_draw(BOOL immediate)
 	key.count_samples = device.visibility_test_active && xgpu_capabilities.atomic_counters;
 #endif
 
+#ifdef HALO_SWITCH
+	program_linked_now = FALSE;
+#endif
 	entry = program_get(vertex_shader_get(program, immediate), fragment_shader_get(&key));
+#ifdef HALO_SWITCH
+	if (entry && program_linked_now)
+		program_record_note(program, immediate, &key);
+	program_linked_now = FALSE;
+#endif
 	if (!entry)
 	{
 		stats.skipped_link++;
@@ -3636,6 +3849,16 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 	(void)unused2;
 	if (screenshot_every < 0)
 		screenshot_every = config_integer("debug.screenshot_every");
+#ifdef HALO_SWITCH
+	{
+		/* new program records go to the card every ten seconds or so,
+		so that a run that ends without another map load keeps them */
+		static unsigned long frames;
+
+		if (++frames % PROGRAM_RECORD_SAVE_FRAMES == 0)
+			program_records_save();
+	}
+#endif
 
 	/* the back buffer's memory comes out of the window. If the window could
 	not give it, there is nothing to draw into and every line below would
