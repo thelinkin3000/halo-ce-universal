@@ -263,55 +263,55 @@ jobs:
     # Two toolchains and neither can be replaced by the other: devkitA64 builds
     # the host, and the Android NDK builds the guest, which is ILP32 AArch64
     # (32-bit pointers, because the Xbox data formats embed them) and so
-    # cannot be built by devkitA64 at all. The NDK is not installed here: the
-    # runner image carries the Android SDK, and configure.py takes the newest
-    # NDK under it.
+    # cannot be built by devkitA64 at all.
+    #
+    # It runs in devkitPro's own image. Their package hosts
+    # (apt.devkitpro.org, pkg.devkitpro.org) answer 403 to a GitHub runner and
+    # to a plain curl - everything, the repository's root included - so
+    # installing devkitPro, or its SDL2 and Mesa, from them does not work here.
+    # The image carries the toolchain; the Android NDK comes from Google, which
+    # does answer.
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    container: devkitpro/devkita64:latest
+    timeout-minutes: 60
     env:
       DEVKITPRO: /opt/devkitpro
       DEVKITA64: /opt/devkitpro/devkitA64
     steps:
-      # devkitPro through its apt repository and its own pacman, rather than
-      # through install-devkitpro-pacman. That script asks questions - where to
-      # install, whether to proceed - and a step that waits for an answer fails
-      # a build with no explanation worth having. The repository is the same one
-      # that script configures, and this way every step is non-interactive.
-      - name: Install devkitPro
+      # Prove the image has what the host links against, and say which is
+      # missing if it does not. Better a clear message now than a link error
+      # two steps later that reads like a build problem.
+      - name: Check the toolchain
         run: |
-          sudo mkdir -p /etc/apt/keyrings
-          curl -fsSL https://apt.devkitpro.org/devkitpro-pub.gpg \
-            | sudo gpg --dearmor -o /etc/apt/keyrings/devkitpro.gpg
-          echo "deb [signed-by=/etc/apt/keyrings/devkitpro.gpg] https://apt.devkitpro.org stable main" \
-            | sudo tee /etc/apt/sources.list.d/devkitpro.list
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends devkitpro-pacman
+          echo "--- /opt/devkitpro ---"
+          ls /opt/devkitpro
+          echo "--- portlibs/switch/lib ---"
+          ls /opt/devkitpro/portlibs/switch/lib 2>&1 | head -20 || true
+          for library in libSDL2 libGLESv2 libEGL; do
+            if [ -f "/opt/devkitpro/portlibs/switch/lib/$library.a" ]; then
+              echo "found $library"
+            else
+              echo "::error::$library is not in the image; the host will not link without it"
+            fi
+          done
 
-      # devkitA64 for the compiler and libnx, SDL2 for the window and the shim
-      # above it, Mesa for the OpenGL ES the game's rasterizer ends up calling
-      - name: Install the Switch packages
+      # The guest needs the NDK, which the image does not carry and the
+      # runner's own SDK is not visible from inside a container. Android
+      # publishes the whole NDK as one archive, so it is fetched and pointed
+      # at with ANDROID_NDK_HOME, which is what configure.py reads.
+      - name: Install the Android NDK
         run: |
-          # dkp-pacman is not on the runner's PATH by default; it comes with
-          # the repository above, and naming it by path keeps this step from
-          # depending on which of the two places it landed in.
-          DKP="$(command -v dkp-pacman || echo /opt/devkitpro/pacman/bin/dkp-pacman)"
-          sudo "$DKP" -Syu --noconfirm devkitA64 switch-sdl2 switch-mesa
-          # prove the three things the build needs are actually there, with a
-          # message that says which one is missing rather than leaving it to a
-          # confusing failure two steps later
-          /opt/devkitpro/devkitA64/bin/aarch64-none-elf-gcc --version
-          test -f /opt/devkitpro/portlibs/switch/lib/libSDL2.a || { echo "::error::SDL2 not installed"; exit 1; }
-          test -f /opt/devkitpro/portlibs/switch/lib/libGLESv2.a || { echo "::error::Mesa not installed"; exit 1; }
-          test -f /opt/devkitpro/libnx/lib/libnx.a || { echo "::error::libnx not installed"; exit 1; }
+          curl -fsSL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+          unzip -q ndk.zip -d /opt
+          rm ndk.zip
+          echo "ANDROID_NDK_HOME=/opt/android-ndk-r26d" >> "$GITHUB_ENV"
+          echo "PATH=/opt/android-ndk-r26d/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH" >> "$GITHUB_ENV"
 
       - name: Install the build tools
         run: |
-          mkdir -p "$RUNNER_TEMP/tools"
-          curl -fsSL -o ninja.zip https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-linux.zip
-          unzip -q ninja.zip -d "$RUNNER_TEMP/tools" && rm ninja.zip
-          curl -fsSL https://github.com/ccache/ccache/releases/download/v4.10.2/ccache-4.10.2-linux-x86_64.tar.xz \
-            | tar -xJ -C "$RUNNER_TEMP/tools" --strip-components=1 ccache-4.10.2-linux-x86_64/ccache
-          echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+          apt-get update
+          apt-get install -y --no-install-recommends python3 ninja-build ccache unzip curl zip
+          ccache --version | head -1
 
       - uses: actions/checkout@v4
 
