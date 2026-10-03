@@ -1023,6 +1023,10 @@ int main(int argc, char *argv[])
 	padConfigureInput(1, HidNpadStyleSet_NpadStandard);
 	log_marker("marker: libnx init done");
 
+	/* play as usual, or join an internet game from the community list; on
+	the default window, before the game thread's SDL takes it */
+	host_lobby_choose();
+
 	{
 		/* The game thread's stack is guest memory, so it has to be below
 		4 GB, and it is asked for at decreasing sizes until one is granted.
