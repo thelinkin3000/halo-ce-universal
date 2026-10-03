@@ -13,6 +13,12 @@ The guest's thread pointer (its musl struct pthread) is kept per thread in
 host TLS.
 
 Thread stacks are freed by a reaper thread once the thread has fully exited.
+
+Every thread here would run on one core if left alone: libnx makes a
+pthread on the process's default core, and the console's scheduler never
+moves a thread off the cores its mask allows. So the first thread made, the
+game's, keeps its core to itself, and each later one moves itself onto the
+others (place_thread).
 */
 
 #include "host.h"
@@ -23,6 +29,8 @@ Thread stacks are freed by a reaper thread once the thread has fully exited.
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+
+#include <switch.h>
 
 #define GUARD_SIZE 0x4000
 
@@ -111,6 +119,61 @@ void host_run_guest_main(uint32_t boot)
 	host_fatal("the guest returned from __guest_start");
 }
 
+/* ---------- cores
+
+Every thread the game and the port make lands on the process's default core
+(libnx's pthread_create asks for it, -2), and the kernel does not move a
+thread to another core by itself. Everything shared one core: the game, the
+Direct3D translation and Mesa's driver, and beside them internet play's
+tunnel - which decrypts every packet the host sends and carries its
+connections - its signalling, and the game's own helper threads. With a
+lobby of eighteen players the game stuttered badly, while the console's
+other cores had nothing to do.
+
+So the game thread, the first one made here (host_main.c's game_main, which
+becomes the guest's main thread), is held to the core it started on, and
+every thread after it moves itself onto the other cores the process may use,
+in turn. Each is allowed all of those, so the kernel can move it between
+them, and none can take time from the game's core. */
+
+static int game_core = -1;
+static unsigned threads_placed;
+
+static void place_thread(int is_game)
+{
+	u64 allowed = 0;
+	u32 helpers;
+	int core = (int)svcGetCurrentProcessorNumber();
+	unsigned pick, index;
+	Result result;
+
+	if (R_FAILED(svcGetInfo(&allowed, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0)) || !allowed)
+		return;
+	if (is_game)
+	{
+		game_core = core;
+		result = svcSetThreadCoreMask(CUR_THREAD_HANDLE, core, 1u << core);
+		host_logf(HOST_LOG_INFO, "the game thread keeps core %d to itself (the process may use cores %llx): 0x%x",
+			core, (unsigned long long)allowed, (unsigned)result);
+		return;
+	}
+	helpers = (u32)allowed & ~(game_core >= 0 ? 1u << game_core : 0u);
+	if (!helpers)
+		return;
+	/* the next of the helper cores, in turn */
+	pick = __atomic_fetch_add(&threads_placed, 1, __ATOMIC_RELAXED) % (unsigned)__builtin_popcount(helpers);
+	for (index = 0; index < 32; index++)
+	{
+		if (!(helpers & (1u << index)))
+			continue;
+		if (!pick--)
+			break;
+	}
+	result = svcSetThreadCoreMask(CUR_THREAD_HANDLE, (s32)index, helpers);
+	host_logf(HOST_LOG_INFO, "a thread starts on core %u (it may use cores %x): 0x%x", index, (unsigned)helpers,
+		(unsigned)result);
+}
+
 /* ---------- guest threads */
 
 struct thread_start
@@ -119,7 +182,11 @@ struct thread_start
 	void *argument;
 	void *mapping;
 	size_t mapping_size;
+	/* the first thread made, the game's (place_thread) */
+	int is_game;
 };
+
+static int game_thread_made;
 
 struct finished_thread
 {
@@ -160,6 +227,7 @@ static void *thread_main(void *context)
 	struct finished_thread *finished;
 
 	free(context);
+	place_thread(start.is_game);
 	host_debug_thread_started();
 	start.function(start.argument);
 	host_debug_thread_exited();
@@ -259,6 +327,9 @@ int host_native_thread_create(void *(*function)(void *), void *argument, size_t 
 	}
 	start->function = function;
 	start->argument = argument;
+	/* (made only once one starts: main asks again at smaller sizes when the
+	game thread's stack is refused) */
+	start->is_game = !game_thread_made;
 	pthread_attr_init(&attributes);
 	if (pthread_attr_setstack(&attributes, stack, stack_size) != 0)
 		host_logf(HOST_LOG_ERROR, "pthread_attr_setstack(%p, %zu) refused: %s", stack, stack_size,
@@ -302,6 +373,8 @@ int host_native_thread_create(void *(*function)(void *), void *argument, size_t 
 		host_low_unmap(start->mapping, start->mapping_size);
 		free(start);
 	}
+	else
+		game_thread_made = 1;
 	return error;
 }
 
