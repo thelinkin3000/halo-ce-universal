@@ -648,17 +648,6 @@ static void *read_file(const char *path, size_t *size)
 
 #define MAIN_STACK_SIZE (16 * 1024 * 1024)
 
-/* Set by host_native_thread_create when it mapped a stack below 4 GB but
- * could not have the thread use it; guest_stack_enter moves onto it. */
-void *guest_stack;
-
-/* what guest_stack_enter is given as the function to run: the guest's own
- * entry point, which does not return */
-static void enter_guest(void *boot)
-{
-	host_run_guest_main((uint32_t)(uintptr_t)boot);
-}
-
 /* How much can the window's address actually take?
  *
  * The guest reserves the contiguous window itself and demands the exact
@@ -819,16 +808,9 @@ static void *game_main(void *unused)
 	}
 	host_logf(HOST_LOG_INFO, "data %s, saves %s", data_root, save_root);
 	log_marker("marker: handing control to the guest");
-	/* The game thread runs on a stack the C library allocated, which is
-	 * above 4 GB, and the guest cannot use one: its pointers are 32 bits.
-	 * The stack the host mapped below 4 GB is still there - the refused
-	 * pthread_create left it in place, split into a guard page and the
-	 * stack proper - so the guest is entered on that instead. */
-	if (guest_stack)
-	{
-		host_logf(HOST_LOG_INFO, "entering the guest on a stack at %p, below 4 GB", guest_stack);
-		guest_stack_enter(guest_stack, enter_guest, (void *)(uintptr_t)boot);
-	}
+	/* already on the stack the host mapped below 4 GB: every thread that runs
+	 * guest code is moved onto its own as it starts (host_thread.c) */
+	host_logf(HOST_LOG_INFO, "entering the guest on a stack at %p, below 4 GB", __builtin_frame_address(0));
 	host_run_guest_main(boot);
 }
 
@@ -996,6 +978,7 @@ int main(int argc, char *argv[])
 	host_logf(HOST_LOG_INFO, "Halo for Switch starting (%s)", executable_root);
 	/* the game image an update installed last time, before anything loads it */
 	host_update_finish();
+	host_memory_log_regions();
 	/* Ask for more memory than the console's default for a homebrew
 	 * process.
 	 *

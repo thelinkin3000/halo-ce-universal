@@ -43,6 +43,34 @@ guest_stack_enter:
 	bl	guest_stack_returned	/* it should not come back; if it does, say so */
 	b	.			/* and stop */
 
+/* void *guest_stack_call(void *stack, void *(*function)(void *), void *argument)
+ *
+ * The same, there and back: function(argument) runs on stack, below 4 GB, and
+ * its result comes back on the stack this was called on. Every thread that
+ * runs guest code is started this way (host_thread.c): the C library gives a
+ * thread a stack of its own above 4 GB, and on Horizon 22.5, where the port's
+ * memory below 4 GB is aliased heap, it accepted that memory as a stack and
+ * then ran the thread on a copy it mapped above 4 GB - the guest truncated the
+ * stack pointer to 32 bits on its first push and wrote nowhere.
+ *
+ * The caller's stack pointer is kept in x19, which the function preserves,
+ * along with the frame pointer and the link register, saved on the caller's
+ * stack; x29 still points there, so a backtrace walks from one into the other.
+ */
+.global guest_stack_call
+guest_stack_call:
+	stp	x29, x30, [sp, #-32]!
+	str	x19, [sp, #16]
+	mov	x29, sp
+	mov	x19, sp			/* the stack to come back to */
+	mov	sp, x0			/* onto the guest's stack */
+	mov	x0, x2
+	blr	x1
+	mov	sp, x19			/* and back */
+	ldr	x19, [sp, #16]
+	ldp	x29, x30, [sp], #32
+	ret
+
 .global guest_stack_returned
 guest_stack_returned:
 	mov	x19, x0
