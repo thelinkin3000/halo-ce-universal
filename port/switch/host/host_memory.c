@@ -657,6 +657,16 @@ int host_memory_initialize(uint32_t base, uint32_t size)
 		}
 	}
 	window_end = window_base + HALO_GUEST_WINDOW_SIZE;
+	/* Where the window moved, the range it was linked for is kept empty.
+	 * The guest moves any value it reads out of the game data that lies
+	 * there (halo_port_window.h), so memory of its own at those addresses
+	 * - a later pool, which is searched for from the image upwards - would
+	 * have its pointers moved out from under it. Nothing has to be mapped
+	 * for that: the reservation alone keeps the searches away. */
+	if (window_base != HALO_GUEST_WINDOW_BASE &&
+		reserve(HALO_GUEST_WINDOW_BASE, HALO_GUEST_WINDOW_SIZE, 0) != 0)
+		host_logf(HOST_LOG_WARN, "could not keep the window's linked range %08llx free",
+			(unsigned long long)HALO_GUEST_WINDOW_BASE);
 	host_logf(HOST_LOG_INFO, "Xbox memory window at %08llx-%08llx, guest image at %08llx-%08llx",
 		(unsigned long long)window_base, (unsigned long long)window_end,
 		(unsigned long long)image_base, (unsigned long long)image_end);
