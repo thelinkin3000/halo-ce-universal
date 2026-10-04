@@ -1,7 +1,9 @@
 package com.halo.decomp;
 
+import android.annotation.TargetApi;
 import android.content.Context;
 import android.net.wifi.WifiManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.Display;
 import android.view.View;
@@ -67,21 +69,40 @@ public class HaloActivity extends SDLActivity {
      * fullscreen theme does this on older releases, but Android 15 and later
      * draw apps edge to edge regardless, so the bars have to be asked away.
      * Swiping brings them back transiently and they leave again on their own.
+     *
+     * The two ways of asking are split, because {@code WindowInsetsController}
+     * arrived in Android 11: on 9 and 10 the call is a hidden one, which the
+     * system refuses (and logs), and it is not the older call that hides the
+     * bars there.
      */
     private void hideSystemBars() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+            hideSystemBarsWithInsets();
+        else
+            hideSystemBarsLegacy();
+    }
+
+    /** Android 11 and later */
+    @TargetApi(Build.VERSION_CODES.R)
+    private void hideSystemBarsWithInsets() {
         WindowInsetsController controller = getWindow().getInsetsController();
 
-        if (controller != null) {
-            controller.hide(WindowInsets.Type.systemBars());
-            controller.setSystemBarsBehavior(
-                    WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
-        } else {
-            getWindow().getDecorView().setSystemUiVisibility(
-                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_FULLSCREEN |
-                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_STABLE |
-                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
-                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+        if (controller == null) {
+            hideSystemBarsLegacy();
+            return;
         }
+        controller.hide(WindowInsets.Type.systemBars());
+        controller.setSystemBarsBehavior(
+                WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+    }
+
+    /** Android 9 and 10, and anywhere the above has no controller */
+    private void hideSystemBarsLegacy() {
+        getWindow().getDecorView().setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_FULLSCREEN |
+                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_STABLE |
+                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
     }
 
     @Override
