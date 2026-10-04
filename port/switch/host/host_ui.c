@@ -457,6 +457,22 @@ int host_ui_open(void)
 {
 	const unsigned char *title_data, *body_data;
 
+	/* open again after a close (the disc image is unpacked after the menu has
+	gone): the fonts and panels are kept, and only the window is taken back */
+	if (canvas)
+	{
+#ifndef HOST_UI_PREVIEW
+		if (!framebuffer_open)
+		{
+			if (R_FAILED(framebufferCreate(&framebuffer, nwindowGetDefault(), SCREEN_WIDTH, SCREEN_HEIGHT,
+				PIXEL_FORMAT_RGBA_8888, 2)))
+				return 0;
+			framebufferMakeLinear(&framebuffer);
+			framebuffer_open = 1;
+		}
+#endif
+		return 1;
+	}
 	canvas = calloc((size_t)SCREEN_WIDTH * SCREEN_HEIGHT, 4);
 	if (!canvas)
 		return 0;
