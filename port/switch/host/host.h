@@ -152,6 +152,22 @@ int host_native_thread_create(void *(*function)(void *), void *argument, size_t 
 host_native_thread_create); does not return */
 void host_run_guest_main(uint32_t boot) __attribute__((noreturn));
 
+/* ---------- the renderer (host_main.c)
+
+config.toml's display.renderer: "gl" (the default) runs halo_guest.elf,
+whose renderer is OpenGL over Mesa; "deko3d" runs halo_guest_dk.elf, whose
+renderer drives deko3d (port/switch/DEKO3D.md). Under deko3d the host makes
+no EGL surface: the guest's SDL window and GL context are stand-ins, so the
+display is left for deko3d's swapchain. Set once, before the guest starts. */
+extern int host_renderer_deko3d;
+
+/* host_dk.c: runs a frame's commands from the deko3d renderer's guest half
+(port/switch/guest/dk_commands.h); commands is a guest address */
+void host_dk_submit(uint32_t commands, uint32_t size);
+/* set once deko3d has presented a frame, after which its swapchain paces
+the frames, not the stand-in window's swap */
+extern int host_dk_presenting;
+
 /* ---------- debugging (host_debug.c) */
 
 void host_debug_thread_started(void);
