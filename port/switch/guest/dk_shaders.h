@@ -20,6 +20,61 @@ so the host (LP64) can include this too.
 
 #include <stdint.h>
 
+/* The generators' version. Raised by any change to what nv2a_vsh_dk.c or
+nv2a_psh_dk.c write (see the comment at the top of both), so a changed
+generator makes new shader names on the card instead of new GLSL under old
+names. A change to what the host compiles (UAM's commit) is the cache
+folder's name, not this. */
+#define DK_SHADER_GENERATOR_VERSION 1
+
+/* the stages, as the host's imports take them */
+#define DK_SHADER_STAGE_VERTEX 0
+#define DK_SHADER_STAGE_PIXEL 1
+
+/* the order the background compile takes its queue in: a key a draw needs
+goes first, then the map being played's, then everything else */
+#define DK_SHADER_PRIORITY_DRAW 0
+#define DK_SHADER_PRIORITY_MAP 1
+#define DK_SHADER_PRIORITY_REST 2
+
+/* the key's data a vertex shader is known by: its program's hash (the hash
+of its instruction count and words, kept in the object d3d8_dk.c makes) and
+the packed-attribute mask it is drawn with */
+struct dk_vertex_key
+{
+	uint64_t program_hash;
+	uint32_t packed_mask;
+};
+
+/* a pixel shader's key data is the nv2a_pixel_shader_key itself (xgpu.h),
+with count_samples set to 0 */
+
+/* FNV-1a 64, with which the key hashes and the vertex programs' hashes are
+made (dk_shaders.c) */
+uint64_t dk_shader_hash_init(void);
+uint64_t dk_shader_hash_mix(uint64_t hash, const void *data, unsigned long size);
+
+/* ---------- the shader cache's guest half (dk_shaders.c; DEKO3D.md,
+phase 5, step 4). Called from d3d8_dk.c */
+
+/* once the game has made its vertex shaders (the 60th Present): reads the
+key files (z:\shader_keys\), and, the first time there is no console.dkk,
+imports the OpenGL image's program records (z:\shader_programs.bin) as one */
+void dk_shader_start(void);
+/* the startup pass, a few keys a frame: asks the host for each in turn and
+queues the ones it does not have, in the background */
+void dk_shader_frame(void);
+/* the map the game finished loading (d3d8_gl_map_loaded), as d3d8_gl.c's
+program_record_map_hash has it: that map's keys are sent again with the
+map's priority, which raises them in the queue */
+void dk_shader_map_loaded(uint32_t map_hash);
+/* for phase 6: the handle of the shader a draw needs (0: not ready, skip
+the draw), and, for a key nobody has met, the GLSL generated and queued at
+the draw's priority and the key appended to console.dkk. key_data: a struct
+dk_vertex_key (DK_SHADER_STAGE_VERTEX) or an nv2a_pixel_shader_key
+(DK_SHADER_STAGE_PIXEL) */
+uint32_t dk_shader_for_draw(uint32_t stage, const void *key_data);
+
 /* uniform block bindings, per stage */
 #define DK_BINDING_VERTEX_CONSTANTS 0
 #define DK_BINDING_VERTEX_PARAMETERS 1

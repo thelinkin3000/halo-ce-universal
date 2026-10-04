@@ -553,6 +553,9 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     # the copies' names do not collide with them
     dk_objects.append(guest_object(PORT_DIR / "guest" / "nv2a_vsh_dk.c", platform_cflags))
     dk_objects.append(guest_object(PORT_DIR / "guest" / "nv2a_psh_dk.c", platform_cflags))
+    # the shader cache's guest half (DEKO3D.md, phase 5, step 4): the keys,
+    # the key files, the import of the OpenGL records, the startup pass
+    dk_objects.append(guest_object(PORT_DIR / "guest" / "dk_shaders.c", platform_cflags))
     n.build(outputs=dk_image, rule="switch_guest_link", inputs=dk_objects, implicit=[libguestc, linker_script])
 
     # ---------- the host, built with devkitA64
@@ -570,7 +573,7 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     # segment has dynamic relocations", which libnx alone reproduces with a
     # four-line program; switch.specs does not add them.
     host_arch = "-march=armv8-a -mtune=cortex-a57 -mtp=soft -fPIE"
-    _uam_build(n, devkitpro, host_cc, host_arch)
+    uam_library = _uam_build(n, devkitpro, host_cc, host_arch)
     host_cflags = " ".join([
         "-O2", "-g", "-Wall", "-Wno-unused-function", "-D_GNU_SOURCE", "-D__SWITCH__",
         # Frame pointers, which -O2 omits. host_debug.c walks the x29 chain to
@@ -597,6 +600,15 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     # the stack switch into the guest, which has to be assembly: it moves the
     # stack pointer, which C cannot express
     host_assembly = list(sorted((PORT_DIR / "host").glob("*.S")))
+    # UAM's compiler in the host (DEKO3D.md, phase 5, step 2), or the stub in
+    # its place (host_dk_compiler_stub.c) when this build has no UAM: without
+    # one the deko3d renderer has only the shaders already on the card, and
+    # the OpenGL renderer depends on UAM in no build at all
+    if uam_library is None:
+        n.comment("Switch build: the deko3d renderer will have no shaders it has not already got "
+                  "(no UAM: it needs meson, bison, flex and mako)")
+    else:
+        host_sources = [source for source in host_sources if source.name != "host_dk_compiler_stub.c"]
     host_sources += [
         LINUX_DIR / "src" / "posix_files.c",
         TOML_DIR / "tomlc17.c",
@@ -615,9 +627,65 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
         # one file
         if source.name == "host_update.c":
             cflags = f"{host_cflags} {updater_defines(getattr(sln, 'port_release', False))}"
+        # the shader cache names its folder for the compiler whose DKSH files
+        # it keeps, so a new UAM does not read an old compiler's (and this is
+        # known even in a stub build, whose folder is then the same one)
+        if source.name == "host_dk_shaders.c":
+            cflags = f'{host_cflags} -DHOST_DK_UAM_COMMIT=\\"{UAM_COMMIT[:12]}\\"'
         n.build(outputs=obj, rule="switch_host_cc", inputs=source, variables={"cflags": cflags},
                 implicit=[syscall_h])
         host_objects.append(obj)
+    # UAM's compiler, linked into the host as the probe links it (DEKO3D.md,
+    # phase 5, step 2; the probe's Makefile is the control for this). One C++
+    # file, host_dk_compiler.cpp, is compiled with UAM's own include paths
+    # and defines (as UAM's meson build gives them) and linked with UAM's
+    # library into a single relocatable object, every symbol they define is
+    # renamed (which renames the C++ COMDAT groups too, whose names are what
+    # really clash with Mesa's) and all but host_dk_compile_glsl are made
+    # local. That is what lets UAM sit beside the Mesa that SDL2 links in:
+    # both are Mesa's GLSL compiler, and linked plainly they collide. The
+    # object is built without -fPIC, as UAM's library is (step 1: under it,
+    # a thread-local variable faulted with devkitA64's -mtp=soft), which is
+    # also what the host's own -fPIE asks for.
+    if uam_library is not None:
+        uam_cflags = " ".join([
+            "-std=c++11", "-DNDEBUG", "-DDESKTOP", "-D_USE_MATH_DEFINES", "-D_GNU_SOURCE", "-DHAVE_POSIX_MEMALIGN",
+            "-D__SWITCH__", host_arch, f"-isystem {devkitpro / 'libnx' / 'include'}",
+            f"-I{UAM_DIR / 'source'}", f"-I{UAM_DIR / 'mesa-imported'}",
+            f"-I{BUILD / 'uam' / 'meson' / 'mesa-imported'}",
+            f"-I{BUILD / 'uam' / 'meson' / 'mesa-imported' / 'glsl'}",
+            f"-I{BUILD / 'uam' / 'meson' / 'mesa-imported' / 'glsl' / 'glcpp'}",
+        ])
+        compiler_obj = host_obj_dir / "host_dk_compiler.cpp.o"
+        n.rule(
+            name="switch_host_cxx",
+            command=f"$switch_host_gxx -MMD -MF $out.d {uam_cflags} -c $in -o $out",
+            description="SWITCH HOST CXX $out",
+            depfile="$out.d",
+            deps="gcc",
+        )
+        n.build(outputs=compiler_obj, rule="switch_host_cxx", inputs=PORT_DIR / "host" / "host_dk_compiler.cpp",
+                implicit=[uam_library])
+        combined = host_obj_dir / "uam_combined.o"
+        symbols = host_obj_dir / "uam_symbols.txt"
+        host_uam_object = host_obj_dir / "uam_compiler.o"
+        nm_bin = host_cc.parent / "aarch64-none-elf-nm"
+        objcopy_bin = host_cc.parent / "aarch64-none-elf-objcopy"
+        ld_bin = host_cc.parent / "aarch64-none-elf-ld"
+        n.rule(
+            name="switch_uam_combine",
+            command=(
+                f"{ld_bin} -r -o {combined} {compiler_obj} --whole-archive {uam_library} --no-whole-archive && "
+                f"{nm_bin} --defined-only {combined} | awk '{{print $$3}}' | "
+                f"grep -v -e '^host_dk_compile_glsl$$' -e '^\\$$' | sort -u | "
+                f"awk '{{print $$1\" uam_\"$$1}}' > {symbols} && "
+                f"{objcopy_bin} --redefine-syms={symbols} --keep-global-symbol=host_dk_compile_glsl "
+                f"{combined} $out"
+            ),
+            description="SWITCH UAM COMBINE $out",
+        )
+        n.build(outputs=host_uam_object, rule="switch_uam_combine", inputs=[compiler_obj], implicit=[uam_library])
+        host_objects.append(host_uam_object)
     extractor = host_obj_dir / "xiso.c.o"
     n.build(outputs=extractor, rule="switch_host_cc", inputs=LINUX_DIR / "src" / "xiso.c",
             variables={"cflags": extractor_cflags}, implicit=[syscall_h])
