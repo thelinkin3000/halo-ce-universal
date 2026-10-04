@@ -753,6 +753,40 @@ VOID WINAPI XInitDevices(DWORD preallocation_type_count, PXDEVICE_PREALLOC_TYPE 
 	platform_sdl_initialize();
 }
 
+/* which SDL gamepad each port reads, as the set of them changes (two pads
+of the same model share a name, so the IDs say which is which) */
+static void log_gamepad_ports(void)
+{
+	SDL_JoystickID *ids;
+	int count = 0, index, port = 0, pass;
+
+	ids = SDL_GetGamepads(&count);
+	platform_log("gamepads: SDL lists %d", count);
+	/* (in sdl_gamepads' order: on Android the recognised ones first) */
+	for (pass = 0; pass < 2 && ids; pass++)
+	{
+		for (index = 0; index < count; index++)
+		{
+			SDL_Gamepad *gamepad = SDL_GetGamepadFromID(ids[index]);
+			SDL_GamepadType type = gamepad ? SDL_GetGamepadType(gamepad) : SDL_GAMEPAD_TYPE_UNKNOWN;
+			BOOL first = TRUE;
+
+#ifdef HALO_ANDROID
+			first = type != SDL_GAMEPAD_TYPE_UNKNOWN && type != SDL_GAMEPAD_TYPE_STANDARD;
+#endif
+			if (first != (pass == 0))
+				continue;
+			if (!gamepad)
+				platform_log("gamepads: SDL gamepad %u is not open", (unsigned)ids[index]);
+			else if (port < PORT_COUNT)
+				platform_log("gamepads: port %d reads SDL gamepad %u (type %d)", port++, (unsigned)ids[index], (int)type);
+			else
+				platform_log("gamepads: SDL gamepad %u has no port", (unsigned)ids[index]);
+		}
+	}
+	SDL_free(ids);
+}
+
 static DWORD connected_gamepads(void)
 {
 	SDL_Gamepad *gamepads[PORT_COUNT];
@@ -779,6 +813,8 @@ BOOL WINAPI XGetDeviceChanges(PXPP_DEVICE_TYPE device_type, PDWORD insertions, P
 
 		*insertions = connected & ~reported_gamepads;
 		*removals = reported_gamepads & ~connected;
+		if (connected != reported_gamepads)
+			log_gamepad_ports();
 		reported_gamepads = connected;
 	}
 	else if (device_type == XDEVICE_TYPE_DEBUG_KEYBOARD)
