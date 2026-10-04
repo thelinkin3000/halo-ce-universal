@@ -108,7 +108,11 @@ static void *handle_get(uint32_t handle, int type)
 int host_sdl_init(uint32_t flags)
 {
 	/* SDL3's subsystem bits are SDL2's (SDL_INIT_GAMEPAD is
-	SDL_INIT_GAMECONTROLLER) */
+	SDL_INIT_GAMECONTROLLER). Under deko3d SDL's video stays down: the
+	display is deko3d's, and input, audio and events need no window (the
+	deko3d probe, port/switch/DEKO3D.md) */
+	if (host_renderer_deko3d)
+		flags &= ~(uint32_t)SDL_INIT_VIDEO;
 	if (SDL_Init(flags) != 0)
 	{
 		host_logf(HOST_LOG_ERROR, "SDL_Init(%#x): %s", flags, SDL_GetError());
@@ -150,10 +154,31 @@ int64_t host_sdl_thread_id(void)
 #define SDL3_WINDOW_FULLSCREEN 0x1ull
 #define SDL3_WINDOW_OPENGL 0x2ull
 
+/* Under deko3d the guest's window and GL context are these: handles to
+nothing, which the functions below recognise and answer without SDL. The
+guest's platform layer opens a window and a context as it does over Mesa, and
+its event loop runs only while it has a window. */
+static char standin_window, standin_context;
+
+/* the console's screen, which under deko3d stands for the window's size */
+static void standin_window_size(int *width, int *height)
+{
+	int docked = appletGetOperationMode() == AppletOperationMode_Console;
+
+	*width = docked ? 1920 : 1280;
+	*height = docked ? 1080 : 720;
+}
+
 uint32_t host_sdl_create_window(const char *title, int width, int height, int64_t flags)
 {
 	Uint32 host_flags = SDL_WINDOW_FULLSCREEN;
 	SDL_Window *window;
+
+	if (host_renderer_deko3d)
+	{
+		host_logf(HOST_LOG_INFO, "window: a stand-in, the display being deko3d's");
+		return handle_new(_handle_window, &standin_window);
+	}
 
 	if ((uint64_t)flags & SDL3_WINDOW_OPENGL)
 		host_flags |= SDL_WINDOW_OPENGL;
@@ -184,7 +209,9 @@ void host_sdl_window_size_in_pixels(uint32_t window, int *width, int *height)
 
 	*width = 0;
 	*height = 0;
-	if (object)
+	if ((void *)object == (void *)&standin_window)
+		standin_window_size(width, height);
+	else if (object)
 		SDL_GL_GetDrawableSize(object, width, height);
 }
 
@@ -216,6 +243,8 @@ int host_sdl_gl_set_attribute(int attribute, int value)
 	};
 	int index = host_sdl3_gl_attribute(attribute);
 
+	if (host_renderer_deko3d)
+		return 1;
 	if (index < 0 || index >= (int)(sizeof(attributes) / sizeof(attributes[0])))
 		return 0;
 	return SDL_GL_SetAttribute(attributes[index], value) == 0;
@@ -228,6 +257,8 @@ uint32_t host_sdl_gl_create_context(uint32_t window)
 
 	if (!object)
 		return 0;
+	if ((void *)object == (void *)&standin_window)
+		return handle_new(_handle_context, &standin_context);
 	context = SDL_GL_CreateContext(object);
 	if (!context)
 	{
@@ -239,6 +270,8 @@ uint32_t host_sdl_gl_create_context(uint32_t window)
 
 int host_sdl_gl_make_current(uint32_t window, uint32_t context)
 {
+	if (handle_get(window, _handle_window) == (void *)&standin_window)
+		return 1;
 	return SDL_GL_MakeCurrent(handle_get(window, _handle_window), handle_get(context, _handle_context)) == 0;
 }
 
@@ -253,6 +286,8 @@ int host_sdl_gl_set_swap_interval(int interval)
 	if (setting && *setting)
 		interval = atoi(setting);
 	swap_interval = interval;
+	if (host_renderer_deko3d)
+		return 1;
 	return SDL_GL_SetSwapInterval(interval) == 0;
 }
 
@@ -464,6 +499,23 @@ int host_sdl_gl_swap_window(uint32_t window)
 
 	if (!object)
 		return 0;
+	if ((void *)object == (void *)&standin_window)
+	{
+		/* until deko3d presents (and its swapchain waits for the display),
+		frames are held to the display's 60 Hz here, as the swap's vsync
+		holds them over Mesa */
+		static uint64_t next;
+		uint64_t now = armTicksToNs(armGetSystemTick()), interval = 1000000000ull / 60;
+
+		if (swap_interval > 0 && !host_dk_presenting && next > now)
+		{
+			svcSleepThread((int64_t)(next - now));
+			now = next;
+		}
+		next = now - next > interval ? now + interval : next + interval;
+		frame_statistics();
+		return 1;
+	}
 	{
 		uint64_t before = SDL_GetPerformanceCounter();
 

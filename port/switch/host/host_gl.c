@@ -25,10 +25,19 @@ void *host_gl_resolve(const char *name)
 
 void host_gl_get_string(uint32_t name, int index, char *buffer, uint32_t size)
 {
-	const GLubyte *text = index >= 0 ? glGetStringi(name, (GLuint)index) : glGetString(name);
+	const GLubyte *text;
 
 	if (!size)
 		return;
+	/* under deko3d there is no GL context, in which Mesa answers NULL, and
+	the guest's platform layer prints what it is told (host.h) */
+	if (host_renderer_deko3d)
+	{
+		strncpy(buffer, index >= 0 ? "" : "deko3d", size - 1);
+		buffer[size - 1] = 0;
+		return;
+	}
+	text = index >= 0 ? glGetStringi(name, (GLuint)index) : glGetString(name);
 	buffer[0] = 0;
 	if (text)
 	{
