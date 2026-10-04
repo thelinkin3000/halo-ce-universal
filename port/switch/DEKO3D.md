@@ -4,7 +4,7 @@ A second renderer for the Switch build that drives the GPU through
 [deko3d](https://github.com/devkitPro/deko3d) instead of Mesa, with compiled
 shaders cached on the SD card.
 
-Status: phases 0 to 4 done, phase 5 next; see "Progress" at the end.
+Status: phases 0 to 4 done; phase 5 under way (step 1 done); see "Progress" at the end.
 
 ---
 
@@ -36,7 +36,7 @@ words each.
 | The Mesa renderer on the Switch | **Kept, selectable for good** in `config.toml`. |
 | Shader compiler | UAM's compiler, linked into the Switch host and run on the console (it builds for the Switch). |
 | What players share | **Keys**, not compiled shaders: a key is data, compiled shaders are GPU code nobody can check, and keys survive changes to the generators and the compiler. |
-| Compiling the known keys a console has not cached (about 70 s on one core, phase 4) | **In the background, on several threads if UAM allows it (phase 5, step 1), while the game runs** - no waiting screen. Draws whose shader is not ready are skipped, and the keys they need go to the front; the cache keeps every shader compiled, so it happens once a console (and again after a change to the generators or UAM). |
+| Compiling the known keys a console has not cached (43 s on one core with UAM's front end kept alive, phase 5 step 1) | **In the background, on one thread, while the game runs** - no waiting screen. Several threads were measured slower than one (phase 5, step 1). Draws whose shader is not ready are skipped, and the keys they need go to the front; the cache keeps every shader compiled, so it happens once a console (and again after a change to the generators or UAM). |
 
 ---
 
@@ -463,11 +463,17 @@ the background while the menus run at full speed, and a second launch
 compiles nothing.
 
 The user's decision (see "Decisions"): **no waiting screen**. The game
-starts at once; missing shaders compile in the background, on several
-threads if UAM allows it (below), in the order a draw needs them, then this
-map's, then the rest. A draw whose shader is not ready is skipped (phase 6).
+starts at once; missing shaders compile in the background, on one thread
+(step 1 measured more to be slower), in the order a draw needs them, then
+this map's, then the rest. A draw whose shader is not ready is skipped
+(phase 6).
 
-### Step 1: what UAM can do, measured in the probe
+### Step 1: what UAM can do, measured in the probe (done)
+
+Done: see "Phase 5, step 1" under "Progress" for what was found and
+decided - **one compile thread**, with UAM's front end initialised once
+(43.1 s for the corpus, from 68.6 s). The text below is what was asked,
+kept for the record.
 
 Two things found while writing this, which decide the rest:
 
@@ -586,19 +592,20 @@ be sure):
     ignored. Already compiled: nothing.
   - Priorities (in `guest/dk_shaders.h`): 0 a draw needs it now, 1 the map
     being played, 2 the rest.
-- **Compile threads**: the number step 1 decided, with stacks of at least
-  1 MB and a lower priority than the game thread, and never on the game
-  thread's core. A plain host pthread starts on the process's default core,
+- **The compile thread**: one (step 1: two or three were slower than one,
+  Mesa's global locks being taken all the time), with a stack of at least
+  1 MB (2 MB, as the probe's workers had, is safe) and a lower priority than
+  the game thread, and never on the game thread's core. A plain host pthread starts on the process's default core,
   which is the game thread's: `host_thread.c`'s `place_thread` (static now)
   is what moves a thread onto the cores the game thread does not keep, and
   it logs "a thread starts on core N" when it does - check for that line.
   Expose it for these threads, rather than use `host_native_thread_create`,
   whose stacks come out of guest memory (they are for threads that call into
-  the guest; these never do). Each takes the queue's most urgent
+  the guest; these never do). It takes the queue's most urgent
   entry, compiles it to the card, adds its hash to the set, and logs a line
-  every so often (count, queue length), not one a shader. At most one
-  compile thread if step 1 found UAM unsafe, or a lock around
-  `host_dk_compile_glsl`.
+  every so often (count, queue length), not one a shader. Keep a lock around
+  `host_dk_compile_glsl` all the same, so that nothing else can ever call it
+  at the same time.
 - **Code memory**: one `DkMemBlockFlags_Code` block (with `CpuUncached |
   GpuCached`), 16 MB to start - phase 4's 744 shaders took about 1 MB of
   DKSH, code and control together - code placed at 256-byte alignment and
@@ -763,6 +770,65 @@ The menus first, then a map.
 ---
 
 ## Progress
+
+### Phase 5, step 1
+
+Measured in the probe on the console, against phase 4's corpus (744 shaders,
+`sdmc:/halo_dk_shaders`), each time including writing the DKSH to the card:
+
+| | Time | DKSH files differing from the one-thread run's |
+|---|---|---|
+| phase 4: one thread, the front end set up and torn down every compile | 68.6 s | - |
+| one thread, the front end initialised once and kept | **43.1 s** | - |
+| two threads, on cores 0 and 1 (three runs) | 75.4, 76.7, 73.8 s | 18, 17, 19 |
+| three threads, on cores 0, 1 and 2 (three runs) | 96.0, 96.2, 95.3 s | 14, 17, 17 |
+
+**Decision: one compile thread, the front end kept.** Keeping it is the
+gain - every compile used to rebuild Mesa's built-in functions, which
+`glsl_frontend_exit` released - and more threads only cost: the workers
+were on separate cores (the probe logs each worker's core), yet two were
+slower than one and three slower still, most likely because Mesa takes its
+global type table's lock (`glsl_type::hash_mutex`) all the time, and the
+threads write to the card at once.
+
+The differing files: only vertex shaders, and in each exactly **one byte**,
+toggling within a pair of values (0x20 and 0x40, 0x84 and 0x88, 0xe1 and
+0xe2), in both directions from file to file - not a pattern of corruption,
+but of an equivalent choice (two registers, two slots) that depends on the
+order of things in memory. Not proved (compiling the corpus twice on one
+thread and comparing would tell), and moot with one thread.
+
+What `uam.patch` now does, beyond phase 0's library target, and why:
+- **The front end once**: `glsl_frontend_exit` does nothing, so Mesa's types
+  and built-ins live for the program; the context is made the first time a
+  thread compiles.
+- **Real locks** in `mesa-imported/c11/threads.h` (it was fake: every lock
+  did nothing), on pthreads. No lock in UAM is recursive.
+- **Per-thread state**: the front end's `gl_context` (a `__thread` pointer to
+  one allocated per thread), `tgsi_ureg.c`'s `error_tokens`, and
+  `st_glsl_to_tgsi.cpp`'s `in_array` (a counter raised while an array
+  constant is turned into code and read for every constant; shared, two
+  compiles would put each other's constants in the wrong register file).
+  The other writable statics found are debug switches and debug printing,
+  never reached in a compile. Harmless with one thread, kept so that the
+  compiler stays correct if anything ever calls it from two.
+
+Found on the way:
+- **Thread-local variables broke under meson's `-fPIC`.** meson compiles a
+  static library with `-fPIC` after the cross file's `-fPIE`, and under it
+  GCC reads a `__thread` variable in a way that assumes the thread pointer
+  is in a register; devkitA64's `-mtp=soft` gets it from a call
+  (`__aarch64_read_tp`) whose result overwrote the variable's offset, so the
+  first compile read the thread pointer plus itself and faulted. UAM is now
+  built with `-Db_staticpic=false` (`tools/switch_build.py`), which keeps
+  `-fPIE` and local-exec access; the linked probe adds the right offset.
+- **A changed `uam.patch` did not reach an existing clone**: `fetch_uam`
+  skipped any clone marked patched, so `ninja switch-uam` rebuilt from stale
+  sources. The marker now holds the patch's hash, and a clone made from
+  another patch is cloned afresh.
+- **A pthread made by libnx runs on the process's default core** and is
+  never moved; the probe's workers each move onto their own core
+  (`worker_place`), as the host's compile thread must (step 3).
 
 ### Phase 4
 

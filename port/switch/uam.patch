@@ -1,3 +1,87 @@
+diff --git a/mesa-imported/c11/threads.h b/mesa-imported/c11/threads.h
+index 5a19d76..7fd3f77 100644
+--- a/mesa-imported/c11/threads.h
++++ b/mesa-imported/c11/threads.h
+@@ -1,12 +1,40 @@
+ #pragma once
+ 
+-// This header is fake.
++/* Real locks, on pthreads: the Switch port of Halo: Combat Evolved links
++this compiler into the game and compiles shaders on several threads at once
++(its deko3d renderer's background shader cache), which the fake header this
++replaces made impossible. devkitA64's newlib has pthreads through libnx. */
+ 
+-typedef int mtx_t;
++#include <pthread.h>
+ 
+-#define mtx_init(_m,...) ((void)(_m))
+-#define mtx_destroy(_m,...) ((void)(_m))
+-#define mtx_lock(_m,...) ((void)(_m))
+-#define mtx_unlock(_m,...) ((void)(_m))
++typedef pthread_mutex_t mtx_t;
+ 
+-#define _MTX_INITIALIZER_NP 0
++enum
++{
++	mtx_plain = 0,
++	mtx_recursive = 1,
++	mtx_timed = 2
++};
++
++static inline int mtx_init(mtx_t *mutex, int type)
++{
++	(void)type;
++	return pthread_mutex_init(mutex, NULL);
++}
++
++static inline int mtx_destroy(mtx_t *mutex)
++{
++	return pthread_mutex_destroy(mutex);
++}
++
++static inline int mtx_lock(mtx_t *mutex)
++{
++	return pthread_mutex_lock(mutex);
++}
++
++static inline int mtx_unlock(mtx_t *mutex)
++{
++	return pthread_mutex_unlock(mutex);
++}
++
++#define _MTX_INITIALIZER_NP PTHREAD_MUTEX_INITIALIZER
+diff --git a/mesa-imported/state_tracker/st_glsl_to_tgsi.cpp b/mesa-imported/state_tracker/st_glsl_to_tgsi.cpp
+index 8ee1094..c30468e 100644
+--- a/mesa-imported/state_tracker/st_glsl_to_tgsi.cpp
++++ b/mesa-imported/state_tracker/st_glsl_to_tgsi.cpp
+@@ -3268,7 +3268,10 @@ glsl_to_tgsi_visitor::visit(ir_constant *ir)
+    gl_constant_value *values = (gl_constant_value *) stack_vals;
+    GLenum gl_type = GL_NONE;
+    unsigned int i, elements;
+-   static int in_array = 0;
++   /* one per thread: it says whether the constant being visited is inside
++    * an array constant, and two compiles at once must not share it (the
++    * Switch port of Halo: Combat Evolved compiles shaders on several threads) */
++   static __thread int in_array = 0;
+    gl_register_file file = in_array ? PROGRAM_CONSTANT : PROGRAM_IMMEDIATE;
+ 
+    /* Unfortunately, 4 floats is all we can get into
+diff --git a/mesa-imported/tgsi/tgsi_ureg.c b/mesa-imported/tgsi/tgsi_ureg.c
+index c1c8851..5a062f4 100644
+--- a/mesa-imported/tgsi/tgsi_ureg.c
++++ b/mesa-imported/tgsi/tgsi_ureg.c
+@@ -205,7 +205,10 @@ struct ureg_program
+    bool use_memory[TGSI_MEMORY_TYPE_COUNT];
+ };
+ 
+-static union tgsi_any_token error_tokens[32];
++/* one per thread: this is handed to a ureg whose token allocation failed,
++and two compiles at once must not share it (the Switch port compiles shaders
++on several threads) */
++static __thread union tgsi_any_token error_tokens[32];
+ 
+ static void tokens_error( struct ureg_tokens *tokens )
+ {
 diff --git a/meson.build b/meson.build
 index 1486cbc..55440c6 100644
 --- a/meson.build
@@ -25,6 +109,124 @@ index 1486cbc..55440c6 100644
 +# the compiler as a library, for programs that compile shaders at run time
 +# (the Switch port's deko3d renderer)
 +static_library('uam', uam_files, include_directories: uam_incs)
+diff --git a/source/glsl_frontend.cpp b/source/glsl_frontend.cpp
+index 5e940ca..d61522c 100644
+--- a/source/glsl_frontend.cpp
++++ b/source/glsl_frontend.cpp
+@@ -327,17 +327,39 @@ initialize_context(struct gl_context *ctx, gl_api api)
+ 	ctx->Driver.NewProgram = new_program;
+ }
+ 
+-static struct gl_context gl_ctx;
++/* The front end's context. One per thread, made the first time the thread
++compiles (a __thread pointer, not a __thread struct: gl_context is large),
++so that several threads can compile at once; two compiles sharing the one
++static context this replaces would corrupt each other's parse. */
++static __thread struct gl_context *gl_ctx;
++
++static struct gl_context *frontend_context()
++{
++	if (!gl_ctx)
++	{
++		gl_ctx = (struct gl_context*)calloc(1, sizeof(struct gl_context));
++		if (!gl_ctx)
++		{
++			fprintf(stderr, "the GLSL front end's context could not be allocated\n");
++			abort();
++		}
++		initialize_context(gl_ctx, API_OPENGL_CORE);
++	}
++	return gl_ctx;
++}
+ 
+ void glsl_frontend_init()
+ {
+-	initialize_context(&gl_ctx, API_OPENGL_CORE);
++	frontend_context();
+ }
+ 
+ void glsl_frontend_exit()
+ {
+-	_mesa_glsl_release_types();
+-	_mesa_glsl_release_builtin_functions();
++	/* Never, while the program lives: this used to release Mesa's global
++	type tables and built-in functions, so every DekoCompiler's destruction
++	made the next compile rebuild them (much of a compile's time), and two
++	compiles at once tore down each other's state. The tables are shared,
++	read-only after they are built, and guarded by their own locks. */
+ }
+ 
+ // Prototypes for translation functions
+@@ -350,6 +372,8 @@ bool tgsi_translate_compute(struct gl_context *ctx, struct gl_program *prog);
+ 
+ glsl_program glsl_program_create(const char* source, pipeline_stage stage)
+ {
++	/* this thread's context, made the first time the thread compiles */
++	struct gl_context *gl_ctx = frontend_context();
+ 	struct gl_shader_program *prg;
+ 
+ 	prg = rzalloc (NULL, struct gl_shader_program);
+@@ -400,7 +424,7 @@ glsl_program glsl_program_create(const char* source, pipeline_stage stage)
+ 	shader->Source = source;
+ 
+ 	// "Compile" the shader
+-	_mesa_glsl_compile_shader(&gl_ctx, shader, false, false, true);
++	_mesa_glsl_compile_shader(gl_ctx, shader, false, false, true);
+ 	if (shader->CompileStatus != COMPILE_SUCCESS)
+ 	{
+ 		fprintf(stderr, "Shader failed to compile.\n");
+@@ -408,10 +432,10 @@ glsl_program glsl_program_create(const char* source, pipeline_stage stage)
+ 			fprintf(stderr, "%s\n", shader->InfoLog);
+ 		goto _fail;
+ 	}
+-	_mesa_clear_shader_program_data(&gl_ctx, prg);
++	_mesa_clear_shader_program_data(gl_ctx, prg);
+ 
+ 	// Link the shader
+-	link_shaders(&gl_ctx, prg);
++	link_shaders(gl_ctx, prg);
+ 	if (prg->data->LinkStatus != LINKING_SUCCESS)
+ 	{
+ 		fprintf(stderr, "Shader failed to link.\n");
+@@ -435,7 +459,7 @@ glsl_program glsl_program_create(const char* source, pipeline_stage stage)
+ 		//_mesa_print_ir(stdout, linked_shader->ir, NULL);
+ 
+ 		// Do the TGSI conversion
+-		if (!st_link_shader(&gl_ctx, prg))
++		if (!st_link_shader(gl_ctx, prg))
+ 		{
+ 			fprintf(stderr, "st_link_shader failed\n");
+ 			goto _fail;
+@@ -457,23 +481,23 @@ glsl_program glsl_program_create(const char* source, pipeline_stage stage)
+ 		switch (stage)
+ 		{
+ 			case pipeline_stage_vertex:
+-				rc = tgsi_translate_vertex(&gl_ctx, linked_shader->Program,
++				rc = tgsi_translate_vertex(gl_ctx, linked_shader->Program,
+ 					gl_program_with_tgsi::from_ptr(linked_shader->Program)->vtx_in_locations);
+ 				break;
+ 			case pipeline_stage_tess_ctrl:
+-				rc = tgsi_translate_tessctrl(&gl_ctx, linked_shader->Program);
++				rc = tgsi_translate_tessctrl(gl_ctx, linked_shader->Program);
+ 				break;
+ 			case pipeline_stage_tess_eval:
+-				rc = tgsi_translate_tesseval(&gl_ctx, linked_shader->Program);
++				rc = tgsi_translate_tesseval(gl_ctx, linked_shader->Program);
+ 				break;
+ 			case pipeline_stage_geometry:
+-				rc = tgsi_translate_geometry(&gl_ctx, linked_shader->Program);
++				rc = tgsi_translate_geometry(gl_ctx, linked_shader->Program);
+ 				break;
+ 			case pipeline_stage_fragment:
+-				rc = tgsi_translate_fragment(&gl_ctx, linked_shader->Program);
++				rc = tgsi_translate_fragment(gl_ctx, linked_shader->Program);
+ 				break;
+ 			case pipeline_stage_compute:
+-				rc = tgsi_translate_compute(&gl_ctx, linked_shader->Program);
++				rc = tgsi_translate_compute(gl_ctx, linked_shader->Program);
+ 				break;
+ 			default:
+ 				fprintf(stderr, "Unsupported stage\n");
 diff --git a/source/meson.build b/source/meson.build
 index ea60677..87d7729 100644
 --- a/source/meson.build
