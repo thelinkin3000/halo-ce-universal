@@ -33,6 +33,9 @@ others (place_thread).
 #include <switch.h>
 
 #define GUARD_SIZE 0x4000
+/* the stack the C library gives a thread, for the host's part of it before it
+moves onto the stack below 4 GB (host_native_thread_create) */
+#define HOST_PART_STACK_SIZE (64 * 1024)
 
 static __thread uint32_t guest_tp;
 
@@ -182,9 +185,13 @@ struct thread_start
 	void *argument;
 	void *mapping;
 	size_t mapping_size;
+	/* the top of the stack below 4 GB the function runs on (guest_stack_call) */
+	void *stack_top;
 	/* the first thread made, the game's (place_thread) */
 	int is_game;
 };
+
+void *guest_stack_call(void *stack, void *(*function)(void *), void *argument);
 
 static int game_thread_made;
 
@@ -229,7 +236,8 @@ static void *thread_main(void *context)
 	free(context);
 	place_thread(start.is_game);
 	host_debug_thread_started();
-	start.function(start.argument);
+	/* on the stack below 4 GB the port mapped, and back (guest_stack.S) */
+	guest_stack_call(start.stack_top, start.function, start.argument);
 	host_debug_thread_exited();
 	guest_tp = 0;
 
@@ -327,47 +335,28 @@ int host_native_thread_create(void *(*function)(void *), void *argument, size_t 
 	}
 	start->function = function;
 	start->argument = argument;
+	/* a stack grows down, from here */
+	start->stack_top = (char *)stack + (stack_size & ~(size_t)15);
 	/* (made only once one starts: main asks again at smaller sizes when the
 	game thread's stack is refused) */
 	start->is_game = !game_thread_made;
+	/* The thread is made with a stack the C library chooses, and moves onto
+	the one mapped here as it starts (thread_main). The library will not run
+	a thread on a stack it is handed below 4 GB: on Horizon 21.2 it refused
+	one, so the port made a plain thread and moved the game thread onto its
+	stack by hand, while the guest's other threads ran on the library's own
+	stacks, which on that firmware were low enough; on 22.5 it accepted the
+	port's stack - aliased heap there - and ran the thread on a copy it mapped
+	above 4 GB, where the guest cannot address it, while the original could no
+	longer be touched. Every thread now moves onto its own stack the same way,
+	on either. The library's stack only carries the host's part. */
 	pthread_attr_init(&attributes);
-	if (pthread_attr_setstack(&attributes, stack, stack_size) != 0)
-		host_logf(HOST_LOG_ERROR, "pthread_attr_setstack(%p, %zu) refused: %s", stack, stack_size,
-			strerror(errno));
+	pthread_attr_setstacksize(&attributes, HOST_PART_STACK_SIZE);
 	error = pthread_create(&thread, &attributes, thread_main, start);
 	pthread_attr_destroy(&attributes);
 	if (error)
-	{
-		/* The console refuses this thread with ENOMEM even though the
-		stack is mapped, and the two reasons it could do so are very
-		different. One is that the process has no room left, which the
-		log would show on every size. The other is that the C library
-		wants a stack it allocated itself and will not use one mapped
-		out of the sub-4 GB space. So: try again with a stack of the
-		library's own choosing, and report both. That costs one thread
-		and settles it in a single run. */
-		pthread_t plain;
-
-		host_logf(HOST_LOG_ERROR, "pthread_create with a %zu byte stack at %p failed: %s", stack_size,
-			stack, strerror(error));
-		error = pthread_create(&plain, NULL, thread_main, start);
-		if (!error)
-		{
-			/* the stack the port mapped is what the guest will run on */
-			extern void *guest_stack;
-
-			/* its top: a stack grows down, and guest_stack_enter puts
-			 * this straight into sp. Its base was used here, so the guest
-			 * ran on whatever was mapped below the stack. */
-			guest_stack = (char *)stack + (stack_size & ~(size_t)15);
-			host_logf(HOST_LOG_INFO,
-				"a thread with the C library's own stack started instead, so the sub-4 GB "
-				"stack is what the console is refusing, not memory; the guest will run on it");
-		}
-		else
-			host_logf(HOST_LOG_ERROR, "a thread with the library's own stack failed too: %s",
-				strerror(error));
-	}
+		host_logf(HOST_LOG_ERROR, "a thread for a %zu byte stack at %p could not be made: %s", stack_size, stack,
+			strerror(error));
 	if (error)
 	{
 		host_low_unmap(start->mapping, start->mapping_size);
