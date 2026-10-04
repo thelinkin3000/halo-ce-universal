@@ -36,7 +36,7 @@ words each.
 | The Mesa renderer on the Switch | **Kept, selectable for good** in `config.toml`. |
 | Shader compiler | UAM's compiler, linked into the Switch host and run on the console (it builds for the Switch). |
 | What players share | **Keys**, not compiled shaders: a key is data, compiled shaders are GPU code nobody can check, and keys survive changes to the generators and the compiler. |
-| Compiling the known keys a console has not cached (about 70 s on one core, phase 4) | **In the background, on several threads, while the game runs** - no waiting screen. Draws whose shader is not ready are skipped, and the keys they need go to the front; the cache keeps every shader compiled, so it happens once a console (and again after a change to the generators or UAM). |
+| Compiling the known keys a console has not cached (about 70 s on one core, phase 4) | **In the background, on several threads if UAM allows it (phase 5, step 1), while the game runs** - no waiting screen. Draws whose shader is not ready are skipped, and the keys they need go to the front; the cache keeps every shader compiled, so it happens once a console (and again after a change to the generators or UAM). |
 
 ---
 
@@ -442,37 +442,276 @@ even if it was dealt with.
 
 ## Phase 5 — shader cache
 
-- **Keys.** A vertex shader: a hash of its instructions (not the order it was
-  created in, which only holds for one build), its variant and packed mask. A
-  pixel shader: `nv2a_pixel_shader_key` without `count_samples` (Android
-  only). Each file carries a format version.
-- **Compiled shaders.** DKSH files on the SD card, named by the key's hash;
-  the cache is stamped with the generator's and UAM's versions, and a change
-  in either throws the compiled shaders away (the keys still compile).
-- **At startup:** read every key file in the SD folder and load what the
-  cache holds (a DKSH file read, about 2 ms). The game starts at once; the
-  keys missing from the cache go to the compile threads (below). After the
-  first complete pass a shader is only ever a file read.
-- **Compile threads, in the background** (the user's choice): the host
-  runs two or three threads, on cores the game thread does not use, taking
-  keys from one queue. A key a draw needs and does not have goes to the
-  front of the queue and the draw is skipped until its shader is ready
-  (85-236 ms on the console); then the keys recorded for the map being
-  loaded (the records carry each key's map), then everything else. Each
-  shader compiled is written to the cache at once, so an interrupted pass
-  loses nothing. A missing key is also recorded for sharing.
-- **First, find out whether UAM compiles on two threads at once.** It is
-  Mesa's GLSL compiler, which has global state (`glsl_frontend_init`,
-  `_mesa_glsl_*` tables, nv50_ir's), and nothing has tested it. Test it in
-  the probe: the phase 4 corpus on one thread, then on two and three,
-  comparing the DKSH files byte for byte with the one-thread run and timing
-  each. If it is not safe, the threads take turns at one lock around the
-  compiler and the work still happens in the background, on one core at a
-  time - correct, only slower to fill the cache.
-- **What the first run looks like:** some objects and effects appear a few
-  frames late until their shaders are compiled, mostly in the first seconds
-  in the menus; nothing waits. Ordering by map keeps that short.
-- **Code memory:** one growing area of a `DkMemBlockFlags_Code` block.
+Written to be picked up by an agent that has not seen the work so far. Read
+"Decisions", "Where the renderer lives" and phases 0 to 4 above, and phase
+4's results under "Progress", first. Then read `port/switch/guest/d3d8_dk.c`
+(the guest's device, with phase 4's shader dump), `port/switch/host/host_dk.c`
+(the host's deko3d backend), the probe (`port/switch/probe/deko3d`, whose
+Makefile links UAM into a program), `port/switch/uam.patch` and the
+`_uam_build` part of `tools/switch_build.py`. The work is reviewed against
+the acceptance list at the end of this phase.
+
+### What this phase is, and is not
+
+It gives the deko3d renderer its shaders: compiled on the console by UAM,
+kept on the card, loaded into GPU code memory when wanted, and compiled in
+the background for every key the console knows of but has not compiled.
+It does **not** draw (phase 6): nothing asks for a shader from a draw yet,
+so the path a draw will take is built and tested from the startup pass. At
+the end, a first launch with an empty cache compiles every known shader in
+the background while the menus run at full speed, and a second launch
+compiles nothing.
+
+The user's decision (see "Decisions"): **no waiting screen**. The game
+starts at once; missing shaders compile in the background, on several
+threads if UAM allows it (below), in the order a draw needs them, then this
+map's, then the rest. A draw whose shader is not ready is skipped (phase 6).
+
+### Step 1: what UAM can do, measured in the probe
+
+Two things found while writing this, which decide the rest:
+
+**UAM's compiler is not safe on two threads at once, as built.** Its Mesa
+has fake locks (`build/switch/third_party/uam/mesa-imported/c11/threads.h`,
+which says "This header is fake" and makes `mtx_lock` and the rest do
+nothing), and its front end is one global context: `static struct gl_context
+gl_ctx` in `source/glsl_frontend.cpp`. Worse, every `DekoCompiler` calls
+`glsl_frontend_init()` when made and `glsl_frontend_exit()` when destroyed
+(`source/compiler_iface.cpp`, around line 281), and the exit releases
+Mesa's global type tables and built-in functions
+(`_mesa_glsl_release_types`, `_mesa_glsl_release_builtin_functions`). Two
+compiles at once would tear down each other's state.
+
+**And each compile probably rebuilds Mesa's built-in functions from
+scratch** - they are released at every exit - which may be much of the 85
+to 236 ms a shader takes on the console. Keeping the front end up for the
+life of the program, initialised once, could make every compile faster, on
+one thread or several.
+
+So, in the probe, in this order, each against phase 4's corpus (the 744
+GLSL files the deko3d image dumps to `sdmc:/halo_dk_shaders`; see phase 4
+for how to make the dump: set `gpu_dump_shaders = "sdmc:/halo_dk_shaders"`
+under `[debug]` in `/switch/halo/config.toml`, run the game to the menus for
+twenty seconds, and put the setting back - it slows every start by 15 s):
+
+1. **Front end once.** Change UAM (in `uam.patch`, which `ninja switch-uam`
+   applies to a fresh clone; regenerate the patch with `git diff` in a
+   scratch clone at the pinned commit) so that `glsl_frontend_init` runs
+   once and `glsl_frontend_exit` never runs while the program lives - for
+   instance a `DekoCompiler` constructor flag, or a pair of free functions
+   the program calls itself. Time the corpus on one thread as phase 4 did
+   and compare. Write both numbers into "Progress".
+2. **Threads.** Make UAM's locks real and its context per thread, in the
+   patch: `c11/threads.h` as `pthread_mutex_t` (devkitA64's newlib has
+   pthreads, through libnx), and the `gl_context` one per thread (a
+   `__thread` pointer to one allocated and initialised the first time a
+   thread compiles; the struct is large, so not `__thread` itself). Then look
+   for other mutable state shared between compiles - `static` variables
+   that are written, in `source/` and `mesa-imported/` (glsl, compiler,
+   program, tgsi, codegen) - and list what you found and did about each
+   under "Progress". Then, in the probe: compile the corpus on one thread,
+   keeping its DKSH files; then on two and on three threads at once
+   (pthreads, stacks of at least 1 MB each - Mesa recurses), comparing each
+   DKSH byte for byte with the one-thread run; three times each. Log the
+   times.
+3. **Decide.** If every multi-thread run is byte for byte the one-thread
+   run, with no crash, the host compiles on two threads (the game thread
+   keeps one of the console's three cores, `host_thread.c`); if three were
+   clearly faster than two, say so and let the user decide on the third.
+   Otherwise, the compile thread is one, and the patch keeps whatever made
+   compiles faster on one thread. Record what was decided and why.
+
+Step 1 is worth reporting to the user on its own before going on: it
+changes how long a first launch takes.
+
+### Step 2: UAM in the host
+
+The host is linked with devkitA64 and with Mesa (through devkitPro's SDL2),
+which holds the same GLSL compiler as UAM: linked side by side, they clash
+(phase 0, "UAM and Mesa clash, and are separated"). Do in
+`tools/switch_build.py` what the probe's Makefile does:
+
+- `port/switch/host/host_dk_compiler.cpp`: the one file that calls UAM,
+  with one C entry point, e.g. `int host_dk_compile_glsl(int fragment,
+  const char *glsl, const char *dksh_path)` (and the once-only front end
+  setup from step 1), built with UAM's include paths and defines (the
+  probe's `UAM_FLAGS`: `-std=c++11 -DNDEBUG -DDESKTOP -D_USE_MATH_DEFINES
+  -D_GNU_SOURCE -DHAVE_POSIX_MEMALIGN` and `-I` for
+  `build/switch/third_party/uam/{source,mesa-imported}` and
+  `build/switch/uam/meson/mesa-imported{,/glsl,/glsl/glcpp}`);
+- one object from it and `build/switch/uam/libuam.a` (`ld -r
+  --whole-archive`), every symbol it defines renamed (`nm --defined-only`,
+  `objcopy --redefine-syms`, prefix `uam_`), all but the entry point made
+  local (`--keep-global-symbol`); the host linked with that object;
+- the build when UAM cannot be built here (`_uam_build` returns None:
+  no meson, bison, flex or mako): the host is linked with a stub
+  `host_dk_compile_glsl` that fails and logs once, and `ninja switch` still
+  succeeds, with a configure-time note saying the deko3d renderer will have
+  no shaders it has not already got. The OpenGL renderer must never depend
+  on UAM.
+
+The NRO grows by some 5 MB (UAM is 6 MB of objects).
+
+### Step 3: the shader service in the host
+
+`port/switch/host/host_dk_shaders.c`, called by the guest through new
+imports in `port/switch/host_imports.list` (the import stubs pass arguments
+through in registers; a 64-bit integer goes in one X register on both
+sides, AAPCS64 and arm64_32 alike - log one on both sides the first time to
+be sure):
+
+- **Identity.** A shader is known by a 64-bit hash of its key, made by the
+  guest (step 4). The host never sees keys, only hashes and GLSL.
+- **On the card.** `<data root>/shader_cache/<UAM commit, 12 hex>/`
+  (`host_main.c`'s `data_root`, `sdmc:/switch/halo` on a console; add an
+  accessor), one `<stage letter><hash, 16 hex>.dksh` a shader (`v`, `f`).
+  Written as `.tmp` and renamed when complete, so a compile cut short leaves
+  no half file. At start the host lists the folder once into a hash set
+  (it does not open the files), and removes the other folders under
+  `shader_cache/` only (they are other UAM versions'; nothing else is
+  touched). The generators' version is in the guest's hash (step 4), so a
+  generator change makes new names, not a new folder; a stale file is just
+  never asked for.
+- **Imports**, something like:
+  - `uint32_t host_dk_shader_find(uint32_t stage, uint64_t hash)`: a handle
+    (1 or more) if the shader is in GPU code memory; else, if its file is on
+    the card, it is read and loaded now (about 2 ms; on the game thread,
+    which is the one deko3d runs on) and its handle returned; else 0 with
+    the state - queued or compiling, or unknown - told apart (an out
+    parameter or two reserved values).
+  - `void host_dk_shader_compile(uint32_t stage, uint64_t hash, uint32_t
+    glsl, uint32_t glsl_size, uint32_t priority)`: queue it (the GLSL copied
+    into host memory: `glsl` is a guest address, readable directly). Already
+    queued: its priority is raised if the new one is higher, and the GLSL is
+    ignored. Already compiled: nothing.
+  - Priorities (in `guest/dk_shaders.h`): 0 a draw needs it now, 1 the map
+    being played, 2 the rest.
+- **Compile threads**: the number step 1 decided, with stacks of at least
+  1 MB and a lower priority than the game thread, and never on the game
+  thread's core. A plain host pthread starts on the process's default core,
+  which is the game thread's: `host_thread.c`'s `place_thread` (static now)
+  is what moves a thread onto the cores the game thread does not keep, and
+  it logs "a thread starts on core N" when it does - check for that line.
+  Expose it for these threads, rather than use `host_native_thread_create`,
+  whose stacks come out of guest memory (they are for threads that call into
+  the guest; these never do). Each takes the queue's most urgent
+  entry, compiles it to the card, adds its hash to the set, and logs a line
+  every so often (count, queue length), not one a shader. At most one
+  compile thread if step 1 found UAM unsafe, or a lock around
+  `host_dk_compile_glsl`.
+- **Code memory**: one `DkMemBlockFlags_Code` block (with `CpuUncached |
+  GpuCached`), 16 MB to start - phase 4's 744 shaders took about 1 MB of
+  DKSH, code and control together - code placed at 256-byte alignment and
+  never freed (a shader once loaded stays for the program's life), and
+  `DK_SHADER_CODE_UNUSABLE_SIZE` left free at its end. Loading is the probe's
+  `shader_load`. Only the game thread touches deko3d (`host_dk.c`'s rule), so
+  compile threads write files and nothing else.
+- **A handle** is an index into a table of `DkShader`, which phase 6's draws
+  will name in the command stream.
+
+### Step 4: keys, key files and the startup pass in the guest
+
+`port/switch/guest/dk_shaders.c` (in `dk_objects`, as phase 4's generators
+are), with what it needs from `d3d8_dk.c`:
+
+- **Keys.** A vertex shader's: the generators' version, the hash of its
+  program (FNV-1a 64 over the instruction count and words, computed once in
+  `D3DDevice_CreateVertexShader` and kept in the object), and the packed
+  mask. A pixel shader's: the generators' version and the
+  `nv2a_pixel_shader_key`, with `count_samples` set to 0 (it is Android's
+  occlusion counting; it does not change the GLSL). The hash: FNV-1a 64 of
+  that blob. `DK_SHADER_GENERATOR_VERSION` in `guest/dk_shaders.h`, starting
+  at 1, to be raised by any change to what `nv2a_vsh_dk.c` or
+  `nv2a_psh_dk.c` write - say so in a comment at the top of both.
+- **Key files** - what players share (see "Decisions" and phase 8). In
+  `z:\shader_keys\` (the save folder: `/switch/halo/save/z/shader_keys/` on
+  the card), every file there read at start. Format: a header (magic
+  `"DKK1"`, a format version, the record size) and fixed-size records:
+  stage, the hash of the map it was first met on, and the key's data (for a
+  vertex shader the program hash and packed mask, for a pixel shader the
+  `nv2a_pixel_shader_key`). Records are deduplicated by their shader hash as
+  they are read. A vertex record names its program by hash, so it can only
+  be compiled once the game has made that program; one naming a program the
+  game never makes is kept and skipped.
+- **The console's own file**, `z:\shader_keys\console.dkk`: keys this
+  console met first are appended to it (phase 6's draws will append the
+  ones they miss), so it is the file a player sends.
+- **The OpenGL records, imported once.** `z:\shader_programs.bin` (the
+  OpenGL image's program records, phase 4) holds the keys of everything the
+  user has played under OpenGL. The first time the deko3d image starts with
+  no `console.dkk`, it converts them (vertex shader id to program through
+  the id table phase 4's dump keeps - both images make their vertex shaders
+  in the same order - and the packed mask; the pixel key as it is) and
+  writes them as `console.dkk`. That is also what tests the writer in this
+  phase.
+- **The startup pass.** Once the game has made its vertex shaders - at the
+  60th frame, as phase 4's dump learnt (`device.frame >= 60` in
+  `D3DDevice_Present`) - go through the known keys a few at a time each
+  frame (eight, say: generating GLSL costs the game thread time), asking
+  `host_dk_shader_find` first and, for a key unknown to the host,
+  generating its GLSL and calling `host_dk_shader_compile` with priority 1
+  if its map is the one loaded and 2 otherwise. Log when it starts and
+  ends, with counts.
+- **Map priority.** `d3d8_gl_map_loaded(name)` (the game calls it as a map
+  finishes loading; `d3d8_dk.c` has it empty) notes the map's hash (as
+  `d3d8_gl.c`'s `program_record_map_hash`) and sends that map's keys that are
+  not yet compiled again with priority 1, which raises them in the queue.
+- **For phase 6** (built now, used then): `dk_shader_for_draw(stage, key)`,
+  which hashes the key, looks in a guest-side table of hash to handle
+  first, and otherwise asks the host; a key unknown to the host is
+  generated, queued with priority 0 and appended to `console.dkk`; the
+  answer is the handle or "not ready, skip the draw".
+
+### Testing on the console
+
+Deploy with `python3 tools/switch_deploy.py` (it uploads `halo.nro` and both
+images; the probe goes with `--destination /switch
+port/switch/probe/deko3d/deko3d.nro`). The user runs everything and says
+when; logs are `/switch/halo/halo.log` and `/switch/halo/debug.txt` (read
+both), crash reports in `/atmosphere/crash_reports`. `config.toml` has
+`renderer = "deko3d"` under `[display]`.
+
+1. Step 1's probe runs, with their numbers in "Progress".
+2. **A first launch with an empty cache.** Delete `/switch/halo/shader_cache`
+   and `/switch/halo/save/z/shader_keys` first (over FTP; nothing else). The
+   game reaches the menus at once; the log shows the OpenGL records
+   imported (about 1,197 records, about 744 distinct shaders), the startup
+   pass queueing them, the compile threads' progress, and when the queue
+   is empty and how long it took; the host's `fps` lines stay at 60 the
+   whole time (they are printed every five seconds) and the game thread's
+   ms a frame stays near the 0.6 ms phase 2 measured. Note the time.
+3. **A second launch.** Nothing is compiled; the startup pass finds every
+   shader on the card; how long it takes to get through them is in the
+   log.
+4. **A generator change.** Raise `DK_SHADER_GENERATOR_VERSION` in a local
+   build, launch: everything is queued again under new names. Put it back
+   (and don't commit the raise).
+
+### Acceptance
+
+The review checks each of these:
+
+1. `ninja switch` builds with no new warnings; the OpenGL image is
+   unchanged in behaviour and links no UAM; on a machine without mako the
+   Switch build still succeeds, with the stub (try it: run `configure.py`
+   with mako hidden, e.g. `PYTHONPATH` pointing at a folder holding a
+   `mako.py` that raises `ImportError`, and look for the note).
+2. Step 1's findings and numbers are in "Progress": the one-thread time
+   before and after the front end is kept, each multi-thread run compared
+   byte for byte, the shared state found, and the decision.
+3. The first-launch test: every known shader compiled in the background,
+   with the time it took, and the game at 60 frames a second while it
+   did, from the log lines quoted in "Progress".
+4. The second-launch test: no compiles, and the startup pass's time.
+5. The host touches deko3d on the game thread only; compile threads write
+   files and the queue, nothing else; a shader file is complete or absent.
+6. `console.dkk` exists after the first launch, holds the imported keys,
+   and a second launch reads it (and not `shader_programs.bin` again).
+7. Shared files under `port/linux/src` are unchanged, except for anything
+   behind `#ifdef HALO_SWITCH` that is argued for under "Progress".
+
+Don't commit; the review does that. Record anything unexpected under
+"Progress", even if it was dealt with.
 
 ## Phase 6 — draws, textures and render targets
 
