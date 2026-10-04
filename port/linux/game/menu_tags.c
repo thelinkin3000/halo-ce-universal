@@ -854,7 +854,7 @@ static void *bitmap_build(struct halo_menu_bitmap const *source, long tag_index)
 				problem(source->file, source->line, "the map's bitmap has no such frame:", data->map);
 				return group;
 			}
-			memcpy(bitmap, (struct bitmap_data *)group_source->bitmaps.address + data->index, sizeof(*bitmap));
+			memcpy(bitmap, (struct bitmap_data *)TAG_BLOCK_ADDRESS(group_source->bitmaps) + data->index, sizeof(*bitmap));
 			bitmap->cache_block_index = NONE;
 			bitmap->base_address = NULL;
 			/* (scaled to a size of the file's: the texture stays the map's,
