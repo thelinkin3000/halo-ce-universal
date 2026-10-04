@@ -207,8 +207,18 @@ uint32_t host_sdl_open_gamepad(uint32_t id)
 	SDL_Gamepad *gamepad = SDL_OpenGamepad((SDL_JoystickID)id);
 
 	if (gamepad)
-		host_logf(HOST_LOG_INFO, "gamepad %u: %s (type %d, %04x:%04x)", (unsigned)id, SDL_GetGamepadName(gamepad),
-			(int)SDL_GetGamepadType(gamepad), SDL_GetGamepadVendor(gamepad), SDL_GetGamepadProduct(gamepad));
+	{
+		char guid[64];
+		char const *serial = SDL_GetGamepadSerial(gamepad);
+		char const *path = SDL_GetGamepadPath(gamepad);
+
+		/* (the serial, path and GUID tell two pads of the same model apart,
+		which share a name) */
+		SDL_GUIDToString(SDL_GetGamepadGUIDForID((SDL_JoystickID)id), guid, sizeof(guid));
+		host_logf(HOST_LOG_INFO, "gamepad %u: %s (type %d, %04x:%04x, serial %s, path %s, guid %s)", (unsigned)id,
+			SDL_GetGamepadName(gamepad), (int)SDL_GetGamepadType(gamepad), SDL_GetGamepadVendor(gamepad),
+			SDL_GetGamepadProduct(gamepad), serial ? serial : "none", path ? path : "none", guid);
+	}
 	return handle_new(_handle_gamepad, gamepad);
 }
 
