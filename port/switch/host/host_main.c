@@ -376,12 +376,31 @@ static unsigned long long extraction_last_done;
 static const char *extraction_last_file;
 static unsigned long long extraction_total;
 static unsigned extraction_seconds;
-/* the image's name, and whether the menus' screens are showing the unpack:
-the menu has gone by now and SDL has not come yet, so the screen is free,
+/* the image's name, and whether the host's screens are showing the unpack:
+the updater has gone by now and SDL has not come yet, so the screen is free,
 and was left black for the minutes this takes */
 static const char *extraction_image;
 static int extraction_on_screen;
 static unsigned long long extraction_drawn;
+
+/* The updater's screens, before the game starts. Internet games used to be
+chosen here too, from a menu of the host's own; the game's menus have that
+now, so the host only asks when there is something to update. */
+static void offer_an_update(void)
+{
+	PadState pad;
+
+	padInitializeDefault(&pad);
+	if (!host_ui_open())
+	{
+		host_logf(HOST_LOG_ERROR, "update: the screens could not be set up; starting the game");
+		host_ui_close();
+		return;
+	}
+	host_update_offer(&pad);
+	/* the window goes back to SDL, for the game */
+	host_ui_close();
+}
 
 static void draw_extraction(const char *file, unsigned long long done, unsigned long long total)
 {
@@ -1064,9 +1083,9 @@ int main(int argc, char *argv[])
 	padConfigureInput(1, HidNpadStyleSet_NpadStandard);
 	log_marker("marker: libnx init done");
 
-	/* play as usual, or join an internet game from the community list; on
-	the default window, before the game thread's SDL takes it */
-	host_lobby_choose();
+	/* a newer release of the port, if there is one; on the default window,
+	before the game thread's SDL takes it */
+	offer_an_update();
 
 	{
 		/* The game thread's stack is guest memory, so it has to be below
