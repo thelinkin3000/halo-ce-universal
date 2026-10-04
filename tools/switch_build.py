@@ -536,6 +536,11 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     # config.toml's display.renderer says (port/switch/host/host.h).
     dk_objects = [obj for obj in objects if obj != gl_renderer_object]
     dk_objects.append(guest_object(PORT_DIR / "guest" / "d3d8_dk.c", platform_cflags))
+    # the deko3d renderer's GLSL generators (DEKO3D.md, phase 4); the
+    # OpenGL renderer's nv2a_vsh.c and nv2a_psh.c stay in both images, and
+    # the copies' names do not collide with them
+    dk_objects.append(guest_object(PORT_DIR / "guest" / "nv2a_vsh_dk.c", platform_cflags))
+    dk_objects.append(guest_object(PORT_DIR / "guest" / "nv2a_psh_dk.c", platform_cflags))
     n.build(outputs=dk_image, rule="switch_guest_link", inputs=dk_objects, implicit=[libguestc, linker_script])
 
     # ---------- the host, built with devkitA64
