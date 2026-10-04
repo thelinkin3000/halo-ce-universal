@@ -2,8 +2,8 @@
 HOST_HTTPS.C
 
 HTTPS GET for the host, over the console's own TLS (the ssl service), so the
-build carries no TLS library: the internet games list (host_lobby.c) and the
-updater (host_update.c) both fetch through here.
+build carries no TLS library: the updater (host_update.c) fetches through
+here.
 
 A request is HTTP/1.0, so that no answer comes chunked: every server asked
 gives a Content-Length, or ends the body by closing. The body goes to the
