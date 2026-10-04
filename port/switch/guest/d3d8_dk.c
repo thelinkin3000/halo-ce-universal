@@ -21,7 +21,9 @@ and presenting go there; a draw and a visibility test do nothing yet.
 #include "sdl_platform.h"
 #include "halo_ui_pointer.h"
 #include "port_config.h"
+#include "posix.h"
 #include "dk_commands.h"
+#include "dk_shaders.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -1044,6 +1046,8 @@ static void parse_declaration(struct vertex_shader_object *object, const DWORD *
 		}
 	}
 }
+static void vertex_shader_note(struct vertex_shader_object *object);
+
 HRESULT WINAPI D3DDevice_CreateVertexShader(CONST DWORD *declaration, CONST DWORD *function, DWORD *handle, DWORD usage)
 {
 	struct vertex_shader_object *object = calloc(1, sizeof(*object));
@@ -1061,6 +1065,7 @@ HRESULT WINAPI D3DDevice_CreateVertexShader(CONST DWORD *declaration, CONST DWOR
 		memcpy(object->instructions, function + 1, object->instruction_count * 4 * sizeof(DWORD));
 	}
 	parse_declaration(object, declaration);
+	vertex_shader_note(object);
 	/* odd values are FVF codes; programmable shader handles are even */
 	*handle = (DWORD)object;
 	return S_OK;
@@ -1139,6 +1144,231 @@ static struct vertex_shader_object *current_program(void)
 void d3d8_gl_map_loaded(const char *name)
 {
 	(void)name;
+}
+
+/* ---------- the shader dump (debug.gpu_dump_shaders; DEKO3D.md, phase 4)
+
+The corpus the GLSL generators are proved with is the game's own: the
+vertex programs this device holds (the game creates them from its table at
+startup), and the pixel shader keys the OpenGL image recorded in
+shader_programs.bin (d3d8_gl.c's program records), as GLSL from the deko3d
+generators (nv2a_vsh_dk.c, nv2a_psh_dk.c), which UAM then compiles on the PC
+and on the console. Written once, a second into the game
+(D3DDevice_Present). */
+
+/* the vertex shader objects by their id (d3d8_gl.c's list, kept for its
+program records: the records name the programs by id) */
+static struct vertex_shader_object **vertex_shaders_by_id;
+static unsigned long vertex_shaders_by_id_count;
+
+static void vertex_shader_note(struct vertex_shader_object *object)
+{
+	if (object->id >= vertex_shaders_by_id_count)
+	{
+		unsigned long count = object->id + 64;
+		struct vertex_shader_object **grown = realloc(vertex_shaders_by_id, count * sizeof(*grown));
+
+		if (!grown)
+			return;
+		memset(grown + vertex_shaders_by_id_count, 0, (count - vertex_shaders_by_id_count) * sizeof(*grown));
+		vertex_shaders_by_id = grown;
+		vertex_shaders_by_id_count = count;
+	}
+	vertex_shaders_by_id[object->id] = object;
+}
+
+/* d3d8_gl.c's program records, whose keys the dump's pixel shaders are */
+#define PROGRAM_RECORD_MAGIC 0x31435350UL /* "PSC1" */
+#define PROGRAM_RECORD_PATH "z:\\shader_programs.bin"
+
+struct program_record
+{
+	DWORD map_hash;
+	DWORD vertex_id;
+	DWORD variant;
+	DWORD packed_mask;
+	struct nv2a_pixel_shader_key key;
+};
+
+/* d3d8_gl.c's hash, which names the pixel files (size is a multiple of 4) */
+static unsigned long hash_words(const void *data, unsigned long size)
+{
+	const DWORD *words = data;
+	unsigned long hash = 2166136261UL;
+
+	for (size /= 4; size; size--)
+		hash = (hash ^ *words++) * 16777619UL;
+	return hash;
+}
+
+/* the records from shader_programs.bin, or as many as memory holds; a file
+from a build whose key differs in size is no use (the key struct is shared,
+so a record is the same size here - checked anyway) */
+static struct program_record *program_records_load(unsigned long *count_out)
+{
+	char path[512];
+	FILE *file;
+	DWORD header[2];
+	struct program_record *records = NULL;
+	unsigned long count = 0, capacity = 0;
+	struct program_record record;
+
+	*count_out = 0;
+	platform_translate_path(PROGRAM_RECORD_PATH, path, sizeof(path));
+	if ((file = fopen(path, "rb")) == NULL)
+		return NULL;
+	if (fread(header, sizeof(header), 1, file) == 1 && header[0] == PROGRAM_RECORD_MAGIC &&
+		header[1] == sizeof(record))
+	{
+		while (fread(&record, sizeof(record), 1, file) == 1)
+		{
+			if (count == capacity)
+			{
+				unsigned long grown_capacity = capacity ? capacity * 2 : 256;
+				struct program_record *grown = realloc(records, grown_capacity * sizeof(*grown));
+
+				if (!grown)
+					break;
+				records = grown;
+				capacity = grown_capacity;
+			}
+			records[count++] = record;
+		}
+	}
+	else
+	{
+		platform_log("shader dump: %s is not a program records file of this build; its keys are not dumped", path);
+	}
+	fclose(file);
+	*count_out = count;
+	return records;
+}
+
+static BOOL shaders_dumped;
+
+static void shaders_dump(void)
+{
+	const char *folder = config_string("debug.gpu_dump_shaders");
+	char path[512], line[256];
+	FILE *manifest;
+	struct program_record *records;
+	unsigned long record_count, index;
+	struct nv2a_pixel_shader_key *keys = NULL;
+	unsigned long key_count = 0, key_capacity = 0, vertex_files = 0, pixel_files = 0;
+	unsigned long id;
+
+	if (!*folder)
+		return;
+	records = program_records_load(&record_count);
+	/* (exists already on every run but the first) */
+	posix_make_directory(folder);
+	snprintf(path, sizeof(path), "%s/manifest.txt", folder);
+	manifest = fopen(path, "w");
+	if (!manifest)
+	{
+		platform_log("shader dump: cannot write in %s", folder);
+		free(records);
+		return;
+	}
+
+	/* a vertex file per object and packed mask: mask 0 (the immediate-mode
+	variant), and every mask the records show the program drawn with */
+	for (id = 1; id < vertex_shaders_by_id_count; id++)
+	{
+		struct vertex_shader_object *object = vertex_shaders_by_id[id];
+		unsigned long masks[16];
+		unsigned long mask_count = 0, mask_index;
+
+		if (!object || !object->instructions)
+			continue;
+		masks[mask_count++] = 0;
+		for (index = 0; index < record_count; index++)
+		{
+			unsigned long mask;
+
+			if (records[index].vertex_id != id)
+				continue;
+			mask = records[index].packed_mask;
+			for (mask_index = 0; mask_index < mask_count; mask_index++)
+			{
+				if (masks[mask_index] == mask)
+					break;
+			}
+			if (mask_index == mask_count)
+			{
+				if (mask_count < sizeof(masks) / sizeof(masks[0]))
+					masks[mask_count++] = mask;
+				else
+					platform_log("shader dump: vertex shader %lu has more than %lu packed masks; the rest are not dumped",
+						id, (unsigned long)(sizeof(masks) / sizeof(masks[0])));
+			}
+		}
+		for (mask_index = 0; mask_index < mask_count; mask_index++)
+		{
+			char *source = nv2a_dk_vertex_shader_to_glsl((const uint32_t *)object->instructions,
+				object->instruction_count, masks[mask_index]);
+			FILE *file;
+
+			snprintf(path, sizeof(path), "%s/vs_%lu_%08lx.vert", folder, id, masks[mask_index]);
+			if ((file = fopen(path, "w")) != NULL)
+			{
+				fputs(source, file);
+				fclose(file);
+				snprintf(line, sizeof(line), "vs_%lu_%08lx.vert: vertex shader %lu (%lu instructions), packed mask 0x%08lx%s\n",
+					id, masks[mask_index], id, object->instruction_count, masks[mask_index],
+					masks[mask_index] ? "" : " (the immediate-mode variant)");
+				fputs(line, manifest);
+				vertex_files++;
+			}
+			free(source);
+		}
+	}
+
+	/* a fragment file per distinct key, named by d3d8_gl.c's hash of it */
+	for (index = 0; index < record_count; index++)
+	{
+		struct nv2a_pixel_shader_key *key = &records[index].key;
+		unsigned long hash, found;
+		char *source;
+		FILE *file;
+
+		for (found = 0; found < key_count; found++)
+		{
+			if (!memcmp(&keys[found], key, sizeof(*key)))
+				break;
+		}
+		if (found < key_count)
+			continue;
+		if (key_count == key_capacity)
+		{
+			unsigned long grown_capacity = key_capacity ? key_capacity * 2 : 256;
+			struct nv2a_pixel_shader_key *grown = realloc(keys, grown_capacity * sizeof(*grown));
+
+			if (!grown)
+				break;
+			keys = grown;
+			key_capacity = grown_capacity;
+		}
+		keys[key_count++] = *key;
+		hash = hash_words(key, sizeof(*key));
+		source = nv2a_dk_pixel_shader_to_glsl(key);
+		snprintf(path, sizeof(path), "%s/ps_%08lx.frag", folder, hash);
+		if ((file = fopen(path, "w")) != NULL)
+		{
+			fputs(source, file);
+			fclose(file);
+			snprintf(line, sizeof(line), "ps_%08lx.frag: the pixel shader key hashing to 0x%08lx, first in the records of map 0x%08lx\n",
+				hash, hash, (unsigned long)records[index].map_hash);
+			fputs(line, manifest);
+			pixel_files++;
+		}
+		free(source);
+	}
+	fclose(manifest);
+	platform_log("shader dump: %lu vertex and %lu pixel shaders (%lu records) written to %s",
+		vertex_files, pixel_files, record_count, folder);
+	free(keys);
+	free(records);
 }
 
 /* ---------- vertex data and drawing */
@@ -1319,6 +1549,14 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 	(void)destination_rectangle;
 	(void)unused;
 	(void)unused2;
+	/* Not at the first frame: the rasterizer presents once as it starts,
+	before it makes the game's vertex shaders (rasterizer_initialize), and a
+	dump then has none. A second's frames on, it has made them all. */
+	if (!shaders_dumped && device.frame >= 60)
+	{
+		shaders_dumped = TRUE;
+		shaders_dump();
+	}
 	{
 		struct dk_command_present *command = stream_command(DK_COMMAND_PRESENT, sizeof(*command));
 
