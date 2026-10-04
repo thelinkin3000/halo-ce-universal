@@ -56,7 +56,7 @@ SDL_DIR = THIRD_PARTY / "SDL3"
 # (nv50_ir and its exceptions), so the host is linked with the C++ driver
 # to bring in the standard library, which is what LittleGPTracker's Switch
 # Makefile does for the same reason.
-HOST_LIBRARIES = ["SDL2", "EGL", "GLESv2", "glapi", "drm_nouveau", "nx", "pthread", "m"]
+HOST_LIBRARIES = ["SDL2", "EGL", "GLESv2", "glapi", "drm_nouveau", "deko3d", "nx", "pthread", "m"]
 
 # UAM, deko3d's shader compiler, built as a library for the console so that
 # the deko3d renderer can compile shaders at run time (port/switch/DEKO3D.md).
@@ -158,8 +158,8 @@ def _devkita64(devkitpro: Path) -> Optional[Path]:
 
 
 def switch_configure_inputs() -> List[Path]:
-    return [Path(__file__), PORT_DIR / "host", ANDROID_PORT_DIR / "host_imports.list", LINUX_DIR / "src",
-            UAM_PATCH, *hud_configure_inputs()]
+    return [Path(__file__), PORT_DIR / "host", PORT_DIR / "guest", ANDROID_PORT_DIR / "host_imports.list",
+            LINUX_DIR / "src", UAM_PATCH, *hud_configure_inputs()]
 
 
 def generate_switch_build(n: Writer, sln: Any) -> None:
@@ -230,6 +230,7 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     platform_semantics_header = Path("build/linux/platform_msvc_semantics.h")
     prefix_header = LINUX_DIR / "include" / "halo_linux_prefix.h"
     image = BUILD / "halo_guest.elf"
+    dk_image = BUILD / "halo_guest_dk.elf"
     host_obj_dir = BUILD / "host" / "obj"
     nro = BUILD / "halo.nro"
     python = "$python"
@@ -308,13 +309,15 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     imports_s = gen_dir / "imports.s"
     host_table_c = BUILD / "host" / "host_import_table.c"
     host_imports_list = ANDROID_PORT_DIR / "host_imports.list"
+    # the Switch host's own: the deko3d renderer's (port/switch/guest/d3d8_dk.c)
+    switch_imports_list = PORT_DIR / "host_imports.list"
     n.rule(
         name="switch_imports",
         command=f"{python} tools/android_imports.py --translate-descriptors --host-table {host_table_c} {imports_s} $in",
         description="SWITCH IMPORTS",
     )
     n.build(outputs=[imports_s, host_table_c], rule="switch_imports",
-            inputs=[host_imports_list, posix_imports, gl_imports],
+            inputs=[host_imports_list, switch_imports_list, posix_imports, gl_imports],
             implicit=[Path("tools/android_imports.py")])
 
     generated_headers = [*xdk_headers(), alltypes, syscall_h, version_h, gl_stamp,
@@ -463,10 +466,13 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
         f"-I{SDL_DIR}/include", f"-I{gl_include}", *libc_includes, f"-idirafter {XDK_INCLUDE}",
     ])
     guest_host_only = {"memory_watch.c"}  # replaced by guest_memory_watch.c
+    gl_renderer_object = None
     for source in sorted((LINUX_DIR / "src").glob("*.c")):
         if source.name.startswith("posix_") or source.name in guest_host_only:
             continue
         objects.append(guest_object(source, platform_cflags))
+        if source.name == "d3d8_gl.c":
+            gl_renderer_object = objects[-1]
     for source in hud_assets_build(n, "switch", gen_dir / "hud_hires_assets.c"):
         objects.append(guest_object(source, platform_cflags))
     objects.append(guest_object(TOML_DIR / "tomlc17.c", platform_cflags))
@@ -524,6 +530,13 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     )
     n.build(outputs=image, rule="switch_guest_link", inputs=objects, implicit=[libguestc, linker_script])
 
+    # The same game with the deko3d renderer (port/switch/DEKO3D.md): its
+    # device, port/switch/guest/d3d8_dk.c, takes the place of d3d8_gl.c, and
+    # every other object is shared. The host runs one image or the other, as
+    # config.toml's display.renderer says (port/switch/host/host.h).
+    dk_objects = [obj for obj in objects if obj != gl_renderer_object]
+    dk_objects.append(guest_object(PORT_DIR / "guest" / "d3d8_dk.c", platform_cflags))
+    n.build(outputs=dk_image, rule="switch_guest_link", inputs=dk_objects, implicit=[libguestc, linker_script])
 
     # ---------- the host, built with devkitA64
 
@@ -659,5 +672,5 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     )
     n.build(outputs=nro, rule="switch_nro", inputs=[elf, nacp, nro_icon])
 
-    n.build(outputs="switch", rule="phony", inputs=[nro, image])
+    n.build(outputs="switch", rule="phony", inputs=[nro, image, dk_image])
     n.newline()

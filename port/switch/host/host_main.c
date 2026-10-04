@@ -606,6 +606,25 @@ static void environment_copy_halo(struct environment *environment)
 	}
 }
 
+int host_renderer_deko3d;
+
+/* whether config.toml's display.renderer asks for deko3d (host.h) */
+static int config_renderer_is_deko3d(const char *path)
+{
+	toml_result_t result = toml_parse_file_ex(path);
+	int deko3d = 0;
+
+	if (!result.ok)
+		return 0;
+	{
+		toml_datum_t renderer = toml_seek(result.toptab, "display.renderer");
+
+		deko3d = renderer.type == TOML_STRING && !strcmp(renderer.u.s, "deko3d");
+	}
+	toml_free(result);
+	return deko3d;
+}
+
 /* debug.sample_seconds from config.toml, as text for the sampler, or 0 */
 static int config_sample_seconds(const char *path, char *text, size_t size)
 {
@@ -795,11 +814,24 @@ static void *game_main(void *unused)
 	time_zone(zone, sizeof(zone));
 	environment_set(&environment, "TZ", zone);
 
+	/* the renderer decides the image: each is built with one (host.h) */
+	snprintf(path, sizeof(path), "%s/config.toml", data_root);
+	host_renderer_deko3d = config_renderer_is_deko3d(path);
 	setting = getenv("HALO_GUEST_IMAGE");
 	if (setting && *setting)
 		snprintf(path, sizeof(path), "%s", setting);
 	else
-		snprintf(path, sizeof(path), "%s/halo_guest.elf", executable_root);
+	{
+		snprintf(path, sizeof(path), "%s/%s", executable_root,
+			host_renderer_deko3d ? "halo_guest_dk.elf" : "halo_guest.elf");
+		if (host_renderer_deko3d && access(path, R_OK) != 0)
+		{
+			host_logf(HOST_LOG_WARN, "display.renderer is deko3d, but there is no %s; using OpenGL", path);
+			host_renderer_deko3d = 0;
+			snprintf(path, sizeof(path), "%s/halo_guest.elf", executable_root);
+		}
+	}
+	host_logf(HOST_LOG_INFO, "renderer: %s (%s)", host_renderer_deko3d ? "deko3d" : "OpenGL over Mesa", path);
 	image = read_file(path, &image_size);
 	probe_window_capacity();
 	log_marker("marker: reading the guest image");
