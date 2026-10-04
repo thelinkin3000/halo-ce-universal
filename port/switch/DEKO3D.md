@@ -221,19 +221,223 @@ evict nothing.
 
 ## Phase 4 — GLSL for UAM
 
-In `nv2a_vsh_dk.c` / `nv2a_psh_dk.c`:
+Written to be picked up by an agent that has not seen the work so far. Read
+"Where the renderer lives" and phases 0 to 3 above first; then read
+`port/linux/src/nv2a_vsh.c` and `port/linux/src/nv2a_psh.c` whole (380 and
+660 lines), and `prepare_draw` and `program_get` in `port/linux/src/d3d8_gl.c`,
+which show what the generated shaders are fed. The work is reviewed against
+the acceptance list at the end of this phase.
 
-- GLSL 4.60 with an explicit `layout(location)` on every vertex output and
-  pixel input, so any vertex shader goes with any pixel shader, unlinked.
-- Uniforms in uniform buffers: the vertex constants (192 vec4, 3 KB) and the
-  per-draw values (combiner constants, fog, alpha reference, bump matrices,
-  texture scale, screen offset).
-- No y flip and no depth remap: `DkDeviceFlags_OriginUpperLeft` and
-  `DkDeviceFlags_DepthZeroToOne` give Direct3D's conventions.
-- The LOD bias goes back into the sampler.
+### What this phase is, and is not
 
-- The game's real shaders, generated so, timed on the console: what they
-  cost says what compiling shared keys at startup costs.
+It produces the deko3d renderer's two GLSL generators and proves that UAM
+compiles what they produce for the game's real shaders - on the PC, and on
+the console with the times taken. It does **not** draw anything (phase 6),
+cache anything (phase 5) or link UAM into the host (phase 5). Nothing in it
+changes what the console shows.
+
+### Files
+
+- `port/switch/guest/nv2a_vsh_dk.c`, copied from `nv2a_vsh.c`; the function
+  renamed `nv2a_dk_vertex_shader_to_glsl` (same arguments: the program's
+  instructions, their count, the declaration's packed-attribute mask).
+- `port/switch/guest/nv2a_psh_dk.c`, copied from `nv2a_psh.c`; the function
+  renamed `nv2a_dk_pixel_shader_to_glsl` (same argument: a
+  `struct nv2a_pixel_shader_key`).
+- `port/switch/guest/dk_shaders.h`: the generators' prototypes, the binding
+  numbers and locations below as `#define`s, and C structs that are the
+  uniform blocks' std140 layout byte for byte (phase 6 fills them), each
+  with its size checked at compile time (`typedef char
+  name_size_check[sizeof(struct x) == N ? 1 : -1];`, the way `d3d8_gl.c`
+  checks `nv2a_pixel_shader_key`). Fixed-width types and floats only, like
+  `dk_commands.h`, so the host can include it too.
+- `tools/switch_build.py`: the two new sources added to `dk_objects` (the
+  deko3d image only; look for `d3d8_dk.c` there). The originals stay in both
+  images; the new names do not collide with them.
+
+The originals are not edited: they are compiled into every platform's
+image. The Switch's guest is compiled with `HALO_ANDROID` (and
+`HALO_SWITCH`), so in the originals the Switch takes the OpenGL ES branches;
+the copies drop every `#ifdef HALO_ANDROID` branch and keep what the
+deko3d version needs, as below.
+
+### What changes from the OpenGL generators
+
+**Version and precision.** `#version 460` as the first line (checked with
+`uam`: it compiles a 460 vertex shader with a std140 block and an invariant
+`gl_Position`, and rejects a loose uniform with "uniform 'loose' in driver
+constbuf ... not supported"); no `precision`
+statements, no `xgpu_capabilities.shading_language`. UAM defines `DEKO3D`
+(100) if anything needs to tell.
+
+**No loose uniforms.** UAM rejects any uniform outside a uniform block (its
+README: they are "reported as an error"), and every block and sampler needs
+an explicit `binding`. Bindings are per stage. Use these:
+
+| Stage | Binding | Block | Contents |
+|---|---|---|---|
+| vertex | 0 | `vertex_constants` | `vec4 c[192];` - 3072 bytes |
+| vertex | 1 | `vertex_parameters` | `vec4 viewport_scale; vec4 viewport_offset; vec4 point_and_screen;` (x: the point size, y: the screen offset) |
+| fragment | 0 | `pixel_parameters` | `vec4 ps_c0[8]; vec4 ps_c1[8]; vec4 ps_final_c0; vec4 ps_final_c1; vec4 fog_color; vec4 fog_parameters; vec4 alpha_reference;` (x) `vec4 bump_matrix[4]; vec4 bump_luminance[4]; vec4 texture_scale[4];` |
+| fragment | samplers 0-3 | `tex0`-`tex3` | `layout(binding = N) uniform sampler2D/sampler3D/samplerCube texN;`, the type from the key as now |
+
+Declare every block `layout(std140, binding = N) uniform name { ... };`
+with **vec4 members only**: std140 gives a lone `float` 4-byte alignment
+but an array of floats a 16-byte stride, and mixing them is how a C struct
+and a block drift apart. The OpenGL generators' `uniform float point_size`,
+`screen_offset` and `alpha_reference` become components of a vec4, and
+every use of them changes to match (`point_and_screen.x`,
+`point_and_screen.y`, `alpha_reference.x`). The OpenGL ES-only
+`texture_lod_bias` goes: under deko3d the LOD bias is the sampler's
+(`DkSampler.lodBias`, phase 6), so `SAMPLE_BIAS` is the desktop one, empty.
+
+**Explicit locations between the stages.** UAM has no linking: each stage
+is compiled alone, so a vertex output and a pixel input meet only by
+location. Give both sides the same numbers:
+
+| Location | Vertex output / pixel input |
+|---|---|
+| 0 | `xD0` |
+| 1 | `xD1` |
+| 2 | `xB0` |
+| 3 | `xB1` |
+| 4 | `xT0` |
+| 5 | `xT1` |
+| 6 | `xT2` |
+| 7 | `xT3` |
+| 8 | `xFog` (float) |
+
+Every vertex shader writes all nine, and every pixel shader declares all
+nine, read or not, so that any vertex shader goes with any pixel shader -
+that is what makes caching them apart (phase 5) work. The pixel output
+stays `layout(location = 0) out vec4 fragment_color;`. Vertex inputs keep
+their `layout(location = N)` (0-15), all sixteen declared, as now: phase 6
+feeds an attribute the game did not put in a stream from a stride-0 buffer
+holding its constant value, so the shaders need not know which are which.
+A packed (`D3DVSDT_NORMPACKED3`) attribute stays `in uint` and is unpacked
+in the shader as now.
+
+**Clip space: the desktop's conventions, the ES branch's precision.** The
+host's deko3d device is made with `DkDeviceFlags_DepthZeroToOne |
+DkDeviceFlags_OriginUpperLeft` (`host_dk.c`, `initialize`), which is what
+`glClipControl(GL_UPPER_LEFT, GL_ZERO_TO_ONE)` gives desktop GL. So, at the
+end of the vertex shader:
+- no `gl_Position.y = -gl_Position.y` and no `gl_Position.z = 2.0 *
+  gl_Position.z - gl_Position.w` (both are the ES branch's emulation of
+  glClipControl);
+- keep the ES branch's `clip_captured` path (capture `oPos` where the
+  program takes `rcc` of `r12.w`, and compute `gl_Position` from the
+  captured clip position without dividing by w and multiplying again). It
+  is about precision near the camera plane, not about ES: it was found on a
+  Mali GPU, but dividing by w and multiplying back loses precision on any.
+  Its constants are `c[%d]` for `XGPU_VERTEX_CONSTANT_BIAS - 38` and `- 37`,
+  as now;
+- keep the half-pixel offset `+ 0.5` (Direct3D 8 puts pixel centres on
+  integers; the Maxwell rasterizer, like GL, on half-integers) and
+  `screen_offset`;
+- keep `invariant gl_Position;` (the game draws multipass with equal
+  depth).
+Whether the picture comes out the right way up can only be seen once
+something draws (phase 6). If it is upside down then, the fix is the device
+flag (`DkDeviceFlags_YAxisPointsDown`), not the shaders.
+
+**Occlusion.** No `count_samples` branch and no atomic counter: under
+deko3d the visibility tests count with `DkCounter_SamplesPassed` (phase 6).
+The key's `count_samples` is always 0 in the deko3d image; the generator
+ignores it.
+
+**Everything else is kept as it is**, line for line: the instruction
+decoding, the MAC and ILU operations and their helper functions, the
+texture stage modes, the combiner stages, the final combiner, fog, alpha
+test (in the shader, against `alpha_reference.x`), alpha kill, colour sign,
+`coverage_alpha`, and the `debug.gpu_debug_*` settings. These are the
+translation of the hardware, debugged against the game over a long time;
+the phase is about the GLSL dialect, not the translation. Watch for UAM's
+other differences (its README, `build/switch/third_party/uam/README.md`):
+integer `/` and `%` by a non-constant become float division (the generators
+use bit operations, which are fine); `layout(origin_upper_left)` and
+`pixel_center_integer` are not supported.
+
+### Proving it: the game's real shaders
+
+The corpus is the game's own:
+- **Vertex shaders:** every program the game makes with
+  `D3DDevice_CreateVertexShader` (from its table, at startup), each with
+  the packed masks it is drawn with, and the immediate-mode variant (packed
+  mask 0).
+- **Pixel shaders:** the keys the OpenGL image recorded on the console in
+  `shader_programs.bin` (`/switch/halo/save/z/shader_programs.bin`, 320 KB,
+  about 1,200 records from real play when this was written). The format is
+  `d3d8_gl.c`'s program records (look for `PROGRAM_RECORD_MAGIC`): two DWORDs
+  (the magic, "PSC1", and the record's size), then records of `struct
+  program_record` - map hash, vertex shader id, variant, packed mask, and
+  the `nv2a_pixel_shader_key` itself. The key struct is shared, so a record
+  read by the deko3d image is the same size; check the header's size anyway
+  and refuse a file whose records differ.
+
+**1. A dump in the deko3d image.** When `debug.gpu_dump_shaders` names a
+folder (an existing setting, on every platform; the OpenGL renderer writes
+its GLSL there), the deko3d image writes, once, after the game has created
+its vertex shaders (the first Present is a good moment):
+- `vs_<id>_<packed mask in hex>.vert` for every vertex shader object and
+  every packed mask it appears with in the records, plus mask 0;
+- `ps_<key hash in hex>.frag` for every distinct key in the records
+  (`hash_words` in `d3d8_gl.c` is the hash to copy);
+- `manifest.txt`: one line a file, what it was made from.
+`d3d8_dk.c` keeps no list of its vertex shader objects yet (`d3d8_gl.c`'s
+Switch code has `vertex_shaders_by_id`); add one. Make the folder with
+`mkdir` and write with `fopen` as the OpenGL dump does; a path like
+`sdmc:/halo_dk_shaders` is what the guest's file calls take on the console
+(the host's log shows the guest's paths in that form). Log how many of each
+were written.
+
+**2. Compiled on the PC.** devkitPro's `uam` package is installed here
+(`/opt/devkitpro/tools/bin/uam`, else `which uam`). Pull the folder over FTP
+(port 5000, anonymous; `tools/switch_logs.py` shows how) and compile every
+file: `uam -s vert FILE -o /dev/null`, `-s frag` for `.frag`. Every file must
+compile. Keep the script that does this (`tools/dk_shader_check.py`), so it
+can be run again after any change to the generators; it reports failures
+with UAM's message and the file, and counts warnings by kind.
+
+**3. Timed on the console.** Extend the probe (`port/switch/probe/deko3d`):
+if `sdmc:/halo_dk_shaders` exists, compile every `.vert` and `.frag` there
+with UAM (`probe_compile`, which already writes a DKSH) and log each file's
+time, then the count, the total, the average and the slowest ten per stage,
+into `sdmc:/deko3d_probe.txt`. Leave the probe's existing tests as they are;
+put the new pass after them or behind a file's presence, so the probe still
+answers what it was written for. Deploy with `python3 tools/switch_deploy.py
+--destination /switch port/switch/probe/deko3d/deko3d.nro`; the user runs
+it and says when.
+
+The total is what compiling every known key costs a console that has none
+cached (phase 5's startup pass), and the slowest single shaders are what a
+key first met in play costs while its draws are skipped. Write both into
+"Progress" below. If the total is well over a minute, say so plainly: it
+changes phase 5 (a pass that compiles in the background while the game runs,
+say), and that is the user's call.
+
+### Acceptance
+
+The review checks each of these:
+
+1. `ninja switch` builds with no new warnings; the OpenGL images are
+   unchanged (no edits to `port/linux/src/nv2a_*.c`; `git diff` shows the
+   shared files untouched apart from anything this list allows).
+2. The generated GLSL has no uniform outside a block, every block and
+   sampler has a binding, every block member is a vec4 or an array of them,
+   both stages declare all nine interface variables at the locations above,
+   and there is no y flip, depth remap, precision statement or atomic
+   counter.
+3. `dk_shaders.h`'s structs match the blocks (sizes checked at compile time;
+   the vertex constants block is 3072 bytes, the vertex parameters 48).
+4. Every dumped shader compiles with `uam` on the PC; the check script is in
+   `tools/` and runs from a clean checkout.
+5. The console times are in "Progress", with the number of shaders they
+   cover and the probe's log lines they came from.
+6. Nothing outside the files named here changes, except `DEKO3D.md`.
+
+Don't commit; the review does that. Note anything unexpected in "Progress",
+even if it was dealt with.
 
 ## Phase 5 — shader cache
 
