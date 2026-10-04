@@ -722,23 +722,244 @@ Don't commit; the review does that. Record anything unexpected under
 
 ## Phase 6 — draws, textures and render targets
 
-The menus first, then a map.
+Written to be picked up by an agent that has not seen the work so far. It is
+the largest phase: the equivalent of most of `port/linux/src/d3d8_gl.c` on
+deko3d. Read first, in this order: "Decisions", "Where the renderer lives",
+phases 0 to 5 and their "Progress" entries; then `d3d8_gl.c` whole (about
+4,100 lines: it is the specification of what the Xbox's Direct3D does, as
+this port has debugged it against the game), `port/linux/src/xbox_textures.c`,
+`port/switch/guest/d3d8_dk.c`, `guest/dk_commands.h`, `guest/dk_shaders.h`
+and `.c`, `host/host_dk.c` and `host/host_dk_shaders.c`. The deko3d API is
+`/opt/devkitpro/libnx/include/deko3d.h`; the probe
+(`port/switch/probe/deko3d/source/main.cpp`) has a working draw (vertex
+attributes, shaders, states, a render target, a readback) to copy from.
 
-- **Uniforms:** a ring of uniform buffers behind the frames' fences.
-- **Render targets:** render-to-texture, the mip composite (the water's
-  ripples), the screen's scale.
-- **Textures:** decoded as now, uploaded through a staging buffer and
-  `dkCmdBufCopyBufferToImage`, cached. BC1-BC3 and BGRA are native.
-- **State:** the Direct3D state into deko3d's rasterizer, color, blend and
-  depth-stencil states; samplers and images in descriptor sets.
-- **Draws:** native quads, base vertex, immediate mode.
-- **Visibility tests:** `dkCmdBufReportCounter(DkCounter_SamplesPassed)` into
-  memory — real counts, as the NV2A gave.
-- **The high-res HUD and text, and the menus' art**, whose GL calls do
-  nothing under deko3d.
-- **Debugging:** the existing settings (`debug.screenshot_every`,
-  `debug.gpu_trace_frame`, `debug.gpu_stats`, `debug.gpu_dump_shaders`), and
-  deko3d's debug build for validation.
+### What exists, what this phase adds
+
+Exists: the deko3d image's device (`d3d8_dk.c`) keeps every piece of
+Direct3D state the game sets, exactly as `d3d8_gl.c` does; a command stream
+to the host, one handing-over a frame or sooner (`dk_commands.h`:
+targets, clear, present); the host's device, queue, frames behind fences,
+render targets by address, swapchain (`host_dk.c`); the game's memory
+window GPU-mapped, `window_read` (a range's GPU address, cleaned from the
+CPU's cache) and `upload_copy` (a per-frame upload buffer) in `host_dk.c`,
+waiting for draws; per-resource busy tracking through `D3DResource.Lock`
+(`resource_used`, `draw_resources_used` in `d3d8_dk.c`, waiting for draws);
+GLSL generators (`nv2a_dk_*`) and the shader cache, with
+`dk_shader_for_draw` (a key in, a handle or "not ready" out).
+
+Adds: draws (indexed, not, immediate mode, quads), the draw state, vertex
+constants and the other uniforms, textures, samplers, render-to-texture and
+the mip composite, visibility tests, the high-res HUD and text, and the
+menus' art. At the end the game looks under deko3d as it does under OpenGL,
+the menus and a map, at the CPU cost phase 7 then measures.
+
+### The order, each step tried on the console before the next
+
+1. **First triangle, and the picture's orientation.** The menus' simplest
+   draws: immediate mode (`D3DDevice_Begin`/`End`, which `d3d8_dk.c`
+   records into `device.immediate_vertices`), no texture, vertex colour.
+   This settles the one convention phase 4 left open: whether the device
+   flags `DkDeviceFlags_DepthZeroToOne | DkDeviceFlags_OriginUpperLeft` (in
+   `host_dk.c`'s `initialize`) give the right way up with the generated
+   shaders, which follow desktop OpenGL's `glClipControl(GL_UPPER_LEFT,
+   GL_ZERO_TO_ONE)` conventions. If the picture is upside down, change the
+   device flag (`DkDeviceFlags_YAxisPointsDown`), not the shaders.
+2. **The menus.** Textures (2D, the formats the menus use), samplers,
+   blending, the alpha test, `D3DPT_QUADLIST`. The PC menus
+   (`display.menus = "pc"`) and the Xbox ones both.
+3. **A map.** Indexed draws from the window (`window_read`), vertex
+   declarations and every attribute type, the depth and stencil states, z
+   bias, fog, cube and 3D textures, the remaining texture formats.
+4. **Render targets.** Render-to-texture, the mip composite (the water's
+   ripples), the screen's scale, split screen (viewports and the scissor
+   following them).
+5. **Visibility tests** (lens flares).
+6. **The high-res HUD and text, and the menus' art**, whose GL calls do
+   nothing under deko3d now (`hud_hires.c`, `text_hires.c`, `menu_files.c`).
+
+### Where the work goes: guest or host
+
+The rule from "Where the renderer lives": the guest reads Direct3D's state
+and decides; the host only records deko3d commands. So the guest builds, at
+each draw, a compact description in the command stream, and the host turns
+it into deko3d calls with as little logic as possible. What crosses is
+fixed-width (`dk_commands.h`'s rules: 32-bit fields, guest addresses).
+
+New commands (add to `dk_commands.h`; keep each small, and send only what
+changed since the last draw - most consecutive draws share most state):
+
+- **State**: raster (cull, front face, fill mode, polygon offset as
+  `D3DDevice_SetRenderState_ZBias` computes it, point size), depth-stencil
+  (test, write, function, stencil function, reference, masks, operations),
+  blend (enable, factors, equation, constant colour), colour write mask,
+  viewport (in the target's pixels, as `apply_raster_state` computes it)
+  and the scissor (which follows the viewport: the NV2A's scissor register
+  defaults to it, and split screen depends on that). The Xbox's enumerants
+  are OpenGL's (`D3DBLEND_*`, `D3DCMP_*`, stencil ops - `d3d8_gl.c` passes
+  them to GL as they are); map them to `DkBlendFactor`, `DkCompareOp`,
+  `DkStencilOp` in the guest or the host, once, in a table.
+- **Shaders**: the vertex and pixel shader handles from
+  `dk_shader_for_draw` (`guest/dk_shaders.c`). The keys are built as
+  `prepare_draw` builds `nv2a_pixel_shader_key` and as the vertex program
+  and its declaration's packed mask make the vertex key (`struct
+  dk_vertex_key`: the program's hash and the mask; immediate mode uses
+  mask 0). A handle of 0 means "not ready": skip the draw, as decided.
+- **Uniforms**: the vertex constants (`vertex_constants`, 192 vec4) change a
+  few registers at a time; `d3d8_dk.c` already tracks which (the constant
+  serials and log copied from `d3d8_gl.c`). Send the changed ranges, and let
+  the host keep one uniform buffer per frame slot and update it with
+  `dkCmdBufPushConstants` (it writes into the buffer inline, ordered with
+  the draws). `vertex_parameters` and `pixel_parameters` (`dk_shaders.h`'s
+  structs, 48 and 528 bytes) are built in the guest as `prepare_draw` builds
+  them and pushed whole when they change. Bind each at its binding
+  (`DK_BINDING_*`) with `dkCmdBufBindUniformBuffer`.
+- **Vertex input**: per stream, either a window address (the host calls
+  `window_read`, which cleans the CPU cache for it and gives the GPU address)
+  or data the guest could not leave in place (immediate mode, a range
+  crossing two window chunks, CreateIndexBuffer's index data in ordinary
+  memory) for `upload_copy`; the stride; and per attribute its register,
+  stream, offset and type. Map `D3DVSDT_*` to `DkVtxAttribSize`/`Type` (as
+  `attribute_format` in `d3d8_gl.c` maps them to GL): `D3DCOLOR` is
+  `DkVtxAttribSize_4x8`, `DkVtxAttribType_Unorm`, with `isBgra` set;
+  `NORMPACKED3` is `1x32` `Uint` (the shader unpacks it); `FLOAT2H` reads
+  three floats. **An attribute the declaration does not feed** reads the
+  current value `D3DDevice_SetVertexData*` set (`device.attributes`): give
+  it a stream of stride 0 holding that value, in the upload buffer (phase 4
+  decided the shaders declare all sixteen inputs and do not know which are
+  fed).
+- **The draw**: primitive (`DkPrimitive_Quads` exists, so no quad index
+  lists), counts, the index buffer's address, and the base vertex
+  (`dkCmdBufDrawIndexed`'s `vertexOffset`, from `SetIndices`'
+  `base_vertex_index` - see the comment in `d3d8_gl.c`'s device struct).
+
+After writing a draw's command, call `draw_resources_used` (`d3d8_dk.c`) so
+every resource the draw reads carries the submission's number in its `Lock`
+- after, not before: writing a command can hand the stream over (see
+`resource_used`'s comment).
+
+### Textures
+
+`xbox_textures.c` decodes the Xbox's formats (swizzled, palettized,
+compressed) and keeps a cache keyed by the texture's address, invalidated
+through `memory_watch` generations. Under deko3d the guest still decodes -
+it is CPU work, and the decoders are there - but the upload goes to the
+host:
+
+- Copy `xbox_textures.c` to `guest/xbox_textures_dk.c` (the original is
+  compiled into every platform; do not edit it), keep its decoding and
+  cache, and replace its GL upload with a command that hands the host the
+  decoded texels (a guest address and size, read by the host into the
+  upload buffer, then `dkCmdBufCopyBufferToImage` into a `DkImage` the host
+  makes). BC1-BC3 (`DkImageFormat_RGBA_BC1` and so on) and BGRA
+  (`DkImageFormat_BGRA8_Unorm`) are native, so compressed textures need no
+  decode at all; the swizzled ones need unswizzling, which the decoder
+  does.
+- **Staleness**: under deko3d nothing is page-protected (phase 3), and on
+  the code-memory firmware the window's protection cannot be changed at
+  all. What tells a cached texture it was rewritten is the announced writes
+  (`memory_watch_prepare_write`, called by the locks and the file reads).
+  Check that the deko3d image keeps those generations working
+  (`host_memory_watch_prepare_write` returns early unless the watch is
+  active; `d3d8_gl.c`'s `gl_initialize` starts it with
+  `memory_watch_initialize`, which `d3d8_dk.c` never calls).
+- A texture whose data is a render target's (`xgpu_render_target_find`, by
+  address) samples the render target's image directly, as `bind_textures`
+  does; linear textures have their coordinates scaled (`texture_scale`).
+- **Samplers and descriptors**: deko3d binds textures through image and
+  sampler descriptor sets in GPU memory (`dkCmdBufBindImageDescriptorSet`,
+  `dkCmdBufBindSamplerDescriptorSet`, `dkMakeTextureHandle`). Keep one image
+  descriptor per image the host makes and a sampler descriptor per distinct
+  sampler state (`configure_sampler` in `d3d8_gl.c` lists the inputs:
+  filters, address modes, LOD bias - into `DkSampler.lodBias`, which is why
+  phase 4 dropped the shaders' bias - the maximum mip level, anisotropy,
+  border colour). Changing descriptors in use needs
+  `DkInvalidateFlags_Descriptors`; append, don't rewrite in place.
+
+### Render targets, the mip composite, the screen
+
+`host_dk.c` already makes a render target's image by its address
+(`target_get`). Sampling one needs it made sampleable (check
+`DkImageFlags` and the hardware compression flag on images that are both
+rendered to and sampled). The mip composite (`mip_composite_get` in
+`d3d8_gl.c`: the water renders a texture one mip level at a time, each a
+surface) becomes image-to-image copies into a mipmapped image
+(`dkCmdBufCopyImage`). A barrier (`dkCmdBufBarrier(..., DkBarrier_Fragments,
+DkInvalidateFlags_Image)`) is needed between rendering into an image and
+sampling it.
+
+### Visibility tests
+
+`DkCounter_SamplesPassed`: report the counter into a small result buffer at
+`BeginVisibilityTest` and again at `EndVisibilityTest`
+(`dkCmdBufReportCounter`); the result is the difference. The game reads
+results a frame later (`GetVisibilityTestResult`), so the host keeps them in
+CPU-readable memory and the guest asks through an import (or the host
+writes them into guest memory); return the latest finished, never wait (see
+`d3d8_gl.c`'s query-buffer comments). Divide by the target's scale as
+`visibility_unscaled` does.
+
+### The high-res HUD and text, the menus' art
+
+`hud_hires.c` (`hud_hires_png_texture`), `text_hires.c`
+(`text_hires_atlas_texture`) and `menu_files.c` (`halo_menus_art_register`)
+make GL textures and hand back GL names that `xbox_textures.c` binds. Under
+deko3d their GL calls do nothing. Give the deko3d image versions that make
+host images instead (copies under `port/switch/guest/`, linked in its
+place - see how `d3d8_dk.c` replaces `d3d8_gl.c` in `tools/switch_build.py`;
+a function only some other file calls can be replaced by linking a copy of
+its file instead of the original).
+
+### Pitfalls already known
+
+- **deko3d ends the program on any failure it reports**, in release builds
+  too (phase 0). Check sizes and limits before asking; never ask it for a
+  memory block the console might refuse.
+- **The queue keeps its state between command lists**: a pass that does not
+  set its viewport, scissor and every state it depends on inherits the last
+  ones (phase 0, the probe's red square).
+- **Only the game thread touches deko3d** (`host_dk.c`'s rule; the shader
+  service follows it).
+- **Every range a draw reads from the window goes through `window_read`**,
+  or the GPU reads stale data the CPU has not written back (phase 3).
+- **A draw's resources get `Lock` after its command is written**, or IsBusy
+  and the locks wait for the wrong submission (phase 3).
+- **Direct3D's half-pixel**: the generated vertex shaders add 0.5; do not
+  add it again in the viewport.
+- **The game's Xbox enumerants are OpenGL's**: compare `d3d8_gl.c`, which
+  passes many of them straight to GL, before writing a mapping table.
+
+### Testing on the console
+
+Deploy with `python3 tools/switch_deploy.py`; the user runs the game and says
+when; logs are `/switch/halo/halo.log` and `/switch/halo/debug.txt` (read
+both); crash reports in `/atmosphere/crash_reports` (symbolize against
+`build/switch/halo.elf`). Screenshots: `debug.screenshot_every` and
+`debug.screenshot_directory` in `config.toml` make the OpenGL renderer
+write BMPs; give the deko3d renderer the same (read the back buffer's image
+into a buffer with `dkCmdBufCopyImageToBuffer`, as the probe reads its
+pixel), so a step can be checked from the PC: the same scene under
+`renderer = "gl"` and `"deko3d"`, compared. Each step above is its own
+test; say which scene to go to and what to look for.
+
+### Acceptance
+
+1. `ninja switch` builds with no new warnings; the OpenGL image and the
+   other platforms are unchanged (no edits to `port/linux/src` except
+   behind `#ifdef HALO_SWITCH`, argued for under "Progress").
+2. Each of the six steps shown working on the console, with screenshots
+   compared against the OpenGL renderer's for the menus, a map (Blood Gulch
+   or the Silent Cartographer), a scene with water, split screen and a lens
+   flare.
+3. The game thread's time a frame in the menus and in a map, from the
+   host's log, against the OpenGL image's in the same places (phase 1:
+   5.8 ms against 0.6 ms in the menus with nothing drawn).
+4. Nothing the game draws is missing for longer than its shader's compile
+   (a few frames) on a console with a warm cache.
+5. `DEKO3D.md`'s "Progress" has a "Phase 6" entry: what was built, each
+   step's result, and anything unexpected.
+
+Don't commit; the review does that.
 
 ## Phase 7 — parity and performance
 
