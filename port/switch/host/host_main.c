@@ -25,6 +25,7 @@ Paths, each overridable from the environment:
 #include "host.h"
 
 #include "xiso.h"
+#include "host_ui.h"
 
 #include <SDL2/SDL.h>
 #include <errno.h>
@@ -375,11 +376,33 @@ static unsigned long long extraction_last_done;
 static const char *extraction_last_file;
 static unsigned long long extraction_total;
 static unsigned extraction_seconds;
+/* the image's name, and whether the menus' screens are showing the unpack:
+the menu has gone by now and SDL has not come yet, so the screen is free,
+and was left black for the minutes this takes */
+static const char *extraction_image;
+static int extraction_on_screen;
+static unsigned long long extraction_drawn;
+
+static void draw_extraction(const char *file, unsigned long long done, unsigned long long total)
+{
+	char message[256];
+
+	if (!extraction_on_screen)
+		return;
+	snprintf(message, sizeof(message), "Copying %s out of %s. This only happens once.",
+		file ? file : "the game's maps", extraction_image);
+	host_ui_progress("UNPACKING THE GAME", message, (long long)done, (long long)total, NULL);
+	extraction_drawn = done;
+}
 
 static void extraction_progress(void *context, const char *file, unsigned long long done, unsigned long long total)
 {
 	(void)context;
 	extraction_total = total;
+	/* the screen at each file and every few megabytes: often enough to move,
+	seldom enough not to slow the copy */
+	if (file != extraction_last_file || done - extraction_drawn >= 4 * 1024 * 1024)
+		draw_extraction(file, done, total);
 	if (file != extraction_last_file)
 	{
 		extraction_last_file = file;
@@ -427,9 +450,36 @@ static void ensure_game_data(const char *root)
 			"image itself at %s/halo.iso and the port will unpack it.", root, root, root);
 	snprintf(image, sizeof(image), "%s/%s", root, name);
 	host_logf(HOST_LOG_INFO, "no maps folder; unpacking %s into %s/maps", name, root);
+	extraction_image = name;
+	extraction_on_screen = host_ui_open();
+	draw_extraction(NULL, 0, 0);
 	clock_gettime(CLOCK_MONOTONIC, &extraction_started);
 	if (!xiso_extract_maps(image, root, extraction_progress, NULL, error, sizeof(error)))
+	{
+		/* said on the screen too, until a button is pressed, rather than the
+		program closing on a black screen */
+		if (extraction_on_screen)
+		{
+			char message[768];
+			PadState pad;
+
+			snprintf(message, sizeof(message), "%s could not be unpacked: %.400s", name, error);
+			host_ui_message("UNPACKING FAILED", message,
+				(const char *const[]){ "A", "Close", NULL });
+			padInitializeDefault(&pad);
+			while (appletMainLoop())
+			{
+				padUpdate(&pad);
+				if (padGetButtonsDown(&pad) & (HidNpadButton_A | HidNpadButton_Plus))
+					break;
+				svcSleepThread(16666667);
+			}
+			host_ui_close();
+		}
 		host_fatal("could not unpack %s: %s", name, error);
+	}
+	if (extraction_on_screen)
+		host_ui_close();
 	host_logf(HOST_LOG_INFO, "unpacked %llu MB from %s in %u s", extraction_total / (1024 * 1024), name,
 		extraction_seconds);
 	if (!directory_has_maps(root))
