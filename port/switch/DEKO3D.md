@@ -4,7 +4,7 @@ A second renderer for the Switch build that drives the GPU through
 [deko3d](https://github.com/devkitPro/deko3d) instead of Mesa, with compiled
 shaders cached on the SD card.
 
-Status: phases 0 to 4 done; phase 5 under way (step 1 done); see "Progress" at the end.
+Status: phases 0 to 5 done, phase 6 next; see "Progress" at the end.
 
 ---
 
@@ -440,7 +440,7 @@ The review checks each of these:
 Don't commit; the review does that. Note anything unexpected in "Progress",
 even if it was dealt with.
 
-## Phase 5 — shader cache
+## Phase 5 — shader cache (done)
 
 Written to be picked up by an agent that has not seen the work so far. Read
 "Decisions", "Where the renderer lives" and phases 0 to 4 above, and phase
@@ -770,6 +770,83 @@ The menus first, then a map.
 ---
 
 ## Progress
+
+### Phase 5, steps 2 to 4
+
+Built (by the agent that did step 1, finished and fixed in review):
+
+- **UAM in the host** (`host/host_dk_compiler.cpp`, `tools/switch_build.py`):
+  one object with UAM's library, its symbols renamed and all but
+  `host_dk_compile_glsl` made local, as in the probe; a lock around it. The
+  DKSH is written through `WriteDksh` (`uam.patch`) into a file the host
+  opens, so the card's lock (`host_sd_lock`, which the game's file calls wait
+  on) is held for the write only, not for the compile. Without meson, bison,
+  flex or mako the host links `host/host_dk_compiler_stub.c` instead, which
+  fails and says so once (checked: with mako hidden, configure notes it and
+  plans the host's link with the stub). The NRO grew from 6.3 to 8.4 MB (as `tools/switch_deploy.py` reports it).
+- **The shader service** (`host/host_dk_shaders.c`): the card's cache in
+  `<data root>/shader_cache/<UAM commit>/`, listed once at start into a set
+  (other UAM versions' folders removed); one compile thread, placed off the
+  game thread's core (`host_thread_place_on_helper_core`, `host_thread.c`)
+  one step below its priority, writing `.tmp` and renaming; a 16 MB code
+  memory block; handles; the imports `host_dk_shader_find` (loads a shader
+  on the card), `host_dk_shader_known` (says what the host has, without
+  loading) and `host_dk_shader_compile`.
+- **Keys** (`guest/dk_shaders.c`, `guest/dk_shaders.h`):
+  `DK_SHADER_GENERATOR_VERSION` in every hash; a vertex program's hash
+  computed in `D3DDevice_CreateVertexShader`; key files in
+  `z:\shader_keys\` - `console.dkk`, this console's, and `keys.dkk`, a
+  shared one: two fixed names, because the guest cannot list a folder
+  (`getdents64` is not served on the Switch); the OpenGL records imported
+  into `console.dkk` once; the startup pass at the 60th frame, eight keys a
+  frame; a map's keys raised in the queue, and loaded, when it finishes
+  loading (`d3d8_gl_map_loaded`); and `dk_shader_for_draw` for phase 6.
+
+On the console (Horizon 21.2):
+
+| Test | Result |
+|---|---|
+| First launch, empty cache | the 1,197 OpenGL records imported as 744 keys into `console.dkk` (193,452 bytes: 744 records of 260 bytes and a 12-byte header); all 744 compiled in the background (the files' times on the card span about a minute; that run's log was not kept - the version test below, compiling the same 744, took about 47 s) |
+| Frame rate while compiling | 59.8-60 fps throughout, the game thread at 0.6-1.0 ms a frame (as with no compile); the compile thread on core 2, the game thread keeping core 1. The longest single frames rose to 42-58 ms while it compiled, from 22-30 ms after: an occasional one- or two-frame hitch, likely the card's lock |
+| Second launch | 744 keys from `console.dkk`, 744 shaders on the card, the pass done in 1.6 s with all 744 ready and nothing compiled, at 60 fps; `console.dkk` unchanged |
+| Generator version raised to 2 | every key hashed anew (first hash `f7a82e4248c3d12f6`, from `011925a88a8f14ad`), all 744 queued and compiled again in about 47 s, 0 failed; put back to 1 |
+
+Fixed in review:
+- **The known-shader set could hang the game.** Linear probing over 8,192
+  slots with no bound: a full set probes for ever, at start, in the card's
+  listing - and nothing removes the old names a generator change leaves, so
+  about eleven version raises would have done it. The set now takes at most
+  seven eighths of its slots and says once when it is full.
+- **A cached file that would not load was read again at every find**, which a
+  draw would make every frame: it is marked broken now (and compiled again)
+  or, whole but with no room, unloadable (and not tried again).
+- **A write that failed counted as done** (`ferror` and `fclose` were not
+  checked), and a failed compile's `.tmp` was left on the card.
+- **A shader being compiled answered "unknown"**, so a draw meeting it in
+  that time would have queued it again; it answers "queued" now.
+- **`dk_shader_for_draw`** ignored "queued", so until a shader was ready every
+  draw needing it would have generated its GLSL, queued it and appended its
+  key to `console.dkk` again, every frame; it raises the queued one now, and
+  appends a key only the first time the console meets it. It also hashed a
+  pixel key with its `count_samples` as given (the imported keys have it at
+  0), and its handle cache was a 512-entry list searched in full on every
+  draw past 512 shaders: a hash table now.
+- **The startup pass loaded every shader on the card** (through `find`):
+  four seconds of the menus at 39 frames a second, frames up to 96 ms. It
+  asks `host_dk_shader_known` now, which loads nothing (1.6 s at 60 frames a
+  second); a shader loads with its map, under the loading screen, or at its
+  first draw. The pass also leaked the GLSL of every vertex key it checked
+  (it generated it to see whether the program existed).
+
+Not exercised yet, waiting for phase 6: `dk_shader_for_draw` (no draws), the
+loading of a map's shaders at its load (no map was loaded in these runs:
+the menus only), and broken or unloadable files in practice.
+
+Unexplained: after the generator-version test the card held only the 744
+version-1 files, not the 744 of version 2 as well, though the run's log
+shows them compiled and renamed into place. The game deletes nothing in
+that folder (only other UAM versions' folders); most likely they were
+removed by hand when the test was put back. Nothing depends on it.
 
 ### Phase 5, step 1
 
