@@ -843,6 +843,19 @@ void host_sdl_get_clipboard_text(char *buffer, uint32_t size)
 	SDL_strlcpy(buffer, clipboard, size);
 }
 
+/* The guest asks a key by name to bind it and by name again to show it in a
+control prompt, and the names SDL knows are the host's (port/android/host/
+host_imports.list declares these for every host, so each provides them). */
+void host_sdl_scancode_name(int32_t scancode, char *buffer, uint32_t size)
+{
+	SDL_strlcpy(buffer, SDL_GetScancodeName((SDL_Scancode)scancode), size);
+}
+
+int32_t host_sdl_scancode_from_name(const char *name)
+{
+	return (int32_t)SDL_GetScancodeFromName(name);
+}
+
 int host_sdl_show_toast(const char *message, int duration, int gravity, int x, int y)
 {
 	(void)duration;
