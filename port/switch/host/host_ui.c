@@ -1,9 +1,8 @@
 /*
 HOST_UI.C
 
-The screens the Switch port shows before the game - the choice between the
-campaign and internet games, the internet games list, the updater's offer and
-progress, and messages - drawn into the console's default window as pictures
+The screens the Switch port shows before the game - the updater's offer and
+progress, the disc image being unpacked, and messages - drawn into the console's default window as pictures
 rather than as text in libnx's console.
 
 Everything is drawn in software into a 1280x720 picture, which goes to a libnx
@@ -54,8 +53,6 @@ enum
 	MARGIN = 80,
 	/* the panel's slice, in SVG units: past its corner's radius and border */
 	PANEL_SLICE = 16,
-	LIST_TOP = 196,
-	LIST_ROW = 46,
 	GLYPHS = 95,
 };
 
@@ -63,8 +60,6 @@ enum
 #define COLOUR_TEXT 0xffe8f2ffu
 #define COLOUR_DIM 0xff9ab4d4u
 #define COLOUR_ACCENT 0xff2895ffu
-#define COLOUR_SELECTED_FILL 0xff0d3f7au
-#define COLOUR_WARNING 0xffffc266u
 
 /* ---------- the assets (host_ui_assets.S, or files in a preview) */
 
@@ -139,11 +134,10 @@ struct panel
 	int width, height, slice;
 };
 
-/* the background's, at twice the SVG's size, and the selected row's, at its
-own, with a brighter fill */
-static struct panel background_panel, row_panel;
+/* the background's, at twice the SVG's size */
+static struct panel background_panel;
 
-static int panel_render(struct panel *panel, float scale, int recolour)
+static int panel_render(struct panel *panel, float scale)
 {
 	char *text;
 	size_t size;
@@ -181,9 +175,6 @@ static int panel_render(struct panel *panel, float scale, int recolour)
 			bounds[2] = shape->bounds[2];
 		if (shape->bounds[3] > bounds[3])
 			bounds[3] = shape->bounds[3];
-		/* the selected row: the inner fill brighter, the border as it is */
-		if (recolour && shape->fill.type == NSVG_PAINT_COLOR && shape->fillRule == NSVG_FILLRULE_NONZERO)
-			shape->fill.color = 0xff7a3f0du; /* ABGR: #0d3f7a */
 	}
 	panel->width = (int)ceilf((bounds[2] - bounds[0]) * scale);
 	panel->height = (int)ceilf((bounds[3] - bounds[1]) * scale);
@@ -256,7 +247,7 @@ struct font
 };
 
 static stbtt_fontinfo title_face, body_face;
-static struct font title_font, heading_font, body_font, small_font;
+static struct font title_font, body_font, small_font;
 
 /* a font whose capitals are capitals pixels tall (0: one whose ascent to
 descent is pixels), OpenCE's being much taller than its metrics say */
@@ -288,7 +279,7 @@ static int font_make(struct font *font, stbtt_fontinfo *face, float pixels, floa
 	return 1;
 }
 
-/* the printable ASCII the console's names arrive as (host_lobby.c) */
+/* the printable ASCII the screens are written in */
 static const struct glyph *glyph_of(const struct font *font, char character)
 {
 	unsigned char code = (unsigned char)character;
@@ -389,8 +380,9 @@ static int draw_wrapped(const struct font *font, int x, int y, int width, int li
 /* ---------- what every screen has */
 
 /* the screen's panel, its title and the keys along its foot. keys is pairs
-of a button and what it does, "A", "Join", "B", "Back", ..., ending in NULL */
-static void draw_frame(const char *title, const char *aside, const char *const *keys)
+of a button and what it does, "A", "Update now", "B", "Not now", ..., ending
+in NULL */
+static void draw_frame(const char *title, const char *const *keys)
 {
 	float x = SCREEN_WIDTH - MARGIN;
 	int count, index;
@@ -399,8 +391,6 @@ static void draw_frame(const char *title, const char *aside, const char *const *
 	draw_panel(&background_panel, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
 	/* the title's baseline just above the line under it */
 	draw_text(&title_font, MARGIN, 108 - title_font.ascent, title, COLOUR_TEXT, (float)(SCREEN_WIDTH - 2 * MARGIN - 200));
-	if (aside)
-		draw_text(&small_font, SCREEN_WIDTH - MARGIN - text_width(&small_font, aside), 74, aside, COLOUR_DIM, 0.0f);
 	fill_rectangle(MARGIN, 128, SCREEN_WIDTH - 2 * MARGIN, 2, COLOUR_ACCENT);
 	/* the keys, right to left */
 	for (count = 0; keys && keys[count]; count += 2)
@@ -487,10 +477,9 @@ int host_ui_open(void)
 		!stbtt_InitFont(&body_face, body_data, stbtt_GetFontOffsetForIndex(body_data, 0)))
 		return 0;
 	font_make(&title_font, &title_face, 0.0f, 40.0f);
-	font_make(&heading_font, &body_face, 30.0f, 0.0f);
 	font_make(&body_font, &body_face, 25.0f, 0.0f);
 	font_make(&small_font, &body_face, 21.0f, 0.0f);
-	if (!panel_render(&background_panel, 2.0f, 0) || !panel_render(&row_panel, 1.0f, 1))
+	if (!panel_render(&background_panel, 2.0f))
 		return 0;
 #ifndef HOST_UI_PREVIEW
 	if (R_FAILED(framebufferCreate(&framebuffer, nwindowGetDefault(), SCREEN_WIDTH, SCREEN_HEIGHT,
@@ -519,28 +508,9 @@ void host_ui_close(void)
 
 /* ---------- the screens */
 
-void host_ui_choice(const char *title, const char *const *items, int count, int selected, const char *note,
-	const char *const *keys)
-{
-	int index;
-
-	draw_frame(title, NULL, keys);
-	for (index = 0; index < count; index++)
-	{
-		int y = 186 + index * 74;
-
-		if (index == selected)
-			draw_panel(&row_panel, MARGIN - 16, y - 12, 640, 60);
-		draw_text(&heading_font, MARGIN + 12, y, items[index], index == selected ? COLOUR_TEXT : COLOUR_DIM, 600.0f);
-	}
-	if (note)
-		draw_wrapped(&small_font, MARGIN, 186 + count * 74 + 30, SCREEN_WIDTH - 2 * MARGIN, 30, note, COLOUR_DIM);
-	present();
-}
-
 void host_ui_message(const char *title, const char *message, const char *const *keys)
 {
-	draw_frame(title, NULL, keys);
+	draw_frame(title, keys);
 	draw_wrapped(&body_font, MARGIN, 186, SCREEN_WIDTH - 2 * MARGIN, 36, message, COLOUR_TEXT);
 	present();
 }
@@ -552,7 +522,7 @@ void host_ui_progress(const char *title, const char *message, long long done, lo
 	int filled = total > 0 ? (int)((long long)width * (done < total ? done : total) / total) : 0;
 	char amount[64];
 
-	draw_frame(title, NULL, keys);
+	draw_frame(title, keys);
 	draw_wrapped(&body_font, MARGIN, 186, width, 36, message, COLOUR_TEXT);
 	fill_rectangle(MARGIN, 300, width, 20, 0xff0a2547u);
 	fill_rectangle(MARGIN, 300, filled, 20, COLOUR_ACCENT);
@@ -561,53 +531,5 @@ void host_ui_progress(const char *title, const char *message, long long done, lo
 	else
 		snprintf(amount, sizeof(amount), "%lld MB", done / (1024 * 1024));
 	draw_text(&small_font, MARGIN, 336, amount, COLOUR_DIM, 0.0f);
-	present();
-}
-
-int host_ui_list_rows(void)
-{
-	return (628 - LIST_TOP) / LIST_ROW;
-}
-
-void host_ui_list(const char *title, const char *aside, const char *const *headings, const int *columns,
-	int column_count, const struct host_ui_row *rows, int count, int selected, int first, const char *empty,
-	const char *status, const char *credit, const char *const *keys)
-{
-	int visible = host_ui_list_rows();
-	int index, column;
-
-	draw_frame(title, aside, keys);
-	for (column = 0; column < column_count; column++)
-		draw_text(&small_font, (float)(MARGIN + 12 + columns[column]), 150, headings[column], COLOUR_ACCENT, 0.0f);
-	if (!count && empty)
-		draw_wrapped(&body_font, MARGIN + 12, LIST_TOP + 20, SCREEN_WIDTH - 2 * MARGIN - 24, 36, empty, COLOUR_DIM);
-	for (index = 0; index < visible && first + index < count; index++)
-	{
-		const struct host_ui_row *row = &rows[first + index];
-		int y = LIST_TOP + index * LIST_ROW;
-		int is_selected = first + index == selected;
-
-		if (is_selected)
-			draw_panel(&row_panel, MARGIN, y - 4, SCREEN_WIDTH - 2 * MARGIN, LIST_ROW - 2);
-		for (column = 0; column < column_count; column++)
-		{
-			float limit = (column + 1 < column_count ? columns[column + 1] : SCREEN_WIDTH - 2 * MARGIN - 24) -
-				columns[column] - 16.0f;
-
-			draw_text(&body_font, (float)(MARGIN + 12 + columns[column]), y + 4, row->columns[column],
-				is_selected ? COLOUR_TEXT : COLOUR_DIM, limit);
-		}
-	}
-	if (count > first + visible || first > 0)
-	{
-		char more[64];
-
-		snprintf(more, sizeof(more), "%d-%d of %d", first + 1, first + visible < count ? first + visible : count, count);
-		draw_text(&small_font, SCREEN_WIDTH - MARGIN - text_width(&small_font, more), 150, more, COLOUR_DIM, 0.0f);
-	}
-	if (status)
-		draw_text(&small_font, MARGIN, 616, status, COLOUR_WARNING, 0.0f);
-	if (credit)
-		draw_text(&small_font, MARGIN, 652, credit, COLOUR_DIM, 640.0f);
 	present();
 }

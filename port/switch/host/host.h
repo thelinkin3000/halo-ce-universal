@@ -186,22 +186,14 @@ int host_https_get(const char *url, int follow_redirects, host_https_body body, 
 /* the folder the port's files are in: sdmc:/switch/halo (host_main.c) */
 const char *host_executable_root(void);
 
-/* in the menu before the game, with its screens up: offers a newer release
+/* before the game, with the screens up (host_ui_open): offers a newer release
 of the port if there is one, and installs it if the player agrees, for the
-next start; returns in every case, the session going on as it was. pad is the
-menu's PadState. */
+next start; returns in every case, the session going on as it was. pad is a
+PadState. */
 void host_update_offer(void *pad);
 /* first thing at start, before the game image is loaded: puts in place the
 image an update left waiting (halo_guest.elf.new), if there is one */
 void host_update_finish(void);
-
-/* ---------- the menu before the game (host_lobby.c) */
-
-/* asks whether to play as usual or join an internet game from the community
-list, and returns once the game should start; quits the program if asked */
-void host_lobby_choose(void);
-/* the halo://join/ link of the internet game chosen there, or NULL */
-const char *host_join_link(void);
 
 /* ---------- import table (host_imports.c) */
 
