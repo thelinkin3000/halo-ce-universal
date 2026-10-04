@@ -152,6 +152,10 @@ struct vertex_shader_object
 	unsigned long id;
 	DWORD *instructions;
 	unsigned long instruction_count;
+	/* FNV-1a 64 over the instruction count and words (dk_shaders.h's
+	mixers): the program's hash, half of the shader key the deko3d
+	renderer's cache knows a vertex shader by (dk_shaders.c) */
+	uint64_t program_hash;
 	struct vertex_element elements[XGPU_VERTEX_ATTRIBUTE_COUNT];
 	unsigned long element_count;
 	unsigned long packed_mask;
@@ -1063,6 +1067,11 @@ HRESULT WINAPI D3DDevice_CreateVertexShader(CONST DWORD *declaration, CONST DWOR
 		object->instruction_count = function[0] >> 16;
 		object->instructions = malloc(object->instruction_count * 4 * sizeof(DWORD));
 		memcpy(object->instructions, function + 1, object->instruction_count * 4 * sizeof(DWORD));
+		/* the key the shader cache knows this program by, computed once,
+	here, while the words are at hand */
+		object->program_hash = dk_shader_hash_mix(
+			dk_shader_hash_mix(dk_shader_hash_init(), &object->instruction_count, sizeof(object->instruction_count)),
+			object->instructions, object->instruction_count * 4 * sizeof(DWORD));
 	}
 	parse_declaration(object, declaration);
 	vertex_shader_note(object);
@@ -1140,10 +1149,17 @@ static struct vertex_shader_object *current_program(void)
 
 	return program ? program : device.vertex_shader;
 }
+
 /* the game finished loading a map (scenario_load) */
 void d3d8_gl_map_loaded(const char *name)
 {
-	(void)name;
+	/* d3d8_gl.c's program_record_map_hash: the map's name hashed, so the
+	keys met on it can be raised in the background compile's queue */
+	uint32_t hash = 2166136261UL;
+
+	for (; *name; name++)
+		hash = (hash ^ (unsigned char)*name) * 16777619UL;
+	dk_shader_map_loaded(hash ? hash : 1);
 }
 
 /* ---------- the shader dump (debug.gpu_dump_shaders; DEKO3D.md, phase 4)
@@ -1176,6 +1192,33 @@ static void vertex_shader_note(struct vertex_shader_object *object)
 	}
 	vertex_shaders_by_id[object->id] = object;
 }
+
+/* ---------- for dk_shaders.c (the shader cache's guest half): the vertex
+programs the game has made, which its keys name by hash and the OpenGL
+records name by id. Programs stay cached (DeleteVertexShader keeps them),
+so an id keeps naming the same program for the program's life */
+
+unsigned long d3d8_dk_vertex_shader_count(void)
+{
+	return vertex_shaders_by_id_count;
+}
+
+int d3d8_dk_vertex_program_by_id(unsigned long id, uint64_t *program_hash, const uint32_t **instructions,
+	unsigned long *instruction_count)
+{
+	struct vertex_shader_object *object = id < vertex_shaders_by_id_count ? vertex_shaders_by_id[id] : NULL;
+
+	if (!object || !object->instructions)
+		return 0;
+	if (program_hash)
+		*program_hash = object->program_hash;
+	if (instructions)
+		*instructions = (const uint32_t *)object->instructions;
+	if (instruction_count)
+		*instruction_count = object->instruction_count;
+	return 1;
+}
+
 
 /* d3d8_gl.c's program records, whose keys the dump's pixel shaders are */
 #define PROGRAM_RECORD_MAGIC 0x31435350UL /* "PSC1" */
@@ -1551,12 +1594,16 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 	(void)unused2;
 	/* Not at the first frame: the rasterizer presents once as it starts,
 	before it makes the game's vertex shaders (rasterizer_initialize), and a
-	dump then has none. A second's frames on, it has made them all. */
+	dump then has none. A second's frames on, it has made them all - which
+	is also when the shader cache's pass can start (dk_shaders.c) */
 	if (!shaders_dumped && device.frame >= 60)
 	{
 		shaders_dumped = TRUE;
 		shaders_dump();
+		dk_shader_start();
 	}
+	/* the startup pass, a few keys a frame (dk_shaders.c) */
+	dk_shader_frame();
 	{
 		struct dk_command_present *command = stream_command(DK_COMMAND_PRESENT, sizeof(*command));
 

@@ -5,7 +5,9 @@ Translation of NV2A vertex programs (Xbox vertex shader microcode) into
 GLSL for UAM, for the Switch's deko3d renderer (port/switch/DEKO3D.md,
 phase 4). Copied from the OpenGL renderer's nv2a_vsh.c (port/linux/src),
 which the other platforms keep; what differs is the GLSL dialect, not the
-translation:
+translation. Any change to what this file writes is a change to the
+shaders themselves and must raise DK_SHADER_GENERATOR_VERSION
+(dk_shaders.h), so the cache on the card is compiled again:
 
 - #version 460, and every uniform in a block with an explicit binding:
   UAM rejects uniforms outside blocks, and blocks and samplers need

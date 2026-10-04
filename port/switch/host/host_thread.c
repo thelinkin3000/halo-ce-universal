@@ -177,6 +177,15 @@ static void place_thread(int is_game)
 		(unsigned)result);
 }
 
+/* place_thread, for threads that never run guest code: the shader cache's
+compile thread (host_dk_shaders.c), which only writes files and its queue
+and must not take the game thread's core. Threads that call into the guest
+are made by host_native_thread_create, which places them itself. */
+void host_thread_place_on_helper_core(void)
+{
+	place_thread(0);
+}
+
 /* ---------- guest threads */
 
 struct thread_start
