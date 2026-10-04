@@ -34,6 +34,7 @@ one failed; press A (or wait 20 seconds) to exit, which also tests input.
 #include <dirent.h>
 #include <malloc.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -829,45 +830,250 @@ static bool has_suffix(const char *name, const char *suffix)
 	return name_length > suffix_length && !strcmp(name + name_length - suffix_length, suffix);
 }
 
-static void corpus_compile(void)
+/* the corpus as a sorted list of file names, or 0 (the caller says why) */
+static size_t corpus_list(char (*names_out)[256])
 {
 	DIR *directory = opendir(CORPUS_DIRECTORY);
 	struct dirent *entry;
-	char (*names)[256] = NULL;
-	size_t name_count = 0, name_capacity = 0;
+	size_t count = 0;
+
+	if (directory)
+	{
+		while ((entry = readdir(directory)) != NULL)
+		{
+			if (!has_suffix(entry->d_name, ".vert") && !has_suffix(entry->d_name, ".frag"))
+				continue;
+			snprintf(names_out[count], 256, "%s", entry->d_name);
+			count++;
+		}
+		closedir(directory);
+		qsort(names_out, count, sizeof(*names_out), name_compare);
+	}
+	return count;
+}
+
+/* ---------- the corpus on several threads
+
+DEKO3D.md, phase 5, step 1: whether UAM's compiler, its locks made real and
+its context made per thread (uam.patch), compiles the same bytes on two and
+three threads as on one. Each run writes its DKSH files to its own folder and
+every one is compared byte for byte with the one-thread run's. */
+
+#define CORPUS_MAXIMUM 1024
+
+static char corpus_names[CORPUS_MAXIMUM][256];
+static size_t corpus_count;
+
+struct corpus_share
+{
+	/* the folder this run's .dksh files go to */
+	char directory[288];
+	pthread_mutex_t lock;
+	size_t next;
+	unsigned long compiled, failed;
+	/* the run's thread count and number, and how many workers have
+	started (each takes the next of the process's cores) */
+	unsigned long threads, run, started;
+};
+
+/* A thread libnx makes runs on the process's default core, and the
+console's scheduler never moves it off the cores its mask allows
+(port/switch/host/host_thread.c), so workers left alone would take turns on
+one core: no faster than one thread, and racing only where one is pre-empted
+mid-compile. Each worker moves itself onto the next of the cores the process
+may use, and says where it runs, so the log shows the compiles were truly
+side by side. */
+static void worker_place(struct corpus_share *share)
+{
+	u64 allowed = 0;
+	unsigned long mine, pick;
+	int core = -1, index;
+	Result result = 0;
+
+	pthread_mutex_lock(&share->lock);
+	mine = share->started++;
+	pthread_mutex_unlock(&share->lock);
+	if (R_SUCCEEDED(svcGetInfo(&allowed, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0)) && allowed)
+	{
+		pick = mine % (unsigned long)__builtin_popcountll(allowed);
+		for (index = 0; index < 64; index++)
+		{
+			if (!(allowed & (1ULL << index)))
+				continue;
+			if (!pick--)
+			{
+				core = index;
+				break;
+			}
+		}
+		if (core >= 0)
+			result = svcSetThreadCoreMask(CUR_THREAD_HANDLE, core, 1u << core);
+	}
+	pthread_mutex_lock(&share->lock);
+	say("corpus on %lu threads (run %lu): worker %lu runs on core %d (asked for core %d of mask %llx: 0x%x)",
+		share->threads, share->run, mine, (int)svcGetCurrentProcessorNumber(), core, (unsigned long long)allowed,
+		(unsigned)result);
+	pthread_mutex_unlock(&share->lock);
+}
+
+static void *corpus_worker(void *context)
+{
+	struct corpus_share *share = (struct corpus_share *)context;
+
+	worker_place(share);
+	for (;;)
+	{
+		size_t index;
+		char path[320], out_path[352];
+		FILE *file;
+		char *source;
+		long size;
+		int ok, fragment;
+
+		pthread_mutex_lock(&share->lock);
+		index = share->next;
+		share->next = index < corpus_count ? index + 1 : index;
+		pthread_mutex_unlock(&share->lock);
+		if (index >= corpus_count)
+			break;
+		fragment = has_suffix(corpus_names[index], ".frag") ? 1 : 0;
+		snprintf(path, sizeof(path), "%s/%s", CORPUS_DIRECTORY, corpus_names[index]);
+		file = fopen(path, "rb");
+		if (!file)
+		{
+			pthread_mutex_lock(&share->lock);
+			share->failed++;
+			pthread_mutex_unlock(&share->lock);
+			continue;
+		}
+		fseek(file, 0, SEEK_END);
+		size = ftell(file);
+		fseek(file, 0, SEEK_SET);
+		source = (char *)malloc((size_t)size + 1);
+		if (!source || fread(source, 1, (size_t)size, file) != (size_t)size)
+		{
+			fclose(file);
+			free(source);
+			pthread_mutex_lock(&share->lock);
+			share->failed++;
+			pthread_mutex_unlock(&share->lock);
+			continue;
+		}
+		fclose(file);
+		source[size] = 0;
+		snprintf(out_path, sizeof(out_path), "%s/%s.dksh", share->directory, corpus_names[index]);
+		ok = probe_compile(fragment, source, out_path);
+		free(source);
+		pthread_mutex_lock(&share->lock);
+		if (ok)
+			share->compiled++;
+		else
+			share->failed++;
+		pthread_mutex_unlock(&share->lock);
+	}
+	return NULL;
+}
+
+/* whether two files are the same bytes */
+static bool file_matches(const char *one, const char *other)
+{
+	FILE *a = fopen(one, "rb"), *b = fopen(other, "rb");
+	unsigned char buffer_one[4096], buffer_other[4096];
+	size_t read_one, read_other;
+	bool same = a && b;
+
+	if (!a || !b)
+	{
+		if (a)
+			fclose(a);
+		if (b)
+			fclose(b);
+		return false;
+	}
+	while (same)
+	{
+		read_one = fread(buffer_one, 1, sizeof(buffer_one), a);
+		read_other = fread(buffer_other, 1, sizeof(buffer_other), b);
+		if (read_one != read_other || memcmp(buffer_one, buffer_other, read_one))
+			same = false;
+		if (read_one < sizeof(buffer_one))
+			break;
+	}
+	fclose(a);
+	fclose(b);
+	return same;
+}
+
+/* the whole corpus on `threads` threads, its files compared with the
+one-thread run's in SHADER_DIRECTORY */
+static void corpus_threads(unsigned long threads, unsigned long run)
+{
+	struct corpus_share share;
+	pthread_t thread_ids[3];
+	pthread_attr_t attributes;
+	char name[32];
+	u64 start = armGetSystemTick();
+	unsigned long index, different = 0, missing = 0;
+	unsigned long thread_index;
+
+	snprintf(name, sizeof(name), "t%lu_r%lu", threads, run);
+	snprintf(share.directory, sizeof(share.directory), "%s/%s", SHADER_DIRECTORY, name);
+	mkdir(share.directory, 0777);
+	share.next = 0;
+	share.compiled = share.failed = 0;
+	share.threads = threads;
+	share.run = run;
+	share.started = 0;
+	pthread_mutex_init(&share.lock, NULL);
+	pthread_attr_init(&attributes);
+	/* Mesa's compiler recurses; two megabytes a thread */
+	pthread_attr_setstacksize(&attributes, 2 * 1024 * 1024);
+	for (thread_index = 0; thread_index < threads; thread_index++)
+		pthread_create(&thread_ids[thread_index], &attributes, corpus_worker, &share);
+	pthread_attr_destroy(&attributes);
+	for (thread_index = 0; thread_index < threads; thread_index++)
+		pthread_join(thread_ids[thread_index], NULL);
+	pthread_mutex_destroy(&share.lock);
+	for (index = 0; index < corpus_count; index++)
+	{
+		char one[352], other[384];
+
+		snprintf(one, sizeof(one), "%s/%s.dksh", SHADER_DIRECTORY, corpus_names[index]);
+		snprintf(other, sizeof(other), "%s/%s.dksh", share.directory, corpus_names[index]);
+		if (!file_matches(one, other))
+		{
+			FILE *test = fopen(other, "rb");
+
+			if (test)
+				fclose(test);
+			if (test)
+				different++;
+			else
+				missing++;
+		}
+	}
+	say("corpus on %lu threads (run %lu): %lu compiled, %lu failed, %lu different, %lu missing, %.1f ms",
+		threads, run, share.compiled, share.failed, different, missing, milliseconds_since(start));
+}
+
+static void corpus_compile(void)
+{
 	double totals[2] = { 0.0, 0.0 };
 	unsigned long counts[2] = { 0, 0 }, failures[2] = { 0, 0 };
 	struct slowest_one slowest[2][SLOWEST_KEPT];
 	size_t index;
 	int stage;
 
-	if (!directory)
+	corpus_count = corpus_list(corpus_names);
+	if (!corpus_count)
 	{
 		say("corpus: no %s (the deko3d image has not dumped the game's shaders); skipping", CORPUS_DIRECTORY);
 		return;
 	}
-	while ((entry = readdir(directory)) != NULL)
-	{
-		if (!has_suffix(entry->d_name, ".vert") && !has_suffix(entry->d_name, ".frag"))
-			continue;
-		if (name_count == name_capacity)
-		{
-			size_t grown_capacity = name_capacity ? name_capacity * 2 : 256;
-			char (*grown)[256] = (char (*)[256])realloc(names, grown_capacity * sizeof(*grown));
-
-			if (!grown)
-				break;
-			names = grown;
-			name_capacity = grown_capacity;
-		}
-		snprintf(names[name_count], sizeof(names[0]), "%s", entry->d_name);
-		name_count++;
-	}
-	closedir(directory);
-	qsort(names, name_count, sizeof(names[0]), name_compare);
-	say("corpus: compiling the %u shaders in %s", (unsigned)name_count, CORPUS_DIRECTORY);
+	say("corpus: compiling the %u shaders in %s (the probe's own thread is on core %d)", (unsigned)corpus_count,
+		CORPUS_DIRECTORY, (int)svcGetCurrentProcessorNumber());
 	memset(slowest, 0, sizeof(slowest));
-	for (index = 0; index < name_count; index++)
+	for (index = 0; index < corpus_count; index++)
 	{
 		char path[320], out_path[320];
 		FILE *file;
@@ -877,12 +1083,12 @@ static void corpus_compile(void)
 		double milliseconds;
 		int ok;
 
-		stage = has_suffix(names[index], ".frag") ? 1 : 0;
-		snprintf(path, sizeof(path), "%s/%s", CORPUS_DIRECTORY, names[index]);
+		stage = has_suffix(corpus_names[index], ".frag") ? 1 : 0;
+		snprintf(path, sizeof(path), "%s/%s", CORPUS_DIRECTORY, corpus_names[index]);
 		file = fopen(path, "rb");
 		if (!file)
 		{
-			say("corpus %-48s cannot be opened", names[index]);
+			say("corpus %-48s cannot be opened", corpus_names[index]);
 			failures[stage]++;
 			continue;
 		}
@@ -892,7 +1098,7 @@ static void corpus_compile(void)
 		source = (char *)malloc((size_t)size + 1);
 		if (!source || fread(source, 1, (size_t)size, file) != (size_t)size)
 		{
-			say("corpus %-48s cannot be read", names[index]);
+			say("corpus %-48s cannot be read", corpus_names[index]);
 			fclose(file);
 			free(source);
 			failures[stage]++;
@@ -900,17 +1106,17 @@ static void corpus_compile(void)
 		}
 		fclose(file);
 		source[size] = 0;
-		snprintf(out_path, sizeof(out_path), SHADER_DIRECTORY "/%s.dksh", names[index]);
+		snprintf(out_path, sizeof(out_path), SHADER_DIRECTORY "/%s.dksh", corpus_names[index]);
 		start = armGetSystemTick();
 		ok = probe_compile(stage, source, out_path);
 		milliseconds = milliseconds_since(start);
 		free(source);
-		say("corpus %-48s %s in %.1f ms", names[index], ok ? "ok" : "FAILED", milliseconds);
+		say("corpus %-48s %s in %.1f ms", corpus_names[index], ok ? "ok" : "FAILED", milliseconds);
 		if (ok)
 		{
 			counts[stage]++;
 			totals[stage] += milliseconds;
-			slowest_note(slowest[stage], milliseconds, names[index]);
+			slowest_note(slowest[stage], milliseconds, corpus_names[index]);
 		}
 		else
 		{
@@ -929,7 +1135,6 @@ static void corpus_compile(void)
 				slowest[stage][place].name, slowest[stage][place].milliseconds);
 	}
 	say("corpus: both stages together: %.1f ms", totals[0] + totals[1]);
-	free(names);
 }
 
 /* ---------- the probe */
@@ -1036,6 +1241,16 @@ int main(int argc, char **argv)
 		say("memory: %d of %d cases passed; the GPU reads the window's kind of memory through its alias: %s",
 			cases_passed, cases_run, heap && map_memory && code ? "yes" : "NO");
 		corpus_compile();
+		/* the one-thread run above wrote its DKSH files; the multi-thread
+		runs compare theirs against them (three runs each, DEKO3D.md phase
+		5 step 1) */
+		{
+			unsigned long threads, run;
+
+			for (threads = 2; threads <= 3; threads++)
+				for (run = 1; run <= 3; run++)
+					corpus_threads(threads, run);
+		}
 		present_until_a(heap && map_memory && code);
 	}
 
