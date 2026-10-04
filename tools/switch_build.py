@@ -58,6 +58,84 @@ SDL_DIR = THIRD_PARTY / "SDL3"
 # Makefile does for the same reason.
 HOST_LIBRARIES = ["SDL2", "EGL", "GLESv2", "glapi", "drm_nouveau", "nx", "pthread", "m"]
 
+# UAM, deko3d's shader compiler, built as a library for the console so that
+# the deko3d renderer can compile shaders at run time (port/switch/DEKO3D.md).
+# devkitPro ships it only as a PC tool. Pinned, and patched (uam.patch) to
+# build a static library beside the tool and to check for mako without
+# distutils, which Python 3.12 dropped. Its build runs Python's mako, bison
+# and flex on the build machine.
+UAM_URL = "https://github.com/devkitPro/uam.git"
+UAM_COMMIT = "5a5afc2bae8b55409ab36ba45be63fcb73f68993"
+UAM_DIR = BUILD / "third_party" / "uam"
+UAM_PATCH = PORT_DIR / "uam.patch"
+
+
+def fetch_uam() -> bool:
+    """Clone UAM at its pinned commit and apply the port's patch (configure time, once)."""
+    if (UAM_DIR / ".patched").is_file():
+        return True
+    if UAM_DIR.exists():
+        shutil.rmtree(UAM_DIR)
+    UAM_DIR.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Cloning UAM {UAM_COMMIT[:12]}")
+    subprocess.run(["git", "init", "-q", str(UAM_DIR)], check=True)
+    subprocess.run(["git", "-C", str(UAM_DIR), "fetch", "-q", "--depth", "1", UAM_URL, UAM_COMMIT], check=True)
+    subprocess.run(["git", "-C", str(UAM_DIR), "checkout", "-q", "FETCH_HEAD"], check=True)
+    subprocess.run(["git", "-C", str(UAM_DIR), "apply", str(UAM_PATCH.resolve())], check=True)
+    (UAM_DIR / ".patched").write_text(UAM_COMMIT + "\n")
+    return True
+
+
+def _uam_build(n: Writer, devkitpro: Path, host_cc: Path, host_arch: str) -> Optional[Path]:
+    """Ninja rules for build/switch/uam/libuam.a, or None (and a comment) if UAM cannot be built here."""
+    if not shutil.which("meson") or not shutil.which("bison") or not shutil.which("flex"):
+        n.comment("Switch build: no UAM (it needs meson, bison and flex)")
+        return None
+    if subprocess.run([sys.executable, "-c", "import mako"], capture_output=True).returncode != 0:
+        n.comment("Switch build: no UAM (it needs Python's mako: pip install --user mako)")
+        return None
+    try:
+        fetch_uam()
+    except (subprocess.CalledProcessError, OSError) as error:
+        print(f"Switch build: cannot fetch UAM ({error})", file=sys.stderr)
+        return None
+
+    build_dir = BUILD / "uam"
+    cross_file = build_dir / "cross.ini"
+    flags = ", ".join(f"'{flag}'" for flag in [*host_arch.split(), "-D__SWITCH__", "-isystem",
+                                                str(devkitpro / "libnx" / "include")])
+    link_flags = ", ".join(f"'{flag}'" for flag in [f"-specs={devkitpro / 'libnx' / 'switch.specs'}",
+                                                     *host_arch.split(), f"-L{devkitpro / 'libnx' / 'lib'}", "-lnx"])
+    build_dir.mkdir(parents=True, exist_ok=True)
+    cross_file.write_text(
+        "[binaries]\n"
+        f"c = '{host_cc}'\n"
+        f"cpp = '{host_cc.parent / 'aarch64-none-elf-g++'}'\n"
+        f"ar = '{host_cc.parent / 'aarch64-none-elf-gcc-ar'}'\n"
+        f"strip = '{host_cc.parent / 'aarch64-none-elf-strip'}'\n"
+        "\n[built-in options]\n"
+        f"c_args = [{flags}]\ncpp_args = [{flags}]\n"
+        f"c_link_args = [{link_flags}]\ncpp_link_args = [{link_flags}]\n"
+        "\n[properties]\nneeds_exe_wrapper = true\n"
+        "\n[host_machine]\nsystem = 'horizon'\ncpu_family = 'aarch64'\ncpu = 'cortex-a57'\nendian = 'little'\n",
+        encoding="utf-8")
+
+    # meson's build of the library is a thin archive (members by path), so it
+    # is repacked into an ordinary one that can be linked from anywhere
+    library = build_dir / "libuam.a"
+    meson_dir = build_dir / "meson"
+    ar = host_cc.parent / "aarch64-none-elf-ar"
+    n.rule(
+        name="switch_uam",
+        command=(f"rm -rf {meson_dir} && meson setup --cross-file {cross_file.resolve()} "
+                 f"{meson_dir.resolve()} {UAM_DIR.resolve()} > /dev/null && ninja -C {meson_dir} libuam.a > /dev/null && "
+                 f"rm -f $out && cd {meson_dir} && {ar} rcs {library.resolve()} $$({ar} t libuam.a)"),
+        description="SWITCH UAM $out",
+    )
+    n.build(outputs=library, rule="switch_uam", implicit=[UAM_PATCH, UAM_DIR / ".patched", cross_file])
+    n.build(outputs="switch-uam", rule="phony", inputs=[library])
+    return library
+
 
 def _devkitpro() -> Optional[Path]:
     root = os.environ.get("DEVKITPRO")
@@ -81,7 +159,7 @@ def _devkita64(devkitpro: Path) -> Optional[Path]:
 
 def switch_configure_inputs() -> List[Path]:
     return [Path(__file__), PORT_DIR / "host", ANDROID_PORT_DIR / "host_imports.list", LINUX_DIR / "src",
-            *hud_configure_inputs()]
+            UAM_PATCH, *hud_configure_inputs()]
 
 
 def generate_switch_build(n: Writer, sln: Any) -> None:
@@ -446,6 +524,7 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     )
     n.build(outputs=image, rule="switch_guest_link", inputs=objects, implicit=[libguestc, linker_script])
 
+
     # ---------- the host, built with devkitA64
 
     n.newline()
@@ -461,6 +540,7 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     # segment has dynamic relocations", which libnx alone reproduces with a
     # four-line program; switch.specs does not add them.
     host_arch = "-march=armv8-a -mtune=cortex-a57 -mtp=soft -fPIE"
+    _uam_build(n, devkitpro, host_cc, host_arch)
     host_cflags = " ".join([
         "-O2", "-g", "-Wall", "-Wno-unused-function", "-D_GNU_SOURCE", "-D__SWITCH__",
         # Frame pointers, which -O2 omits. host_debug.c walks the x29 chain to
