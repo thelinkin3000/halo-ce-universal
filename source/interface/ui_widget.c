@@ -3843,7 +3843,7 @@ boolean ui_widget_port_dispatch_event(
 	for (handler_index = 0; handler_index < definition->event_handlers.count; handler_index++)
 	{
 		struct ui_widget_event_handler_reference *handler =
-			(struct ui_widget_event_handler_reference *)definition->event_handlers.address + handler_index;
+			(struct ui_widget_event_handler_reference *)TAG_BLOCK_ADDRESS(definition->event_handlers) + handler_index;
 
 		if (handler->event_type == event_type)
 		{
