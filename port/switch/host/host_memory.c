@@ -871,10 +871,15 @@ void host_low_unmap(void *address, size_t size)
 	{
 		uint64_t first = (start - pool->base) / PAGE, count = length / PAGE, page;
 
-		/* give the memory back but keep the address space; committed memory
-		stays as it is, and is cleared when it is handed out again */
+		/* give the memory back; the pool's reservation keeps the address
+		space (find_free skips it), so nothing has to stay mapped there.
+		It used to be mapped over PROT_NONE instead, which here is a real
+		mapping - a zeroed buffer and a record in host_mman.c's table - that
+		every later allocation inside it had to split, until the table was
+		full and the menus' map could not be loaded after a network game.
+		Committed memory stays as it is, and is cleared when handed out. */
 		if (!memory_is_chunked())
-			mmap((void *)start, length, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
+			munmap((void *)start, length);
 		for (page = first; page < first + count; page++)
 		{
 			if (pool->used[page])
@@ -976,9 +981,10 @@ long host_guest_munmap(uint64_t address, uint64_t size)
 		return -EINVAL;
 	if (in_range(host, length, window_base, window_end))
 	{
-		/* committed memory stays as it is (commit) */
+		/* committed memory stays as it is (commit); otherwise it is given
+		back, the window's reservation keeping its addresses (host_low_unmap) */
 		if (!memory_is_chunked())
-			mmap((void *)host, length, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
+			munmap((void *)host, length);
 		return 0;
 	}
 	if (in_range(host, length, image_base, image_end))
