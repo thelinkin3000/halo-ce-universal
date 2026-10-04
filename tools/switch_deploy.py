@@ -10,9 +10,10 @@ Usage: python3 tools/switch_deploy.py [--host 192.168.2.173] [--port 5000]
                                      [--user anonymous] [--password ...]
                                      [build/switch/halo.nro ...]
 
-With no files, it uploads the two the port needs: the program and the guest
-image. The game's own data (maps/) is not touched - it is large, it does not
-change between builds, and it belongs to the player rather than to the build.
+With no files, it uploads the three the port needs: the program and the two
+guest images, OpenGL's and deko3d's (config.toml's display.renderer chooses).
+The game's own data (maps/) is not touched - it is large, it does not change
+between builds, and it belongs to the player rather than to the build.
 """
 
 import argparse
@@ -29,7 +30,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("files", nargs="*", type=Path,
-                        help="files to upload; the default is the program and the guest image")
+                        help="files to upload; the default is the program and the guest images")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--destination", default=DEFAULT_DESTINATION)
@@ -38,7 +39,8 @@ def main() -> int:
                         help="anonymous by default, which is what the console's server uses")
     args = parser.parse_args()
 
-    files = args.files or [Path("build/switch/halo.nro"), Path("build/switch/halo_guest.elf")]
+    files = args.files or [Path("build/switch/halo.nro"), Path("build/switch/halo_guest.elf"),
+                          Path("build/switch/halo_guest_dk.elf")]
     missing = [str(path) for path in files if not path.is_file()]
     if missing:
         print("not built: " + ", ".join(missing), file=sys.stderr)
