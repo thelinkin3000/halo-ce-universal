@@ -3,3 +3,4 @@
 
 # the deko3d renderer (port/switch/guest/d3d8_dk.c, port/switch/host/host_dk.c)
 host_dk_submit
+host_dk_retired
