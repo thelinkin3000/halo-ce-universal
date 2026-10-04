@@ -298,9 +298,17 @@ jobs:
 
       - name: Install the build tools
         run: |
+          # The guest is compiled for arm64_32, which only recent clang knows
+          # well; Debian's clang 14 emits indirect branches the ELF assembler
+          # will not take, so LLVM's own builds are used instead.
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key |
+            gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-22 main" \
+            > /etc/apt/sources.list.d/llvm.list
           apt-get update
-          apt-get install -y --no-install-recommends python3 ninja-build ccache clang unzip curl zip
-          clang --version | head -1
+          apt-get install -y --no-install-recommends python3 ninja-build ccache clang-22 unzip curl zip gnupg
+          clang-22 --version | head -1
+          ln -sf /usr/bin/clang-22 /usr/local/bin/clang
 
       - uses: actions/checkout@v4
 
