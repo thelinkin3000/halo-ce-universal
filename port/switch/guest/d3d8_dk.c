@@ -28,6 +28,7 @@ and presenting go there; a draw and a visibility test do nothing yet.
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 void d3d8_surface_initialize(D3DSurface *surface, D3DFORMAT format, unsigned long width, unsigned long height);
 void d3d8_surface_resize(D3DSurface *surface, D3DFORMAT format, unsigned long width, unsigned long height);
@@ -180,9 +181,12 @@ struct dk_device
 	{
 		DWORD data;
 		UINT stride;
+		/* the buffer itself, whose Lock records its last use */
+		D3DVertexBuffer *buffer;
 	} streams[16];
 	/* SetIndices' base vertex (d3d8_gl.c) */
 	UINT base_vertex_index;
+	D3DIndexBuffer *index_buffer;
 
 	/* the current value of each input register (SetVertexData) */
 	float attributes[XGPU_VERTEX_ATTRIBUTE_COUNT][4];
@@ -220,17 +224,24 @@ Commands are written here over a frame and handed to the host half
 (port/switch/host/host_dk.c) at its end, or sooner if the stream fills. */
 
 void host_dk_submit(unsigned int commands, unsigned int size);
+/* the highest submission the GPU has finished (host_dk.c) */
+unsigned int host_dk_retired(void);
 
 #define STREAM_SIZE (1024 * 1024)
 
 static uint32_t stream[STREAM_SIZE / 4];
 static unsigned long stream_used;
+/* Each handing over of the stream is one submission, numbered from 1 as the
+host numbers them: this is the number of the one being written. */
+static unsigned long submission = 1;
 
 static void stream_flush(void)
 {
-	if (stream_used)
-		host_dk_submit((unsigned int)(uintptr_t)stream, (unsigned int)stream_used);
+	if (!stream_used)
+		return;
+	host_dk_submit((unsigned int)(uintptr_t)stream, (unsigned int)stream_used);
 	stream_used = 0;
+	submission++;
 }
 
 /* room for a command of size bytes, its header filled in */
@@ -708,15 +719,82 @@ void WINAPI D3DDevice_SetShaderConstantMode(D3DSHADERCONSTANTMODE mode)
 	device.shader_constant_mode = mode;
 	viewport_update_constants();
 }
-/* ---------- GPU synchronisation */
+/* ---------- GPU synchronisation (DEKO3D.md, phase 3)
+
+Draws read the game's memory where the game wrote it, after the draw, so a
+resource is busy until the GPU is past the last submission that read it. As
+the Xbox's runtime did, the resource's Lock field records that submission
+(resource_used); the game sets it to 0, not busy, whenever it makes a
+resource's header. d3d8_resources.c asks halo_resource_busy and
+halo_resource_wait for IsBusy, BlockUntilNotBusy and its locks; their
+definitions there are empty for the OpenGL image, whose mirror copied a
+draw's data at the draw. */
+
+/* a draw or clear in the submission being written uses the resource; called
+after the command is written (writing one can hand the stream over) */
+static void resource_used(void *resource)
+{
+	if (resource)
+		((D3DResource *)resource)->Lock = submission;
+}
+
+/* the resources the current state reads or writes: the bound render
+targets, and for a draw its textures, palettes, vertex streams and index
+buffer */
+static void targets_used(void)
+{
+	resource_used(device.render_target);
+	resource_used(device.depth_stencil);
+}
+
+static void draw_resources_used(BOOL indexed)
+{
+	unsigned long index;
+	int stage;
+
+	targets_used();
+	for (stage = 0; stage < D3DTSS_MAXSTAGES; stage++)
+	{
+		if (!((D3D__RenderState[D3DRS_PSTEXTUREMODES] >> (5 * stage)) & 0x1f))
+			continue;
+		resource_used(device.textures[stage]);
+		resource_used(device.palettes[stage]);
+	}
+	for (index = 0; device.vertex_shader && index < device.vertex_shader->element_count; index++)
+		resource_used(device.streams[device.vertex_shader->elements[index].stream].buffer);
+	if (indexed)
+		resource_used(device.index_buffer);
+}
+
+BOOL halo_resource_busy(D3DResource *resource)
+{
+	unsigned long last = resource ? resource->Lock : 0;
+
+	if (!last)
+		return FALSE;
+	/* used in the submission still being written: handed over now, as the
+	Xbox's runtime kicks off its push buffer, or a caller spinning on IsBusy
+	would wait for a submission that never comes */
+	if (last >= submission)
+		stream_flush();
+	return host_dk_retired() < last;
+}
+
+void halo_resource_wait(D3DResource *resource)
+{
+	while (halo_resource_busy(resource))
+		usleep(500);
+}
 
 BOOL WINAPI D3DDevice_IsBusy(void)
 {
-	return FALSE;
+	stream_flush();
+	return host_dk_retired() < submission - 1;
 }
 
 void WINAPI D3DDevice_KickPushBuffer(void)
 {
+	stream_flush();
 }
 
 void WINAPI D3DDevice_InsertCallback(D3DCALLBACKTYPE type, D3DCALLBACK callback, DWORD context)
@@ -1071,11 +1149,13 @@ void WINAPI D3DDevice_SetStreamSource(UINT stream_number, D3DVertexBuffer *strea
 		return;
 	device.streams[stream_number].data = stream_data ? stream_data->Data : 0;
 	device.streams[stream_number].stride = stride;
+	device.streams[stream_number].buffer = stream_data;
 }
 
 void WINAPI D3DDevice_SetIndices(D3DIndexBuffer *index_data, UINT base_vertex_index)
 {
 	device.base_vertex_index = base_vertex_index;
+	device.index_buffer = index_data;
 	/* an index buffer's Data is a window address, not an offset within one:
 	from a map file it is the address the window was linked at, and from
 	CreateIndexBuffer ordinary memory, which the move leaves alone */
@@ -1192,6 +1272,9 @@ void WINAPI D3DDevice_Clear(DWORD count, CONST D3DRECT *rectangles, DWORD flags,
 	if (!clear_flags || !targets_bind())
 		return;
 	command = stream_command(DK_COMMAND_CLEAR, sizeof(*command) + (count && rectangles ? count : 1) * 4 * sizeof(uint32_t));
+	/* (after the command: writing it may have handed the stream over, and the
+	clear is in the submission it is written to) */
+	targets_used();
 	command->flags = clear_flags;
 	color_to_vec4(color, command->color);
 	command->depth = z;

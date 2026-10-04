@@ -707,8 +707,27 @@ static int memory_is_chunked(void)
 	return chunked;
 }
 
-/* makes [start, start + length) of the arena at base real, a chunk at a time */
-static int commit(uint64_t base, uint8_t *committed, uint64_t chunks, uint64_t start, uint64_t length)
+/* Where svcMapMemory does map the window, it is chunked only if the deko3d
+renderer runs: its draws read the window through the GPU (host_dk.c), and
+what the GPU has mapped cannot be unmapped (DEKO3D.md), so the window is
+committed in chunks there as well and stays real. */
+static int window_is_chunked(void)
+{
+	return memory_is_chunked() || host_renderer_deko3d;
+}
+
+/* whether the range - the window or a pool - is one of the chunked arenas */
+static int range_is_chunked(uint64_t address, uint64_t length)
+{
+	if (in_range(address, length, window_base, window_end))
+		return window_is_chunked();
+	return memory_is_chunked();
+}
+
+/* makes [start, start + length) of the arena at base real, a chunk at a
+time; each chunk of the window goes to host_dk.c as it lands (the deko3d
+renderer GPU-maps it), pools' do not */
+static int commit(uint64_t base, uint8_t *committed, uint64_t chunks, uint64_t start, uint64_t length, int window)
 {
 	uint64_t chunk = (start - base) / CHUNK_SIZE;
 	uint64_t last = (start + length - 1 - base) / CHUNK_SIZE;
@@ -730,6 +749,8 @@ static int commit(uint64_t base, uint8_t *committed, uint64_t chunks, uint64_t s
 			break;
 		}
 		committed[chunk] = 1;
+		if (window)
+			host_dk_window_chunk_committed(base + chunk * CHUNK_SIZE, CHUNK_SIZE);
 	}
 	pthread_mutex_unlock(&commit_lock);
 	return result;
@@ -742,11 +763,11 @@ static int commit_owned(uint64_t address, uint64_t length)
 	struct pool *pool;
 
 	if (in_range(address, length, window_base, window_end))
-		return commit(window_base, window_committed, WINDOW_CHUNKS, address, length);
+		return commit(window_base, window_committed, WINDOW_CHUNKS, address, length, 1);
 	pthread_mutex_lock(&memory_lock);
 	pool = pool_of(address, length);
 	pthread_mutex_unlock(&memory_lock);
-	return pool ? commit(pool->base, pool->committed, POOL_CHUNKS, address, length) : 0;
+	return pool ? commit(pool->base, pool->committed, POOL_CHUNKS, address, length, 0) : 0;
 }
 
 /* a mapping's contents, in committed memory: zeros, and a file's bytes from
@@ -935,7 +956,7 @@ long host_guest_mmap(uint64_t address, uint64_t size, int protection, int flags,
 				return -EINVAL;
 			fixed_flags = flags;
 		}
-		else if (memory_is_chunked())
+		else if (range_is_chunked(host, length))
 		{
 			/* inside the guest's own arenas: their memory, made real */
 			int error = commit_owned(host, length) != 0 ? -ENOMEM : fill(host, length, fd, offset);
@@ -983,7 +1004,7 @@ long host_guest_munmap(uint64_t address, uint64_t size)
 	{
 		/* committed memory stays as it is (commit); otherwise it is given
 		back, the window's reservation keeping its addresses (host_low_unmap) */
-		if (!memory_is_chunked())
+		if (!window_is_chunked())
 			munmap((void *)host, length);
 		return 0;
 	}
@@ -1004,7 +1025,7 @@ long host_guest_mprotect(uint64_t address, uint64_t size, int protection)
 	if (host + size > LOW_LIMIT)
 		return -EINVAL;
 	/* committed memory is read-write and stays so (commit) */
-	if (memory_is_chunked() && host_low_owns(host, size))
+	if (range_is_chunked(host, size) && host_low_owns(host, size))
 		return 0;
 	return mprotect((void *)host, size, protection) ? -errno : 0;
 }
