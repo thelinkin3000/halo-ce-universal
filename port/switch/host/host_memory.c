@@ -65,11 +65,18 @@ which is 768 MB.
 #define POOL_PAGES (POOL_SIZE / PAGE)
 #define MAXIMUM_POOLS 12
 
+/* Where the guest's memory has to be code memory (host_mman.c), a pool and
+the window are made real a chunk at a time and kept: see commit, below */
+#define CHUNK_SIZE (16ULL * 1024 * 1024)
+#define POOL_CHUNKS (POOL_SIZE / CHUNK_SIZE)
+#define WINDOW_CHUNKS (HALO_GUEST_WINDOW_SIZE / CHUNK_SIZE)
+
 struct pool
 {
 	uint64_t base;
 	uint32_t free_pages;
 	uint8_t used[POOL_PAGES]; /* 1 for each page handed out */
+	uint8_t committed[POOL_CHUNKS]; /* 1 for each chunk made real (commit) */
 };
 
 static struct pool *pools[MAXIMUM_POOLS];
@@ -295,6 +302,44 @@ void host_memory_hold_image_range(void)
 	if (!hold)
 		host_logf(HOST_LOG_ERROR, "libnx would not hold the guest image's range at %08x; a thread's stack may "
 			"land in it", HALO_GUEST_IMAGE_BASE);
+}
+
+/* Where the kernel put this process's regions, said once at start.
+
+The guest's memory has to be below 4 GB, and the port maps it there with
+svcMapMemory, which the kernel allows only inside some of these regions. On
+Horizon 21.2 that worked from 0x10000000; on 22.5 the same build was refused
+there with 0xdc01 (an address outside the region allowed) at every size, with
+nothing mapped in the way. Which region moved, and to where, is what decides
+the fix, and the port had never said. */
+void host_memory_log_regions(void)
+{
+	static const struct
+	{
+		const char *name;
+		u32 address, size;
+	} regions[] = {
+		{ "address space", InfoType_AslrRegionAddress, InfoType_AslrRegionSize },
+		{ "heap", InfoType_HeapRegionAddress, InfoType_HeapRegionSize },
+		{ "alias", InfoType_AliasRegionAddress, InfoType_AliasRegionSize },
+		{ "stack", InfoType_StackRegionAddress, InfoType_StackRegionSize },
+	};
+	unsigned index;
+
+	for (index = 0; index < sizeof(regions) / sizeof(regions[0]); index++)
+	{
+		u64 address = 0, size = 0;
+
+		if (R_FAILED(svcGetInfo(&address, regions[index].address, CUR_PROCESS_HANDLE, 0)) ||
+			R_FAILED(svcGetInfo(&size, regions[index].size, CUR_PROCESS_HANDLE, 0)))
+		{
+			host_logf(HOST_LOG_INFO, "memory: the %s region is not reported", regions[index].name);
+			continue;
+		}
+		host_logf(HOST_LOG_INFO, "memory: %-13s region %010llx-%010llx (%llu MB)", regions[index].name,
+			(unsigned long long)address, (unsigned long long)(address + size),
+			(unsigned long long)(size / (1024 * 1024)));
+	}
 }
 
 static int reserve(uint64_t address, uint64_t size, int for_a_purpose)
@@ -618,6 +663,113 @@ int host_memory_initialize(uint32_t base, uint32_t size)
 	return 0;
 }
 
+static struct pool *pool_of(uint64_t address, uint64_t size);
+
+/* ---------- committing the guest's memory in chunks
+
+Where svcMapMemory will not map below 4 GB - Horizon 22.5 put the only region
+it maps in at 0x7e73200000 (host_mman.c) - the guest's memory is heap aliased
+there with svcMapProcessCodeMemory instead, and that changes how it is handed
+out. Each such mapping is a call into the kernel to make and another to undo,
+and one cannot be partly undone, while the guest maps and unmaps memory all
+the time - its allocator, thread stacks, file reads - and frees parts of what
+it mapped. A mapping per request would be thousands of kernel calls, each
+partial unmap a copy.
+
+So a pool's address space and the window are made real sixteen megabytes at a
+time, the first time any of a chunk is wanted, and stay so. Inside them a
+mapping is bookkeeping: its pages are cleared, or a file's bytes read in, and
+unmapping them only marks them free. What that costs is that memory once used
+is not given back until the game exits, which the game, whose memory grows to
+a working size and stays there, barely notices; and mprotect inside a chunk
+does nothing, which is no more than the console allows for svcMapMemory's
+mappings either.
+
+Where svcMapMemory does map below 4 GB, none of this is used. */
+static int chunked = -1;
+static pthread_mutex_t commit_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint8_t window_committed[WINDOW_CHUNKS];
+
+static int memory_is_chunked(void)
+{
+	if (chunked < 0)
+		chunked = host_mman_low_code_mode();
+	return chunked;
+}
+
+/* makes [start, start + length) of the arena at base real, a chunk at a time */
+static int commit(uint64_t base, uint8_t *committed, uint64_t chunks, uint64_t start, uint64_t length)
+{
+	uint64_t chunk = (start - base) / CHUNK_SIZE;
+	uint64_t last = (start + length - 1 - base) / CHUNK_SIZE;
+	int result = 0;
+
+	pthread_mutex_lock(&commit_lock);
+	for (; chunk <= last && chunk < chunks; chunk++)
+	{
+		void *address = (void *)(uintptr_t)(base + chunk * CHUNK_SIZE);
+
+		if (committed[chunk])
+			continue;
+		if (mmap(address, CHUNK_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) !=
+			address)
+		{
+			host_logf(HOST_LOG_ERROR, "guest memory: the %llu MB at %p could not be made real",
+				(unsigned long long)(CHUNK_SIZE / (1024 * 1024)), address);
+			result = -1;
+			break;
+		}
+		committed[chunk] = 1;
+	}
+	pthread_mutex_unlock(&commit_lock);
+	return result;
+}
+
+/* commits whichever arena holds the range: the window or a pool (the image is
+the loader's, and mapped whole) */
+static int commit_owned(uint64_t address, uint64_t length)
+{
+	struct pool *pool;
+
+	if (in_range(address, length, window_base, window_end))
+		return commit(window_base, window_committed, WINDOW_CHUNKS, address, length);
+	pthread_mutex_lock(&memory_lock);
+	pool = pool_of(address, length);
+	pthread_mutex_unlock(&memory_lock);
+	return pool ? commit(pool->base, pool->committed, POOL_CHUNKS, address, length) : 0;
+}
+
+/* a mapping's contents, in committed memory: zeros, and a file's bytes from
+offset if it maps one - read as host_mman.c reads one, into a scratch buffer
+under the card's lock */
+static int fill(uint64_t address, uint64_t length, int fd, int64_t offset)
+{
+	static char scratch[16384];
+	unsigned char *bytes = (unsigned char *)(uintptr_t)address;
+	uint64_t done = 0;
+
+	memset(bytes, 0, length);
+	if (fd < 0)
+		return 0;
+	host_sd_lock();
+	if (lseek(fd, (off_t)offset, SEEK_SET) != (off_t)offset)
+	{
+		host_sd_unlock();
+		return -EINVAL;
+	}
+	while (done < length)
+	{
+		long got = read(fd, scratch, (unsigned)(length - done < sizeof(scratch) ? length - done : sizeof(scratch)));
+
+		if (got <= 0)
+			break;
+		memcpy(bytes + done, scratch, (size_t)got);
+		done += (uint64_t)got;
+	}
+	host_sd_unlock();
+	return 0;
+}
+
 /* ---------- page pools */
 
 static void *pool_take(struct pool *pool, uint64_t pages)
@@ -666,6 +818,17 @@ void *host_low_map(size_t size, int protection)
 	pthread_mutex_unlock(&memory_lock);
 	if (!address)
 		return NULL;
+	if (memory_is_chunked())
+	{
+		/* made real a chunk at a time and handed out cleared (commit) */
+		if (commit_owned((uint64_t)(uintptr_t)address, pages * PAGE) != 0)
+		{
+			host_low_unmap(address, pages * PAGE);
+			return NULL;
+		}
+		memset(address, 0, pages * PAGE);
+		return address;
+	}
 	if (mmap(address, pages * PAGE, protection, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) != address)
 	{
 		host_low_unmap(address, pages * PAGE);
@@ -698,8 +861,10 @@ void host_low_unmap(void *address, size_t size)
 	{
 		uint64_t first = (start - pool->base) / PAGE, count = length / PAGE, page;
 
-		/* give the memory back but keep the address space */
-		mmap((void *)start, length, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
+		/* give the memory back but keep the address space; committed memory
+		stays as it is, and is cleared when it is handed out again */
+		if (!memory_is_chunked())
+			mmap((void *)start, length, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
 		for (page = first; page < first + count; page++)
 		{
 			if (pool->used[page])
@@ -755,6 +920,13 @@ long host_guest_mmap(uint64_t address, uint64_t size, int protection, int flags,
 				return -EINVAL;
 			fixed_flags = flags;
 		}
+		else if (memory_is_chunked())
+		{
+			/* inside the guest's own arenas: their memory, made real */
+			int error = commit_owned(host, length) != 0 ? -ENOMEM : fill(host, length, fd, offset);
+
+			return error ? error : (long)to_guest(host);
+		}
 		result = mmap((void *)host, length, protection, fixed_flags, fd, offset);
 		if (result == MAP_FAILED)
 			return -errno;
@@ -763,6 +935,18 @@ long host_guest_mmap(uint64_t address, uint64_t size, int protection, int flags,
 	result = host_low_map(length, PROT_NONE);
 	if (!result)
 		return -ENOMEM;
+	if (memory_is_chunked())
+	{
+		/* already cleared and real (host_low_map); a file's bytes, if any */
+		int error = fd >= 0 ? fill((uint64_t)(uintptr_t)result, length, fd, offset) : 0;
+
+		if (error)
+		{
+			host_low_unmap(result, length);
+			return error;
+		}
+		return (long)(uintptr_t)result;
+	}
 	if (mmap(result, length, protection, flags | MAP_FIXED, fd, offset) != result)
 	{
 		int error = errno;
@@ -782,7 +966,9 @@ long host_guest_munmap(uint64_t address, uint64_t size)
 		return -EINVAL;
 	if (in_range(host, length, window_base, window_end))
 	{
-		mmap((void *)host, length, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
+		/* committed memory stays as it is (commit) */
+		if (!memory_is_chunked())
+			mmap((void *)host, length, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
 		return 0;
 	}
 	if (in_range(host, length, image_base, image_end))
@@ -801,6 +987,9 @@ long host_guest_mprotect(uint64_t address, uint64_t size, int protection)
 
 	if (host + size > LOW_LIMIT)
 		return -EINVAL;
+	/* committed memory is read-write and stays so (commit) */
+	if (memory_is_chunked() && host_low_owns(host, size))
+		return 0;
 	return mprotect((void *)host, size, protection) ? -errno : 0;
 }
 
