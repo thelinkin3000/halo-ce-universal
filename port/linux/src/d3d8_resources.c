@@ -126,15 +126,52 @@ ULONG WINAPI D3DResource_Release(D3DResource *resource)
 	return count;
 }
 
-BOOL WINAPI D3DResource_IsBusy(D3DResource *resource)
+#ifdef HALO_SWITCH
+/* Under the OpenGL renderer nothing is busy: the mirror (d3d8_gl.c) copies
+a draw's data at the draw, so an answer is never waited on. The deko3d
+renderer (port/switch/guest/d3d8_dk.c) defines these for real - the GPU
+reads the game's memory after the draw, so a resource is busy until the GPU
+is past the last draw that read it, which the resource's Lock field records
+as the Xbox's runtime did - and its strong definitions replace these weak
+ones in its image only. */
+__attribute__((weak)) BOOL halo_resource_busy(D3DResource *resource)
 {
 	(void)resource;
 	return FALSE;
 }
 
-void WINAPI D3DResource_BlockUntilNotBusy(D3DResource *resource)
+__attribute__((weak)) void halo_resource_wait(D3DResource *resource)
 {
 	(void)resource;
+}
+
+/* as the Xbox's runtime does it, a lock that may write over memory the GPU
+is still reading waits for the GPU; no-overwrite and read-only locks
+promise not to */
+static void lock_wait(const void *resource, DWORD flags)
+{
+	if (!(flags & (D3DLOCK_NOOVERWRITE | D3DLOCK_READONLY)))
+		halo_resource_wait((D3DResource *)resource);
+}
+#endif
+
+BOOL WINAPI D3DResource_IsBusy(D3DResource *resource)
+{
+#ifdef HALO_SWITCH
+	return halo_resource_busy(resource);
+#else
+	(void)resource;
+	return FALSE;
+#endif
+}
+
+void WINAPI D3DResource_BlockUntilNotBusy(D3DResource *resource)
+{
+#ifdef HALO_SWITCH
+	halo_resource_wait(resource);
+#else
+	(void)resource;
+#endif
 }
 
 /* ---------- textures */
@@ -248,14 +285,22 @@ static void lock_level(const DWORD *resource, unsigned long face, unsigned long 
 
 void WINAPI D3DTexture_LockRect(D3DTexture *texture, UINT level, D3DLOCKED_RECT *locked, CONST RECT *rectangle, DWORD flags)
 {
+#ifdef HALO_SWITCH
+	lock_wait(texture, flags);
+#else
 	(void)flags;
+#endif
 	lock_level((const DWORD *)texture, 0, level, locked, rectangle);
 }
 
 void WINAPI D3DCubeTexture_LockRect(D3DCubeTexture *texture, D3DCUBEMAP_FACES face, UINT level,
 	D3DLOCKED_RECT *locked, CONST RECT *rectangle, DWORD flags)
 {
+#ifdef HALO_SWITCH
+	lock_wait(texture, flags);
+#else
 	(void)flags;
+#endif
 	lock_level((const DWORD *)texture, (unsigned long)face, level, locked, rectangle);
 }
 
@@ -267,7 +312,11 @@ void WINAPI D3DVolumeTexture_LockBox(D3DVolumeTexture *texture, UINT level, D3DL
 	unsigned long row_pitch, slice;
 	char *bits;
 
+#ifdef HALO_SWITCH
+	lock_wait(texture, flags);
+#else
 	(void)flags;
+#endif
 	xgpu_texture_describe(resource[3], resource[4], &description);
 	row_pitch = xgpu_texture_level_pitch(&description, level);
 	slice = row_pitch * level_dimension(description.height, level);
@@ -339,7 +388,11 @@ void WINAPI D3DSurface_GetDesc(D3DSurface *surface, D3DSURFACE_DESC *description
 
 void WINAPI D3DSurface_LockRect(D3DSurface *surface, D3DLOCKED_RECT *locked, CONST RECT *rectangle, DWORD flags)
 {
+#ifdef HALO_SWITCH
+	lock_wait(surface, flags);
+#else
 	(void)flags;
+#endif
 	lock_level((const DWORD *)surface, 0, 0, locked, rectangle);
 }
 
@@ -369,7 +422,11 @@ HRESULT WINAPI D3DDevice_CreateVertexBuffer(UINT length, DWORD usage, DWORD fvf,
 
 void WINAPI D3DVertexBuffer_Lock(D3DVertexBuffer *buffer, UINT offset, UINT size, BYTE **data, DWORD flags)
 {
+#ifdef HALO_SWITCH
+	lock_wait(buffer, flags);
+#else
 	(void)flags;
+#endif
 	*data = buffer->Data ? (BYTE *)resource_data(buffer->Data) + offset : NULL;
 #ifdef HALO_SWITCH
 	/* as lock_level: the vertex mirror (d3d8_gl.c) cannot see the write
@@ -450,7 +507,11 @@ HRESULT WINAPI D3DDevice_CreatePalette(D3DPALETTESIZE size, D3DPalette **result)
 
 void WINAPI D3DPalette_Lock(D3DPalette *palette, D3DCOLOR **colors, DWORD flags)
 {
+#ifdef HALO_SWITCH
+	lock_wait(palette, flags);
+#else
 	(void)flags;
+#endif
 	*colors = (D3DCOLOR *)resource_data(palette->Data);
 #ifdef HALO_SWITCH
 	/* as lock_level */

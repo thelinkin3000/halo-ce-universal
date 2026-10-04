@@ -4,7 +4,7 @@ A second renderer for the Switch build that drives the GPU through
 [deko3d](https://github.com/devkitPro/deko3d) instead of Mesa, with compiled
 shaders cached on the SD card.
 
-Status: phase 0 (the spike) done; see "Progress" at the end.
+Status: phases 0 to 3 done, phase 4 next; see "Progress" at the end.
 
 ---
 
@@ -87,7 +87,7 @@ New, Switch only (copies of the GL renderer's files, adapted):
 
 | File | From | What changes |
 |---|---|---|
-| `port/switch/guest/d3d8_dk.c` | `d3d8_gl.c` | entry points and state kept; GL calls replaced by draw descriptions sent to the host (phase 1: drawing stubbed) |
+| `port/switch/guest/d3d8_dk.c` | `d3d8_gl.c` | entry points and state kept; GL calls replaced by draw descriptions sent to the host (drawing still stubbed) |
 | `port/switch/guest/xbox_textures_dk.c` | `xbox_textures.c` | format decoding kept; upload and cache go to the host |
 | `port/switch/guest/nv2a_vsh_dk.c`, `nv2a_psh_dk.c` | `nv2a_vsh.c`, `nv2a_psh.c` | GLSL for UAM (below) |
 | `port/switch/guest/hud_hires_dk.c`, `text_hires_dk.c` | `hud_hires.c`, `text_hires.c` | their few GL calls |
@@ -99,7 +99,7 @@ platform layer.
 
 ---
 
-## Phase 0 — spike
+## Phase 0 — spike (done)
 
 Settles the unknowns before the bulk of the work.
 
@@ -117,14 +117,109 @@ Settles the unknowns before the bulk of the work.
 shaders is on screen, with compile timings and an answer on the memory
 block.
 
-## Phase 1 — copy the shared pieces
+## Phase 1 — the deko3d image (done)
 
-Copy into the deko3d renderer what is not GL: the screen's width and scale,
-the menus' pointer, the vertical blank thread, the device state, vertex
-declaration parsing, the vertex constants' serials. No changes to the GL
-files.
+A second guest image with the deko3d renderer's device, `d3d8_dk.c`, chosen
+by `display.renderer` (above). The device holds what `d3d8_gl.c` does that is
+not OpenGL, copied as it is: the screen's width and scale, the XDK's state,
+the vertical blank, the reserved viewport constants, render and texture
+stage state, vertex shaders and declarations, streams and immediate mode. No
+changes to the GL files.
 
-## Phase 2 — GLSL for UAM
+## Phase 2 — the backend's skeleton (done)
+
+`port/switch/host/host_dk.c`: a device and a queue, a ring of command memory
+slices behind fences, render targets and depth buffers as images found by
+their data address, and a swapchain on the default window. The guest writes
+a stream of commands over a frame (`guest/dk_commands.h`) and hands it over
+at Present, one crossing a frame. Clears (clipped to the viewport, per
+channel: the fog screen clears alpha only) and presenting (a letterboxed
+blit; the swapchain paces the frames) work.
+
+## Phase 3 — reading the game's memory (done)
+
+The GPU reads the game's vertex and index data where the game keeps it, as
+the NV2A did, instead of a copy (the mirror) as `d3d8_gl.c` does. What that
+involves:
+
+**One memory block per committed chunk of the window.** Where the console
+maps low memory only as code memory (Horizon 22.5 and later;
+`host_mman_low_code_mode`), the window is made real 16 MB at a time, each
+chunk an alias of its own heap made with `svcMapProcessCodeMemory`, and a
+chunk once committed stays (`host_memory.c`, `commit`). The probe found that
+the GPU maps such an alias, and that memory already mapped for the GPU
+cannot then be aliased - nor, it must be assumed, unaliased. So each chunk
+gets its deko3d memory block (`DkMemBlockFlags_CpuCached |
+DkMemBlockFlags_GpuCached`, storage the chunk's address) right after it is
+committed, by the host, and keeps it. A draw's data is then a chunk's GPU
+address plus an offset. Data that crosses from one chunk into the next (each
+chunk's GPU address is deko3d's choice, so two are not contiguous) goes the
+way data outside the window goes.
+
+Where `svcMapMemory` maps low memory (Horizon 21.2), the window is not
+chunked: parts of it are mapped and unmapped as the game asks. How it is
+mapped there has to be read first (`host_mman.c`, `host_memory.c`); if parts
+of it are ever unmapped, those parts cannot be GPU-mapped, and that build
+either commits the window in chunks too or copies.
+
+**Data outside the window goes through an upload buffer.** Index buffers
+made by `CreateIndexBuffer` are in ordinary guest memory (`calloc`,
+`d3d8_resources.c`; a map's own index data is in the window), immediate mode
+(`Begin`/`End`) builds its vertices in the device, and quad lists need
+indices made for the draw. These are copied into a per-frame slice of a
+CPU-mapped buffer (`CpuUncached`), reused once the frame's fence has passed,
+like the command memory. The copy is written into the command stream's
+draw, or into the slice by the host - whichever keeps the guest-to-host
+crossing at one a frame.
+
+**The CPU's cache is cleaned for what the GPU reads.** The window's memory
+stays CPU-cached: the game reads its map data from it all the time, and an
+uncached window would slow everything. The CPU's writes - map loading, locked
+buffers, dynamic vertices, which the game writes without announcing (the
+reason the mirror needed `memory_watch`'s faults) - may sit in its cache, so
+the host cleans (`armDCacheClean`: written back, not invalidated, the CPU
+reading on) each range a draw reads as it records the draw, each range once
+a submission (`window_read`). Only what is read is cleaned, written or not;
+nothing is watched. If that costs too much, `memory_watch`'s per-page write
+generations can skip pages not written since their last cleaning.
+
+**The GPU's caches are invalidated by deko3d.** After every queue flush
+deko3d writes back and invalidates the GPU's L2, texture, shader and
+descriptor caches (`Queue::postSubmitFlush`, "to ensure the visibility of
+CPU updates"), so every submission ends with a flushing fence, and the next
+one reads what the CPU has written and cleaned since.
+
+**Waiting for the GPU is real.** `D3DResource_IsBusy` answers "no" and
+`BlockUntilNotBusy` and the locks return at once (`d3d8_resources.c`): right
+while `d3d8_gl.c` copied every draw's data at the draw, wrong once the GPU
+reads the game's memory a frame later. The game relies on them - its texture
+cache spins on `IsBusy` before reusing a texture's memory
+(`xbox_texture_cache.c`), and the grass rebuilds its vertices in a locked
+buffer every frame. So:
+
+- each handing over of the guest's command stream is one submission,
+  numbered alike by both halves; the host ends every one with a fence and
+  reports the highest the GPU has finished (`host_dk_retired`);
+- a draw or clear records in each resource it reads or writes - render
+  targets, textures, palettes, vertex buffers, index buffer - the submission
+  it is in, in the resource's `Lock` field, as the Xbox's runtime did (the
+  game sets it to 0 whenever it makes a resource's header);
+- `IsBusy` is "that submission not finished", `BlockUntilNotBusy` waits for
+  it, and a lock without `D3DLOCK_NOOVERWRITE` or `D3DLOCK_READONLY` waits as
+  the Xbox's does;
+- a resource used in the submission still being written makes the check hand
+  the stream over first, as the Xbox kicks off its push buffer - otherwise a
+  caller spinning on `IsBusy` (the texture cache does) would wait for a
+  submission that never comes;
+- `D3DDevice_IsBusy` hands the stream over and is "a submission not
+  finished"; `KickPushBuffer` hands it over.
+
+Per resource from the start: a coarse "anything submitted unfinished" is
+nearly always true while the game runs a frame or two ahead of the GPU, and
+the texture cache, which takes a busy texture for a locked one, could then
+evict nothing.
+
+## Phase 4 — GLSL for UAM
 
 In `nv2a_vsh_dk.c` / `nv2a_psh_dk.c`:
 
@@ -137,7 +232,10 @@ In `nv2a_vsh_dk.c` / `nv2a_psh_dk.c`:
   `DkDeviceFlags_DepthZeroToOne` give Direct3D's conventions.
 - The LOD bias goes back into the sampler.
 
-## Phase 3 — shader cache
+- The game's real shaders, generated so, timed on the console: what they
+  cost says what compiling shared keys at startup costs.
+
+## Phase 5 — shader cache
 
 - **Keys.** A vertex shader: a hash of its instructions (not the order it was
   created in, which only holds for one build), its variant and packed mask. A
@@ -153,38 +251,34 @@ In `nv2a_vsh_dk.c` / `nv2a_psh_dk.c`:
   skipped until its shader is ready; the key is recorded for sharing.
 - **Code memory:** one growing area of a `DkMemBlockFlags_Code` block.
 
-## Phase 4 — the backend
+## Phase 6 — draws, textures and render targets
 
-- **Frames:** a ring of command buffers with a fence each; a ring of uniform
-  buffers.
-- **Memory:** draws read vertices and indices straight from the guest window
-  if phase 0 showed they can; otherwise a port of the mirror.
-- **Render targets:** `DkImage`s by `Data` address as now, with
-  render-to-texture, the mip composite (the water's ripples) and the screen's
-  scale.
+The menus first, then a map.
+
+- **Uniforms:** a ring of uniform buffers behind the frames' fences.
+- **Render targets:** render-to-texture, the mip composite (the water's
+  ripples), the screen's scale.
 - **Textures:** decoded as now, uploaded through a staging buffer and
   `dkCmdBufCopyBufferToImage`, cached. BC1-BC3 and BGRA are native.
 - **State:** the Direct3D state into deko3d's rasterizer, color, blend and
   depth-stencil states; samplers and images in descriptor sets.
 - **Draws:** native quads, base vertex, immediate mode.
-- **Clears:** clipped to the viewport, per channel (the fog screen clears
-  alpha only).
 - **Visibility tests:** `dkCmdBufReportCounter(DkCounter_SamplesPassed)` into
   memory — real counts, as the NV2A gave.
-- **Present:** a letterboxed blit into the swapchain's image; frame pacing
-  and interpolation as now.
+- **The high-res HUD and text, and the menus' art**, whose GL calls do
+  nothing under deko3d.
 - **Debugging:** the existing settings (`debug.screenshot_every`,
   `debug.gpu_trace_frame`, `debug.gpu_stats`, `debug.gpu_dump_shaders`), and
   deko3d's debug build for validation.
 
-## Phase 5 — parity and performance
+## Phase 7 — parity and performance
 
 - Every map's scenes compared against the Mesa renderer on the Switch with
   `debug.screenshot_every`; especially split screen, water, lens flares,
   decals (z bias), fog, the HUD's meters and the PC menus.
 - CPU frame time against Mesa; no hitches with a warm cache.
 
-## Phase 6 — collecting keys
+## Phase 8 — collecting keys
 
 - Builds record keys into the SD folder; testers send the files in.
 - A PC tool merges them, drops duplicates and reports what each submission
@@ -201,12 +295,47 @@ In `nv2a_vsh_dk.c` / `nv2a_psh_dk.c`:
 | SDL2's input and audio without its EGL window | phase 0 |
 | The GPU reading guest memory: alignment, CPU cache coherence | phase 0 |
 | UAM's compile time on the console, at startup and for misses | phase 0 |
-| Behaviour of Mesa that the GL renderer relies on without saying so | phase 5 |
+| Behaviour of Mesa that the GL renderer relies on without saying so | phase 7 |
 | Two copies of the shared code drifting apart until they are merged | ongoing |
 
 ---
 
 ## Progress
+
+### Phase 3
+
+Built, and run on a console (Horizon 21.2, the svcMapMemory firmware, where
+the window used to be mapped and unmapped piecemeal and is now committed in
+chunks under deko3d): all eight 16 MB chunks of the window were GPU-mapped
+before the first frame (`deko3d: window chunk 0x50000000 is GPU address
+0502340000` and seven more), with no refusal from nvmap or the GPU's
+address space, and the game booted to the menus. Nothing reads the window
+through the GPU yet - there are no draws until phase 6 - so the cleaning
+and the busy checks' waits are exercised only by clears so far. The
+code-memory firmware (22.5 and later), where the window was already
+chunked, is still to be run. What was built:
+
+- Each committed chunk of the window is noted by `host_memory.c` and given
+  its memory block by the game thread at the next submission, after the
+  probe's nvmap and address-space checks (`chunks_map`). Under deko3d the
+  window is committed in chunks on every firmware, the svcMapMemory one
+  included, and never unmapped (`window_is_chunked`); pools are as before.
+- `window_read` gives a draw a range's GPU address and cleans it from the
+  CPU's cache; `upload_copy` puts data outside the window in the frame's
+  slice of a `CpuUncached` upload buffer. Both wait for phase 6's draws.
+- Submissions are numbered and fenced, and IsBusy, BlockUntilNotBusy and the
+  locks answer per resource through `Lock` (`d3d8_resources.c` has weak,
+  empty defaults for the OpenGL image).
+
+### Phase 2
+
+On a console, under deko3d: the device comes up as the game starts
+(presenting at 1280x720), the game's back buffer (852x480, the screen's
+shape) and its depth buffer become images the first time they are drawn
+into, frames are presented about a second after launch and then at 60 a
+second, paced by the swapchain, with no errors. The game thread spends 0.6
+to 0.7 ms a frame (4% of the time) in the menus. Nothing is drawn but the
+clears, which in the menus are black.
 
 ### Phase 1
 
