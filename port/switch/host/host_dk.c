@@ -708,3 +708,14 @@ void host_dk_submit(uint32_t commands, uint32_t size)
 	if (dk.recorded || dk.serial_fenced != dk.serial)
 		commands_submit();
 }
+
+/* the deko3d device, on the game thread only: the shader cache's code
+memory (host_dk_shaders.c) needs it. Starts the backend if the guest has not
+handed a frame over yet, so a shader asked for before the first Present
+still finds it ready; NULL if the device would not come up. */
+struct tag_DkDevice *host_dk_device(void)
+{
+	if (!dk.ready && !initialize())
+		return NULL;
+	return dk.device;
+}

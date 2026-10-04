@@ -311,6 +311,13 @@ const char *host_executable_root(void)
 	return executable_root;
 }
 
+/* the data root, where config.toml and the game's maps are. The deko3d
+renderer's shader cache lives under it (host_dk_shaders.c). */
+const char *host_data_root(void)
+{
+	return data_root;
+}
+
 static struct timespec extraction_started;
 
 static int directory_has_maps(const char *root)
