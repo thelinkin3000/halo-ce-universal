@@ -71,8 +71,11 @@ UAM_PATCH = PORT_DIR / "uam.patch"
 
 
 def fetch_uam() -> bool:
-    """Clone UAM at its pinned commit and apply the port's patch (configure time, once)."""
-    if (UAM_DIR / ".patched").is_file():
+    """Clone UAM at its pinned commit and apply the port's patch (configure time, and again
+    whenever the patch changes: the marker records which patch the clone has)."""
+    import hashlib
+    marker = UAM_COMMIT + " " + hashlib.sha256(UAM_PATCH.read_bytes()).hexdigest() + "\n"
+    if (UAM_DIR / ".patched").is_file() and (UAM_DIR / ".patched").read_text() == marker:
         return True
     if UAM_DIR.exists():
         shutil.rmtree(UAM_DIR)
@@ -82,7 +85,7 @@ def fetch_uam() -> bool:
     subprocess.run(["git", "-C", str(UAM_DIR), "fetch", "-q", "--depth", "1", UAM_URL, UAM_COMMIT], check=True)
     subprocess.run(["git", "-C", str(UAM_DIR), "checkout", "-q", "FETCH_HEAD"], check=True)
     subprocess.run(["git", "-C", str(UAM_DIR), "apply", str(UAM_PATCH.resolve())], check=True)
-    (UAM_DIR / ".patched").write_text(UAM_COMMIT + "\n")
+    (UAM_DIR / ".patched").write_text(marker)
     return True
 
 
@@ -121,13 +124,22 @@ def _uam_build(n: Writer, devkitpro: Path, host_cc: Path, host_arch: str) -> Opt
         encoding="utf-8")
 
     # meson's build of the library is a thin archive (members by path), so it
-    # is repacked into an ordinary one that can be linked from anywhere
+    # is repacked into an ordinary one that can be linked from anywhere.
+    #
+    # b_staticpic=false: meson compiles a static library with -fPIC by default,
+    # after the cross file's -fPIE, and -fPIC gives thread-local variables an
+    # access model that needs the thread pointer in a register - while
+    # devkitA64's -mtp=soft gets it from a call (__aarch64_read_tp) whose result
+    # overwrites the variable's offset. The code then reads the thread pointer
+    # plus itself, and the first compile faults (uam.patch's per-thread state;
+    # the probe found it). -fPIE, as the host is built, uses local-exec, which
+    # works.
     library = build_dir / "libuam.a"
     meson_dir = build_dir / "meson"
     ar = host_cc.parent / "aarch64-none-elf-ar"
     n.rule(
         name="switch_uam",
-        command=(f"rm -rf {meson_dir} && meson setup --cross-file {cross_file.resolve()} "
+        command=(f"rm -rf {meson_dir} && meson setup -Db_staticpic=false --cross-file {cross_file.resolve()} "
                  f"{meson_dir.resolve()} {UAM_DIR.resolve()} > /dev/null && ninja -C {meson_dir} libuam.a > /dev/null && "
                  f"rm -f $out && cd {meson_dir} && {ar} rcs {library.resolve()} $$({ar} t libuam.a)"),
         description="SWITCH UAM $out",
