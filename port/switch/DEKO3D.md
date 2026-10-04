@@ -4,7 +4,7 @@ A second renderer for the Switch build that drives the GPU through
 [deko3d](https://github.com/devkitPro/deko3d) instead of Mesa, with compiled
 shaders cached on the SD card.
 
-Status: phases 0 to 3 done, phase 4 next; see "Progress" at the end.
+Status: phases 0 to 4 done, phase 5 next; see "Progress" at the end.
 
 ---
 
@@ -219,7 +219,7 @@ nearly always true while the game runs a frame or two ahead of the GPU, and
 the texture cache, which takes a busy texture for a locked one, could then
 evict nothing.
 
-## Phase 4 — GLSL for UAM
+## Phase 4 — GLSL for UAM (done)
 
 Written to be picked up by an agent that has not seen the work so far. Read
 "Where the renderer lives" and phases 0 to 3 above first; then read
@@ -505,6 +505,62 @@ The menus first, then a map.
 ---
 
 ## Progress
+
+### Phase 4
+
+Built as the spec says: `guest/nv2a_vsh_dk.c` and `guest/nv2a_psh_dk.c`
+(`nv2a_dk_vertex_shader_to_glsl`, `nv2a_dk_pixel_shader_to_glsl`), differing
+from the OpenGL generators only in the dialect; `guest/dk_shaders.h` (the
+bindings, the locations, and the blocks as structs of 3072, 48 and 528
+bytes, checked at compile time); the dump in `d3d8_dk.c`
+(`debug.gpu_dump_shaders`); `tools/dk_shader_check.py`; and the probe's
+corpus pass.
+
+The corpus, dumped by the deko3d image on a console from the game and from
+the 1,197 program records of the OpenGL image's play
+(`/switch/halo/save/z/shader_programs.bin`): **100 vertex shaders** - the
+game's 67 programs, each as the immediate-mode variant (packed mask 0), and
+33 more for the packed masks the records show - and **644 pixel shaders**,
+one a distinct key.
+
+**On the PC** (`uam` 1.1.0, `tools/dk_shader_check.py`): all 744 compile,
+with no warnings. Before the console run, the 67 programs of the game's
+microcode table were also put through the generator natively (each with no
+attribute packed and with every one), and all 134 compiled.
+
+**On the console** (the probe; each time includes writing the DKSH to the
+card):
+
+| | Shaders | Failed | Total | Average | Slowest |
+|---|---|---|---|---|---|
+| vertex | 100 | 0 | 14.0 s | 140 ms | 236 ms (`vs_32_0000000e`) |
+| pixel | 644 | 0 | 54.6 s | 85 ms | 192 ms (`ps_788808af`) |
+| both | 744 | 0 | 68.6 s | | |
+
+What it means for phase 5:
+- Compiling every known shader on a console with an empty cache takes
+  about **70 seconds**, on one core. That is once a console (and again only
+  when the generators or UAM change), but it is too long to sit through
+  unexplained: the pass needs its progress screen, and is worth splitting
+  over the cores the game does not use - if UAM's compiler can run on two
+  threads at once, which nothing has tested (it is Mesa's GLSL compiler,
+  with global state of its own). Compiling in the background while the game
+  runs, skipping draws until their shaders are ready, is the other way, and
+  the choice is the user's.
+- A shader first met in play costs 85 to 236 ms: a few frames in which the
+  draws that need it are skipped.
+
+Found on the way:
+- The game presents once while its rasterizer starts, before it makes its
+  vertex shaders, so the dump runs a second in (`device.frame >= 60`), not
+  at the first frame; the first dump had no vertex shaders.
+- Writing a file from the guest logs `guest call (29) failed: errno 25` once
+  a file: musl asks whether a new stream is a terminal. Harmless; a dump
+  logs some 750 of them.
+- The records hold keys that differ only in `count_samples` (the OpenGL
+  image's occlusion counting), which make identical GLSL under two names;
+  and pixel files are named by a 32-bit hash, so two keys with one hash
+  would overwrite each other's file. Neither matters to the proof.
 
 ### Phase 3
 
