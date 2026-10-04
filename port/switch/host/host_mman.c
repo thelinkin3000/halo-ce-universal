@@ -59,7 +59,12 @@ the address the memory was mapped *from* (svcUnmapMemory takes both) and
 because turning a mapping executable or writable again means finding the
 object it belongs to. The host makes few mappings - a few dozen, the biggest
 being the guest's arenas - so a flat table is the honest structure. */
-#define MAPPING_LIMIT 512
+/* Freed guest memory used to stay mapped PROT_NONE (host_memory.c), a record
+each, split again by every allocation inside it; after a crowded network game
+the 512 records there were ran out and an allocation failed. Freed memory is
+unmapped now, so the records are live mappings only, and these are room to
+spare. */
+#define MAPPING_LIMIT 2048
 
 enum mapping_kind
 {
@@ -141,7 +146,11 @@ static struct mapping *mapping_add(void *address, size_t length, void *backing,
 	if (!mapping)
 	{
 		if (mapping_count >= MAPPING_LIMIT)
+		{
+			host_logf(HOST_LOG_ERROR, "the table of mappings is full (%d); %zu bytes at %p were not recorded",
+				MAPPING_LIMIT, length, address);
 			return NULL;
+		}
 		mapping = &mappings[mapping_count++];
 	}
 	mapping->kind = kind;
@@ -720,6 +729,64 @@ static struct mapping *mapping_split(struct mapping *mapping, void *address, siz
 	return middle;
 }
 
+/* Takes [address, address + length) out of whatever is mapped there, and
+nothing else: each mapping the range touches is split and only the part
+inside the range let go, its head and tail kept with their contents. A
+MAP_FIXED mapping replaces a range this way, and munmap releases one. */
+static int release_range(void *address, size_t length)
+{
+	uintptr_t start = (uintptr_t)address;
+	uintptr_t end = start + length;
+
+	for (;;)
+	{
+		struct mapping *existing = NULL;
+		uintptr_t base, limit, piece_start, piece_end;
+		struct mapping *middle;
+		int index;
+
+		for (index = 0; index < mapping_count; index++)
+		{
+			struct mapping *candidate = &mappings[index];
+			uintptr_t candidate_base = (uintptr_t)candidate->address;
+
+			if (candidate->kind == _mapping_free)
+				continue;
+			if (candidate_base + candidate->length <= start || candidate_base >= end)
+				continue;
+			if (!existing || candidate->length < existing->length)
+				existing = candidate;
+		}
+		if (!existing)
+			break;
+
+		base = (uintptr_t)existing->address;
+		limit = base + existing->length;
+		piece_start = start > base ? start : base;
+		piece_end = end < limit ? end : limit;
+		middle = mapping_split(existing, (void *)piece_start,
+			(size_t)(piece_end - piece_start));
+
+		if (!middle)
+		{
+			host_logf(HOST_LOG_ERROR,
+				"%p (%zu bytes) cannot be taken out of the mapping of %zu bytes at %p",
+				address, length, limit - base, (void *)base);
+			return -1;
+		}
+		unmap_mapping(middle);
+		free(middle->backing);
+		middle->kind = _mapping_free;
+		middle->address = NULL;
+		middle->length = 0;
+		middle->backing = NULL;
+		middle->code = 0;
+		middle->executable = 0;
+		middle->protection = 0;
+	}
+	return 0;
+}
+
 static void *mmap_unlocked(void *address, size_t length, int protection, int flags, int fd, off_t offset)
 {
 	void *backing;
@@ -794,56 +861,11 @@ static void *mmap_unlocked(void *address, size_t length, int protection, int fla
 		is let go. The head and tail of each are re-mapped with their
 		contents copied, because they belong to whoever is using them.
 		 */
-		uintptr_t start = (uintptr_t)address;
-		uintptr_t end = start + length;
-
-		for (;;)
+		if (release_range(address, length) != 0)
 		{
-			struct mapping *existing = NULL;
-			uintptr_t base, limit, piece_start, piece_end;
-			struct mapping *middle;
-			int index;
-
-			for (index = 0; index < mapping_count; index++)
-			{
-				struct mapping *candidate = &mappings[index];
-				uintptr_t candidate_base = (uintptr_t)candidate->address;
-
-				if (candidate->kind == _mapping_free)
-					continue;
-				if (candidate_base + candidate->length <= start || candidate_base >= end)
-					continue;
-				if (!existing || candidate->length < existing->length)
-					existing = candidate;
-			}
-			if (!existing)
-				break;
-
-			base = (uintptr_t)existing->address;
-			limit = base + existing->length;
-			piece_start = start > base ? start : base;
-			piece_end = end < limit ? end : limit;
-			middle = mapping_split(existing, (void *)piece_start,
-				(size_t)(piece_end - piece_start));
-
-			if (!middle)
-			{
-				host_logf(HOST_LOG_ERROR,
-					"MAP_FIXED at %p (%zu bytes) cannot replace the mapping of %zu bytes at %p",
-					address, length, limit - base, (void *)base);
-				free(backing);
-				errno = ENOTSUP;
-				return MAP_FAILED;
-			}
-			unmap_mapping(middle);
-			free(middle->backing);
-			middle->kind = _mapping_free;
-			middle->address = NULL;
-			middle->length = 0;
-			middle->backing = NULL;
-			middle->code = 0;
-			middle->executable = 0;
-			middle->protection = 0;
+			free(backing);
+			errno = ENOTSUP;
+			return MAP_FAILED;
 		}
 	}
 
@@ -1171,17 +1193,21 @@ static int code_to_ordinary(struct mapping *mapping)
 	return 0;
 }
 
+/* Only the range named goes, as munmap promises. This released the whole of
+whichever mapping held the address, so a guest freeing part of what it had
+mapped lost the rest with it. */
 static int munmap_unlocked(void *address, size_t length)
 {
-	struct mapping *mapping = mapping_find(address, length, 0);
-
-	if (!mapping)
-		return 0; /* nothing of ours there, which is not an error */
-	unmap_mapping(mapping);
-	free(mapping->backing);
-	mapping->kind = _mapping_free;
-	mapping->protection = 0;
-	return 0;
+	if (!length)
+		return 0;
+	length = (length + ((uintptr_t)address & 0xFFF) + 0xFFF) & ~(size_t)0xFFF;
+	address = (void *)((uintptr_t)address & ~(uintptr_t)0xFFF);
+	if (release_range(address, length) != 0)
+	{
+		errno = EINVAL;
+		return -1;
+	}
+	return 0; /* nothing of ours there is not an error either */
 }
 
 /* Turns a mapping executable, or writable again.
