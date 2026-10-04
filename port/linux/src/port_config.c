@@ -93,6 +93,13 @@ static const struct config_setting config_settings[] =
 	{ "display.screen_width", _config_integer, "0", "HALO_SCREEN_WIDTH", _environment_value, _platform_android,
 		"Columns of the 480-line picture: 0 for the display's shape, 640 for the\n"
 		"Xbox's 4:3." },
+#ifdef HALO_SWITCH
+	/* read by the Switch host before the game starts, to choose the game
+	image built with that renderer (port/switch/DEKO3D.md) */
+	{ "display.renderer", _config_string, "\"gl\"", "HALO_RENDERER", _environment_value, _platform_android,
+		"How the game draws: \"gl\" (OpenGL over Mesa) or \"deko3d\" (in development).\n"
+		"Takes effect the next time the game starts." },
+#endif
 	{ "display.vsync", _config_boolean, "true", "HALO_NO_VSYNC", _environment_set_is_false, _platform_all,
 		"Wait for the display between frames; false draws as fast as possible." },
 	{ "display.max_fps", _config_integer, "0", "HALO_MAX_FPS", _environment_value, _platform_desktop,

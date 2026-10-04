@@ -1,0 +1,5 @@
+# Host functions only the Switch's guest imports, beside port/android/host_imports.list
+# (defined in port/switch/host). tools/android_imports.py generates the stubs.
+
+# the deko3d renderer (port/switch/guest/d3d8_dk.c, port/switch/host/host_dk.c)
+host_dk_submit
