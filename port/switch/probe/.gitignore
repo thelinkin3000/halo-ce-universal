@@ -6,3 +6,4 @@
 *.nacp
 *.lst
 *.map
+build/

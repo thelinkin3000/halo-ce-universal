@@ -1,0 +1,41 @@
+diff --git a/meson.build b/meson.build
+index 1486cbc..55440c6 100644
+--- a/meson.build
++++ b/meson.build
+@@ -8,9 +8,7 @@ prog_python = import('python3').find_python()
+ has_mako = run_command(
+ 	prog_python, '-c',
+ 	'''
+-from distutils.version import StrictVersion
+ import mako
+-assert StrictVersion(mako.__version__) > StrictVersion("0.8.0")
+ 	''')
+ if has_mako.returncode() != 0
+ 	error('Python (3.x) mako module >= 0.8.0 required to build uam.')
+@@ -80,7 +78,11 @@ subdir('mesa-imported')
+ 
+ uam = executable(
+ 	'uam',
+-	uam_files,
++	uam_files + uam_main,
+ 	include_directories: uam_incs,
+ 	install: true,
+ )
++
++# the compiler as a library, for programs that compile shaders at run time
++# (the Switch port's deko3d renderer)
++static_library('uam', uam_files, include_directories: uam_incs)
+diff --git a/source/meson.build b/source/meson.build
+index ea60677..87d7729 100644
+--- a/source/meson.build
++++ b/source/meson.build
+@@ -2,7 +2,8 @@
+ uam_files += files(
+ 	'compiler_iface.cpp',
+ 	'glsl_frontend.cpp',
+-	'main.cpp',
+ 	'mini-os.c',
+ 	'tgsi_support.cpp',
+ )
++
++uam_main = files('main.cpp')
