@@ -16,6 +16,8 @@ sdmc:/deko3d_probe.txt.
    triangle is drawn from vertices written through the alias, and the pixel
    it drew is read back - then the vertices are changed through the alias
    and drawn again, to see that the GPU sees CPU writes after a cache flush.
+4. If the deko3d image has dumped the game's shaders (DEKO3D.md, phase 4),
+   how long UAM takes on each of them, and on all of them together.
 
 Each step is logged before it runs, so a crash leaves the step that crashed
 as the last line. A case can be skipped by naming it on a line of
@@ -29,6 +31,7 @@ one failed; press A (or wait 20 seconds) to exit, which also tests input.
 #include <deko3d.h>
 #include <SDL.h>
 
+#include <dirent.h>
 #include <malloc.h>
 #include <math.h>
 #include <stdarg.h>
@@ -42,6 +45,7 @@ extern "C" int probe_compile(int fragment, const char *glsl, const char *path);
 #define LOG_PATH "sdmc:/deko3d_probe.txt"
 #define SKIP_PATH "sdmc:/deko3d_probe_skip.txt"
 #define SHADER_DIRECTORY "sdmc:/deko3d_probe"
+#define CORPUS_DIRECTORY "sdmc:/halo_dk_shaders"
 
 /* ---------- logging */
 
@@ -776,6 +780,158 @@ static void present_until_a(bool all_passed)
 	dkMemBlockDestroy(memory);
 }
 
+/* ---------- the game's dumped shaders, timed
+
+4. If the deko3d image has dumped the game's shaders (DEKO3D.md, phase 4:
+debug.gpu_dump_shaders = sdmc:/halo_dk_shaders), compile each with UAM and
+log the time, then per stage the count, the total, the average and the
+slowest ten. The total is what compiling every known key costs a console
+that has none cached; the slowest are what a key first met in play costs
+while its draws are skipped. */
+
+#define SLOWEST_KEPT 10
+
+struct slowest_one
+{
+	double milliseconds;
+	char name[48];
+};
+
+static void slowest_note(struct slowest_one *slowest, double milliseconds, const char *name)
+{
+	int index, place = SLOWEST_KEPT;
+
+	for (index = 0; index < SLOWEST_KEPT; index++)
+	{
+		if (milliseconds > slowest[index].milliseconds)
+		{
+			place = index;
+			break;
+		}
+	}
+	if (place == SLOWEST_KEPT)
+		return;
+	for (index = SLOWEST_KEPT - 1; index > place; index--)
+		slowest[index] = slowest[index - 1];
+	slowest[place].milliseconds = milliseconds;
+	snprintf(slowest[place].name, sizeof(slowest[place].name), "%s", name);
+}
+
+static int name_compare(const void *a, const void *b)
+{
+	return strcmp((const char *)a, (const char *)b);
+}
+
+static bool has_suffix(const char *name, const char *suffix)
+{
+	size_t name_length = strlen(name), suffix_length = strlen(suffix);
+
+	return name_length > suffix_length && !strcmp(name + name_length - suffix_length, suffix);
+}
+
+static void corpus_compile(void)
+{
+	DIR *directory = opendir(CORPUS_DIRECTORY);
+	struct dirent *entry;
+	char (*names)[256] = NULL;
+	size_t name_count = 0, name_capacity = 0;
+	double totals[2] = { 0.0, 0.0 };
+	unsigned long counts[2] = { 0, 0 }, failures[2] = { 0, 0 };
+	struct slowest_one slowest[2][SLOWEST_KEPT];
+	size_t index;
+	int stage;
+
+	if (!directory)
+	{
+		say("corpus: no %s (the deko3d image has not dumped the game's shaders); skipping", CORPUS_DIRECTORY);
+		return;
+	}
+	while ((entry = readdir(directory)) != NULL)
+	{
+		if (!has_suffix(entry->d_name, ".vert") && !has_suffix(entry->d_name, ".frag"))
+			continue;
+		if (name_count == name_capacity)
+		{
+			size_t grown_capacity = name_capacity ? name_capacity * 2 : 256;
+			char (*grown)[256] = (char (*)[256])realloc(names, grown_capacity * sizeof(*grown));
+
+			if (!grown)
+				break;
+			names = grown;
+			name_capacity = grown_capacity;
+		}
+		snprintf(names[name_count], sizeof(names[0]), "%s", entry->d_name);
+		name_count++;
+	}
+	closedir(directory);
+	qsort(names, name_count, sizeof(names[0]), name_compare);
+	say("corpus: compiling the %u shaders in %s", (unsigned)name_count, CORPUS_DIRECTORY);
+	memset(slowest, 0, sizeof(slowest));
+	for (index = 0; index < name_count; index++)
+	{
+		char path[320], out_path[320];
+		FILE *file;
+		char *source;
+		long size;
+		u64 start;
+		double milliseconds;
+		int ok;
+
+		stage = has_suffix(names[index], ".frag") ? 1 : 0;
+		snprintf(path, sizeof(path), "%s/%s", CORPUS_DIRECTORY, names[index]);
+		file = fopen(path, "rb");
+		if (!file)
+		{
+			say("corpus %-48s cannot be opened", names[index]);
+			failures[stage]++;
+			continue;
+		}
+		fseek(file, 0, SEEK_END);
+		size = ftell(file);
+		fseek(file, 0, SEEK_SET);
+		source = (char *)malloc((size_t)size + 1);
+		if (!source || fread(source, 1, (size_t)size, file) != (size_t)size)
+		{
+			say("corpus %-48s cannot be read", names[index]);
+			fclose(file);
+			free(source);
+			failures[stage]++;
+			continue;
+		}
+		fclose(file);
+		source[size] = 0;
+		snprintf(out_path, sizeof(out_path), SHADER_DIRECTORY "/%s.dksh", names[index]);
+		start = armGetSystemTick();
+		ok = probe_compile(stage, source, out_path);
+		milliseconds = milliseconds_since(start);
+		free(source);
+		say("corpus %-48s %s in %.1f ms", names[index], ok ? "ok" : "FAILED", milliseconds);
+		if (ok)
+		{
+			counts[stage]++;
+			totals[stage] += milliseconds;
+			slowest_note(slowest[stage], milliseconds, names[index]);
+		}
+		else
+		{
+			failures[stage]++;
+		}
+	}
+	for (stage = 0; stage < 2; stage++)
+	{
+		int place;
+
+		say("corpus %s shaders: %lu compiled, %lu failed; total %.1f ms, average %.1f ms",
+			stage ? "fragment" : "vertex", counts[stage], failures[stage], totals[stage],
+			counts[stage] ? totals[stage] / (double)counts[stage] : 0.0);
+		for (place = 0; place < SLOWEST_KEPT && slowest[stage][place].milliseconds > 0.0; place++)
+			say("corpus %s slowest %2d: %-44s %.1f ms", stage ? "fragment" : "vertex", place + 1,
+				slowest[stage][place].name, slowest[stage][place].milliseconds);
+	}
+	say("corpus: both stages together: %.1f ms", totals[0] + totals[1]);
+	free(names);
+}
+
 /* ---------- the probe */
 
 int main(int argc, char **argv)
@@ -879,6 +1035,7 @@ int main(int argc, char **argv)
 		memory_case("code/gpu_first", _alias_code, false, true);
 		say("memory: %d of %d cases passed; the GPU reads the window's kind of memory through its alias: %s",
 			cases_passed, cases_run, heap && map_memory && code ? "yes" : "NO");
+		corpus_compile();
 		present_until_a(heap && map_memory && code);
 	}
 
