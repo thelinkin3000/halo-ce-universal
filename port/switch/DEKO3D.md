@@ -36,6 +36,7 @@ words each.
 | The Mesa renderer on the Switch | **Kept, selectable for good** in `config.toml`. |
 | Shader compiler | UAM's compiler, linked into the Switch host and run on the console (it builds for the Switch). |
 | What players share | **Keys**, not compiled shaders: a key is data, compiled shaders are GPU code nobody can check, and keys survive changes to the generators and the compiler. |
+| Compiling the known keys a console has not cached (about 70 s on one core, phase 4) | **In the background, on several threads, while the game runs** - no waiting screen. Draws whose shader is not ready are skipped, and the keys they need go to the front; the cache keeps every shader compiled, so it happens once a console (and again after a change to the generators or UAM). |
 
 ---
 
@@ -448,11 +449,29 @@ even if it was dealt with.
 - **Compiled shaders.** DKSH files on the SD card, named by the key's hash;
   the cache is stamped with the generator's and UAM's versions, and a change
   in either throws the compiled shaders away (the keys still compile).
-- **At startup:** read every key file in the SD folder, compile the keys
-  missing from the cache, with progress shown before the menus. After that a
-  shader is a file read.
-- **During play:** a missing key goes to a compile thread and the draw is
-  skipped until its shader is ready; the key is recorded for sharing.
+- **At startup:** read every key file in the SD folder and load what the
+  cache holds (a DKSH file read, about 2 ms). The game starts at once; the
+  keys missing from the cache go to the compile threads (below). After the
+  first complete pass a shader is only ever a file read.
+- **Compile threads, in the background** (the user's choice): the host
+  runs two or three threads, on cores the game thread does not use, taking
+  keys from one queue. A key a draw needs and does not have goes to the
+  front of the queue and the draw is skipped until its shader is ready
+  (85-236 ms on the console); then the keys recorded for the map being
+  loaded (the records carry each key's map), then everything else. Each
+  shader compiled is written to the cache at once, so an interrupted pass
+  loses nothing. A missing key is also recorded for sharing.
+- **First, find out whether UAM compiles on two threads at once.** It is
+  Mesa's GLSL compiler, which has global state (`glsl_frontend_init`,
+  `_mesa_glsl_*` tables, nv50_ir's), and nothing has tested it. Test it in
+  the probe: the phase 4 corpus on one thread, then on two and three,
+  comparing the DKSH files byte for byte with the one-thread run and timing
+  each. If it is not safe, the threads take turns at one lock around the
+  compiler and the work still happens in the background, on one core at a
+  time - correct, only slower to fill the cache.
+- **What the first run looks like:** some objects and effects appear a few
+  frames late until their shaders are compiled, mostly in the first seconds
+  in the menus; nothing waits. Ordering by map keeps that short.
 - **Code memory:** one growing area of a `DkMemBlockFlags_Code` block.
 
 ## Phase 6 — draws, textures and render targets
