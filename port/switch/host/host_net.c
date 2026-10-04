@@ -681,9 +681,8 @@ void posix_discord_close(int handle)
 
 Three of them exist for the desktop's benefit: a command line to read
 arguments from, a per-user secret file in a runtime directory, and a desktop
-entry registering a URL scheme. The last two have nothing to offer a console;
-the command line carries the invite chosen in the menu before the game
-(host_lobby.c). The fourth is the process's own id, which the network code
+entry registering a URL scheme. None of the three has anything to offer a
+console: the game's menus join internet games themselves. The fourth is the process's own id, which the network code
 used and the game does not, but the import table asks for it either way. */
 
 posix_ulong posix_process_id(void)
@@ -697,16 +696,13 @@ posix_ulong posix_process_id(void)
 int posix_command_line_argument(int index, char *buffer, posix_ulong size)
 {
 	/* the guest is started by the loader with its own boot structure, whose
-	argv it builds in host_main.c; it has no command line of its own. Its one
-	argument is the invite of the internet game chosen before it started
-	(host_lobby.c), which p2p.c joins as soon as internet play starts, as it
-	would a link the desktop game was opened with. */
-	const char *link = host_join_link();
-
-	if (index != 1 || !link || !size)
-		return 0;
-	snprintf(buffer, (size_t)size, "%s", link);
-	return 1;
+	argv it builds in host_main.c; it has no command line of its own. Internet
+	games are joined from the game's own menus, so there is no invite to pass
+	either. */
+	(void)index;
+	(void)buffer;
+	(void)size;
+	return 0;
 }
 
 int posix_user_secret(unsigned char *secret, int size)
