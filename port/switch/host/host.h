@@ -71,6 +71,12 @@ uint64_t host_memory_reserved_region(uint64_t size);
 /* Keeps libnx's own mappings (thread stacks) out of the guest image's fixed
  * address. Called first thing in main, before any thread exists. */
 void host_memory_hold_image_range(void);
+/* logs where the kernel put the process's address space, heap, alias and
+ * stack regions (host_memory.c) */
+void host_memory_log_regions(void);
+/* whether the guest's memory below 4 GB has to be code memory, svcMapMemory
+ * mapping nowhere there (host_mman.c) */
+int host_mman_low_code_mode(void);
 
 /* Whether this port has set [address, address+size) aside, for the image, a
  * pool or the window. host_mman's allocator asks this before handing an

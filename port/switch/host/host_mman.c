@@ -66,6 +66,7 @@ enum mapping_kind
 	_mapping_free,
 	_mapping_ordinary, /* an svcMapMemory region */
 	_mapping_code,     /* a code memory object, seen through a writable view */
+	_mapping_alias,    /* heap aliased with svcMapProcessCodeMemory: memory of the kind a program's own data is */
 };
 
 struct mapping
@@ -286,6 +287,75 @@ static void unmap_ordinary(struct mapping *mapping)
 			mapping->address, mapping->length, (unsigned)result);
 }
 
+/* ---------- where svcMapMemory may map
+
+svcMapMemory places memory only inside the process's stack region. On Horizon
+21.2 that region took in the low memory the guest lives in - the pools from
+0x10000000 worked, and the window's address 0x80000000, past its end, was
+refused - but on 22.5 the kernel put it at 0x7e73200000, far above 4 GB, and
+every mapping the guest needs was refused there with 0xdc01, an address
+outside the region allowed. The only memory the console will then place below
+4 GB is code memory, which goes anywhere in the address space.
+
+Of the two kinds, the right one is the loader's. A code memory object's
+writable view (svcCreateCodeMemory) was tried first and placed everything,
+but the kernel will not let a program pass any of that memory to a service:
+the game thread's stack was there, and the first line logged from it - a
+write to the card from a buffer on that stack - was refused with 0xd401,
+which ended in a fatal error. hbloader loads programs with
+svcMapProcessCodeMemory instead, and memory mapped so and made read-write is
+what a program's own .data and .bss are: usable for any service call, and
+placeable anywhere in the address space. PPSSPP's Switch port maps its
+arena the same way. It needs the program's own process handle, which
+hbloader gives it (envGetOwnProcessHandle); without one, the code memory
+view is all there is.
+
+So a writable mapping outside the stack region is aliased heap instead
+(map_writable). Whether any of that is needed is learned once, from the stack
+region, and where it covers the guest's low memory nothing changes.
+host_memory.c asks as well (host_mman_low_code_mode): there the guest's
+arenas are committed in large chunks, so that the guest's constant mapping and
+unmapping is bookkeeping rather than a call into the kernel each time. */
+static int regions_learned;
+static int low_code_mode;
+static u64 stack_region_base, stack_region_end;
+
+static void learn_regions(void)
+{
+	u64 base = 0, size = 0;
+
+	if (regions_learned)
+		return;
+	regions_learned = 1;
+	if (R_SUCCEEDED(svcGetInfo(&base, InfoType_StackRegionAddress, CUR_PROCESS_HANDLE, 0)) &&
+		R_SUCCEEDED(svcGetInfo(&size, InfoType_StackRegionSize, CUR_PROCESS_HANDLE, 0)))
+	{
+		stack_region_base = base;
+		stack_region_end = base + size;
+	}
+	low_code_mode = !(stack_region_base <= MAPPING_FLOOR && stack_region_end > MAPPING_FLOOR);
+	if (low_code_mode)
+		host_logf(HOST_LOG_INFO, "memory: svcMapMemory maps only at %010llx-%010llx here, none of it where the "
+			"guest's memory goes; that memory is %s", (unsigned long long)stack_region_base,
+			(unsigned long long)stack_region_end,
+			envGetOwnProcessHandle() ? "aliased heap (svcMapProcessCodeMemory)" : "code memory (no process handle)");
+}
+
+int host_mman_low_code_mode(void)
+{
+	learn_regions();
+	return low_code_mode;
+}
+
+/* whether svcMapMemory will take the range */
+static int ordinary_allowed(const void *address, size_t length)
+{
+	u64 start = (u64)(uintptr_t)address;
+
+	learn_regions();
+	return !low_code_mode || (start >= stack_region_base && start + length <= stack_region_end);
+}
+
 /* Whether a range can be mapped at all.
  *
  * Asked by trying, and undone straight away: the console answers a refusal
@@ -301,6 +371,33 @@ static int can_map_there(void *address, size_t length)
 
 	if (!backing)
 		return 0;
+	if (!ordinary_allowed(address, length) && envGetOwnProcessHandle())
+	{
+		/* as map_writable would map it: aliased heap */
+		Handle process = envGetOwnProcessHandle();
+
+		result = svcMapProcessCodeMemory(process, (u64)(uintptr_t)address, (u64)(uintptr_t)backing, length);
+		if (R_SUCCEEDED(result))
+			svcUnmapProcessCodeMemory(process, (u64)(uintptr_t)address, (u64)(uintptr_t)backing, length);
+		free(backing);
+		return R_SUCCEEDED(result);
+	}
+	if (!ordinary_allowed(address, length))
+	{
+		/* as map_writable would map it: a code memory object's owner view */
+		Handle code = 0;
+
+		result = svcCreateCodeMemory(&code, backing, length);
+		if (R_SUCCEEDED(result))
+		{
+			result = svcControlCodeMemory(code, CodeMapOperation_MapOwner, address, length, Perm_Rw);
+			if (R_SUCCEEDED(result))
+				svcControlCodeMemory(code, CodeMapOperation_UnmapOwner, address, length, 0);
+			svcCloseHandle(code);
+		}
+		free(backing);
+		return R_SUCCEEDED(result);
+	}
 	result = (Result)map_ordinary(address, length, backing);
 	if (R_SUCCEEDED(result))
 		svcUnmapMemory(address, backing, length);
@@ -347,6 +444,92 @@ static int map_code(void *address, size_t length, void *backing, struct mapping 
 		return -ENOMEM;
 	}
 	return 0;
+}
+
+/* Maps backing's contents at address, readable and writable, and records it:
+an svcMapMemory mapping where the console allows one, else backing aliased
+there with svcMapProcessCodeMemory (both keep backing as the mapping's), and
+only without a process handle a code memory object's owner view. A code memory
+object does not show what its buffer held when it was made (ordinary_to_code
+found that out), so it is made from fresh pages and backing's bytes are
+written in through the view, after which backing is freed. Returns the
+record, or NULL with backing still the caller's. */
+static struct mapping *map_writable(void *address, size_t length, void *backing, int protection)
+{
+	struct mapping *mapping = NULL;
+	void *pages;
+
+	if (ordinary_allowed(address, length))
+	{
+		if (R_FAILED((Result)map_ordinary(address, length, backing)))
+			return NULL;
+		mapping = mapping_add(address, length, backing, _mapping_ordinary, 0, 0, protection);
+		if (!mapping)
+			svcUnmapMemory(address, backing, length);
+		return mapping;
+	}
+	if (envGetOwnProcessHandle())
+	{
+		/* aliased heap: backing's own pages, so its contents are already there */
+		Handle process = envGetOwnProcessHandle();
+		u64 at = (u64)(uintptr_t)address, from = (u64)(uintptr_t)backing;
+		Result result = svcMapProcessCodeMemory(process, at, from, length);
+
+		if (R_FAILED(result))
+		{
+			host_logf(HOST_LOG_ERROR, "svcMapProcessCodeMemory(%p, %zu bytes) failed: 0x%08x", address, length,
+				(unsigned)result);
+			return NULL;
+		}
+		result = svcSetProcessMemoryPermission(process, at, length, Perm_Rw);
+		if (R_FAILED(result))
+		{
+			host_logf(HOST_LOG_ERROR, "svcSetProcessMemoryPermission(%p, %zu bytes, rw) failed: 0x%08x", address,
+				length, (unsigned)result);
+			svcUnmapProcessCodeMemory(process, at, from, length);
+			return NULL;
+		}
+		mapping = mapping_add(address, length, backing, _mapping_alias, 0, 0, protection);
+		if (!mapping)
+			svcUnmapProcessCodeMemory(process, at, from, length);
+		return mapping;
+	}
+	pages = memalign(0x1000, length);
+	if (!pages)
+		return NULL;
+	if (map_code(address, length, pages, &mapping) != 0)
+	{
+		free(pages);
+		return NULL;
+	}
+	memcpy(address, backing, length);
+	free(backing);
+	mapping->protection = protection;
+	return mapping;
+}
+
+/* takes a recorded mapping out of the address space, whichever kind it is;
+retiring the record and freeing its backing are the caller's */
+static void unmap_mapping(struct mapping *mapping)
+{
+	if (mapping->kind == _mapping_alias)
+	{
+		Result result = svcUnmapProcessCodeMemory(envGetOwnProcessHandle(), (u64)(uintptr_t)mapping->address,
+			(u64)(uintptr_t)mapping->backing, mapping->length);
+
+		if (R_FAILED(result))
+			host_logf(HOST_LOG_ERROR, "svcUnmapProcessCodeMemory at %p (%zu bytes) failed: 0x%08x",
+				mapping->address, mapping->length, (unsigned)result);
+		return;
+	}
+	if (mapping->kind == _mapping_code)
+	{
+		svcControlCodeMemory(mapping->code, mapping->executable ? CodeMapOperation_UnmapSlave :
+			CodeMapOperation_UnmapOwner, mapping->address, mapping->length, 0);
+		svcCloseHandle(mapping->code);
+	}
+	else
+		unmap_ordinary(mapping);
 }
 
 /* Every mapping below 4 GB, in order, with what the kernel says owns it.
@@ -455,12 +638,14 @@ static struct mapping *mapping_split(struct mapping *mapping, void *address, siz
 		return mapping;
 	if (start < base || end > limit)
 		return NULL;
-	if (mapping->kind == _mapping_code)
+	if (mapping->kind != _mapping_ordinary && mapping->executable)
 		/* A code memory object cannot be divided: the kernel maps and
-		unmaps it whole, and its two views are two addresses onto one
-		object. The host never needs this - the loader splits the image
-		while it is still an ordinary mapping, and a mapping born
-		executable is always created at the exact size asked for. */
+		unmaps it whole. A writable one is split the way an ordinary one
+		is, by copying its pieces into objects of their own (map_writable),
+		which is how the loader's image is split where the guest's memory
+		has to be code memory; an executable one never needs to be - a
+		mapping born executable is always created at the exact size asked
+		for. */
 		return NULL;
 
 	/* copy each piece out of the live mapping before any of it is released */
@@ -498,7 +683,7 @@ static struct mapping *mapping_split(struct mapping *mapping, void *address, siz
 	svcUnmapMemory on a mapping that no longer exists. The console answers
 	that with 0xd401 and nothing is released, which looks exactly like the
 	address being occupied for good. */
-	unmap_ordinary(mapping);
+	unmap_mapping(mapping);
 	free(mapping->backing);
 	mapping->kind = _mapping_free;
 	mapping->address = NULL;
@@ -508,54 +693,28 @@ static struct mapping *mapping_split(struct mapping *mapping, void *address, siz
 	mapping->executable = 0;
 	mapping->protection = 0;
 
+	/* each piece back, of whichever kind the console allows there; a piece
+	that is mapped belongs to its record, and the rest are freed */
 	if (before)
 	{
-		void *address_back = before;
-
-		if (R_FAILED((Result)map_ordinary((void *)base, start - base, address_back)))
+		if (!map_writable((void *)base, start - base, before, protection))
 		{
-			free(address_back);
-			free(middle_copy);
-			free(after);
-			return NULL;
-		}
-		if (!mapping_add((void *)base, start - base, address_back, _mapping_ordinary, 0, 0,
-			protection))
-		{
-			free(address_back);
+			free(before);
 			free(middle_copy);
 			free(after);
 			return NULL;
 		}
 	}
-	if (R_FAILED((Result)map_ordinary((void *)start, length, middle_copy)))
+	if (!map_writable((void *)start, length, middle_copy, protection))
 	{
 		free(middle_copy);
 		free(after);
 		return NULL;
 	}
-	if (!mapping_add((void *)start, length, middle_copy, _mapping_ordinary, 0, 0,
-		protection))
+	if (after && !map_writable((void *)end, limit - end, after, protection))
 	{
-		free(middle_copy);
 		free(after);
 		return NULL;
-	}
-	if (after)
-	{
-		void *address_after = after;
-
-		if (R_FAILED((Result)map_ordinary((void *)end, limit - end, address_after)))
-		{
-			free(address_after);
-			return NULL;
-		}
-		if (!mapping_add((void *)end, limit - end, address_after, _mapping_ordinary, 0, 0,
-			protection))
-		{
-			free(address_after);
-			return NULL;
-		}
 	}
 	middle = mapping_find((void *)start, length, 1);
 	return middle;
@@ -565,7 +724,6 @@ static void *mmap_unlocked(void *address, size_t length, int protection, int fla
 {
 	void *backing;
 	struct mapping *mapping;
-	Result result;
 
 	if (!length)
 		return MAP_FAILED;
@@ -677,18 +835,7 @@ static void *mmap_unlocked(void *address, size_t length, int protection, int fla
 				errno = ENOTSUP;
 				return MAP_FAILED;
 			}
-			if (middle->kind == _mapping_code)
-			{
-				if (middle->executable)
-					svcControlCodeMemory(middle->code, CodeMapOperation_UnmapSlave,
-						middle->address, middle->length, 0);
-				else
-					svcControlCodeMemory(middle->code, CodeMapOperation_UnmapOwner,
-						middle->address, middle->length, 0);
-				svcCloseHandle(middle->code);
-			}
-			else
-				unmap_ordinary(middle);
+			unmap_mapping(middle);
 			free(middle->backing);
 			middle->kind = _mapping_free;
 			middle->address = NULL;
@@ -702,7 +849,22 @@ static void *mmap_unlocked(void *address, size_t length, int protection, int fla
 
 	if ((flags & MAP_FIXED) == 0)
 	{
-		void *chosen = find_free(length, 0x1000, 0);
+		void *chosen = NULL;
+
+		/* Where the guest's memory has to be code memory, a request with no
+		address is the host's own - its libraries' - and has no need to be
+		below 4 GB: it goes in the stack region, where svcMapMemory maps and
+		an ordinary mapping is a mapping of its own rather than a code
+		memory object each. A large one still goes to the range reserved for
+		it, as below. */
+		if (host_mman_low_code_mode() && !(length >= LARGE_MAPPING && host_memory_reserved_region(length)))
+		{
+			virtmemLock();
+			chosen = virtmemFindStack(length, 0);
+			virtmemUnlock();
+		}
+		if (!chosen)
+			chosen = find_free(length, 0x1000, 0);
 
 		/* No fallback to another address.
 		 *
@@ -765,19 +927,17 @@ static void *mmap_unlocked(void *address, size_t length, int protection, int fla
 		return address;
 	}
 
-	result = (Result)map_ordinary(address, length, backing);
-	if (R_FAILED(result))
+	if (!map_writable(address, length, backing, protection))
 	{
 		/* say what is there, so that a refusal says whether something is in
 		the way or the console will not hand out the page at all - which
 		two different fixes would follow from, and which the first probes
 		could not tell apart */
-		log_memory_limit();
 		MemoryInfo information = { 0 };
 		u32 page_info = 0;
 
-		host_logf(HOST_LOG_ERROR, "svcMapMemory at %p (%zu bytes) failed: 0x%08x", address, length,
-			(unsigned)result);
+		log_memory_limit();
+		host_logf(HOST_LOG_ERROR, "mapping %zu bytes at %p failed", length, address);
 		if (R_SUCCEEDED(svcQueryMemory(&information, &page_info, (u64)(uintptr_t)address)))
 			host_logf(HOST_LOG_ERROR, "  the kernel reports there: base %p size 0x%llx type %02x perm %x%s",
 				(void *)(uintptr_t)information.addr, (unsigned long long)information.size,
@@ -785,19 +945,6 @@ static void *mmap_unlocked(void *address, size_t length, int protection, int fla
 				information.type == MemType_Unmapped ? " (unmapped: nothing in the way)" : "");
 		else
 			host_logf(HOST_LOG_ERROR, "  and cannot be asked what is there either");
-	}
-	if (R_FAILED(result))
-	{
-		host_logf(HOST_LOG_ERROR, "svcMapMemory at %p (%zu bytes) failed: 0x%08x",
-			address, length, (unsigned)result);
-		free(backing);
-		return MAP_FAILED;
-	}
-	if (!mapping_add(address, length, backing, _mapping_ordinary, 0, 0, protection))
-	{
-		/* the table is full: the mapping has to come back down, and
-		with no record of it to do that with, so by hand */
-		svcUnmapMemory(address, backing, length);
 		free(backing);
 		return MAP_FAILED;
 	}
@@ -874,8 +1021,9 @@ static int ordinary_to_code(struct mapping *mapping, u32 permission)
 		return -ENOMEM;
 	}
 
-	/* the old mapping comes down before the owner is mapped there */
-	unmap_ordinary(mapping);
+	/* the old mapping comes down before the owner is mapped there (an
+	ordinary one, or aliased heap whose permission would not take Perm_Rx) */
+	unmap_mapping(mapping);
 	free(mapping->backing);
 	mapping->backing = NULL;
 
@@ -984,6 +1132,23 @@ static int code_to_ordinary(struct mapping *mapping)
 	void *backing;
 	Result result;
 
+	/* where svcMapMemory cannot map, it stays code memory: the executable
+	view comes down and the writable one goes up, the contents being the
+	object's own */
+	if (!ordinary_allowed(mapping->address, mapping->length))
+	{
+		svcControlCodeMemory(mapping->code, CodeMapOperation_UnmapSlave, mapping->address, mapping->length, 0);
+		result = svcControlCodeMemory(mapping->code, CodeMapOperation_MapOwner, mapping->address,
+			mapping->length, Perm_Rw);
+		if (R_FAILED(result))
+		{
+			svcControlCodeMemory(mapping->code, CodeMapOperation_MapSlave, mapping->address, mapping->length,
+				Perm_Rx);
+			return -ENOMEM;
+		}
+		mapping->executable = 0;
+		return 0;
+	}
 	backing = memalign(0x1000, mapping->length);
 	if (!backing)
 		return -ENOMEM;
@@ -1012,20 +1177,7 @@ static int munmap_unlocked(void *address, size_t length)
 
 	if (!mapping)
 		return 0; /* nothing of ours there, which is not an error */
-	if (mapping->kind == _mapping_code)
-	{
-		if (mapping->executable)
-			svcControlCodeMemory(mapping->code, CodeMapOperation_UnmapSlave,
-				mapping->address, mapping->length, 0);
-		else
-			svcControlCodeMemory(mapping->code, CodeMapOperation_UnmapOwner,
-				mapping->address, mapping->length, 0);
-		svcCloseHandle(mapping->code);
-	}
-	else
-	{
-		unmap_ordinary(mapping);
-	}
+	unmap_mapping(mapping);
 	free(mapping->backing);
 	mapping->kind = _mapping_free;
 	mapping->protection = 0;
@@ -1087,9 +1239,14 @@ static int mprotect_unlocked(void *address, size_t length, int protection)
 
 	/* the caller may have named a sub-range of a larger mapping, and the
 	loader always does; the mapping that has to change is the piece that
-	matches the request, not the whole of what it sits in */
+	matches the request, not the whole of what it sits in. A writable code
+	mapping is split only to make part of it executable - the loader's image,
+	where the guest's memory is code memory - and never for a protection the
+	console would not give it anyway: host_memory.c's chunks are code memory,
+	and a thread's guard page in one would otherwise have cut it in three. */
 	if (((uintptr_t)address != (uintptr_t)mapping->address ||
-		length != mapping->length) && mapping->kind == _mapping_ordinary)
+		length != mapping->length) &&
+		(mapping->kind == _mapping_ordinary || (!mapping->executable && (protection & PROT_EXEC))))
 	{
 		mapping = mapping_split(mapping, address, length);
 		if (!mapping)
@@ -1109,6 +1266,49 @@ static int mprotect_unlocked(void *address, size_t length, int protection)
 	if (protection & PROT_EXEC)
 		permission |= Perm_X;
 
+	if (mapping->kind == _mapping_alias)
+	{
+		/* Aliased heap is made executable in place, the way the loader makes
+		a program's text executable, and back again; the contents are its
+		own. Should the kernel refuse, it becomes code memory as an ordinary
+		mapping would. Anything else is left read-write and said to have
+		worked: the arenas' chunks are aliased heap, and a guard page made
+		inaccessible in one would leave a stack the kernel will not take
+		buffers from. */
+		Handle process = envGetOwnProcessHandle();
+
+		if ((protection & PROT_EXEC) && !mapping->executable)
+		{
+			result = svcSetProcessMemoryPermission(process, (u64)(uintptr_t)mapping->address, mapping->length,
+				Perm_Rx);
+			if (R_SUCCEEDED(result))
+			{
+				mapping->executable = 1;
+				host_logf(HOST_LOG_INFO, "  %zu bytes at %p are executable", mapping->length, mapping->address);
+				return 0;
+			}
+			host_logf(HOST_LOG_WARN, "svcSetProcessMemoryPermission(%p, rx) failed: 0x%08x; copying it to code "
+				"memory instead", mapping->address, (unsigned)result);
+			if (ordinary_to_code(mapping, permission) != 0)
+			{
+				errno = ENOMEM;
+				return -1;
+			}
+			return 0;
+		}
+		if (!(protection & PROT_EXEC) && mapping->executable)
+		{
+			result = svcSetProcessMemoryPermission(process, (u64)(uintptr_t)mapping->address, mapping->length,
+				Perm_Rw);
+			if (R_FAILED(result))
+			{
+				errno = ENOMEM;
+				return -1;
+			}
+			mapping->executable = 0;
+		}
+		return 0;
+	}
 	if ((protection & PROT_EXEC) && mapping->kind == _mapping_ordinary)
 	{
 		/* the case the loader actually takes: a sub-range of a writable
@@ -1127,6 +1327,9 @@ static int mprotect_unlocked(void *address, size_t length, int protection)
 			errno = ENOMEM;
 			return -1;
 		}
+		/* still code memory (code_to_ordinary): its writable view is what was asked */
+		if (mapping->kind == _mapping_code)
+			return 0;
 		result = (Result)svcSetMemoryPermission(mapping->address, mapping->length, permission);
 		if (R_FAILED(result))
 		{
@@ -1137,22 +1340,28 @@ static int mprotect_unlocked(void *address, size_t length, int protection)
 	}
 	if ((protection & PROT_EXEC) && !mapping->executable)
 	{
-		/* the writable view is mapped at this address; put the executable
-		one over it and take the writable one away */
+		/* The writable view comes down and the executable one goes up at the
+		same address, in that order: it is the order ordinary_to_code takes,
+		and the one known to work, since two views cannot share an address.
+		The contents are the object's own and carry over. No cache
+		maintenance here - the buffer the object was made from cannot be
+		touched while it exists - and none is needed: the loader clears the
+		caches over the whole image once it is placed. */
+		svcControlCodeMemory(mapping->code, CodeMapOperation_UnmapOwner,
+			mapping->address, mapping->length, 0);
 		result = svcControlCodeMemory(mapping->code, CodeMapOperation_MapSlave,
 			mapping->address, mapping->length, Perm_Rx);
 		if (R_FAILED(result))
 		{
-			host_logf(HOST_LOG_ERROR, "the guest image could not be made executable at %p: 0x%08x",
-				mapping->address, (unsigned)result);
+			host_logf(HOST_LOG_ERROR, "%zu bytes at %p could not be made executable: 0x%08x",
+				mapping->length, mapping->address, (unsigned)result);
+			svcControlCodeMemory(mapping->code, CodeMapOperation_MapOwner,
+				mapping->address, mapping->length, Perm_Rw);
 			errno = ENOMEM;
 			return -1;
 		}
-		svcControlCodeMemory(mapping->code, CodeMapOperation_UnmapOwner,
-			mapping->address, mapping->length, 0);
 		mapping->executable = 1;
-		armDCacheFlush(mapping->backing, mapping->length);
-		armICacheInvalidate(mapping->address, mapping->length);
+		host_logf(HOST_LOG_INFO, "  %zu bytes at %p are executable", mapping->length, mapping->address);
 		return 0;
 	}
 	if (!(protection & PROT_EXEC) && mapping->executable)
