@@ -109,6 +109,88 @@ index 1486cbc..55440c6 100644
 +# the compiler as a library, for programs that compile shaders at run time
 +# (the Switch port's deko3d renderer)
 +static_library('uam', uam_files, include_directories: uam_incs)
+diff --git a/source/compiler_iface.cpp b/source/compiler_iface.cpp
+index 7ce5809..40e2c69 100644
+--- a/source/compiler_iface.cpp
++++ b/source/compiler_iface.cpp
+@@ -623,6 +623,16 @@ void DekoCompiler::GenerateHeaders()
+ }
+ 
+ void DekoCompiler::OutputDksh(const char* dkshFile)
++{
++	FILE* f = fopen(dkshFile, "wb");
++	if (f)
++	{
++		WriteDksh(f);
++		fclose(f);
++	}
++}
++
++void DekoCompiler::WriteDksh(FILE* f)
+ {
+ 	DkshHeader hdr = {};
+ 	hdr.magic        = DKSH_MAGIC;
+@@ -632,30 +642,24 @@ void DekoCompiler::OutputDksh(const char* dkshFile)
+ 	hdr.programs_off = sizeof(DkshHeader);
+ 	hdr.num_programs = 1;
+ 
+-	FILE* f = fopen(dkshFile, "wb");
+-	if (f)
++	fwrite(&hdr, 1, sizeof(hdr), f);
++	fwrite(&m_dkph, 1, sizeof(m_dkph), f);
++	FileAlign256(f);
++
++	if (m_stage != pipeline_stage_compute)
+ 	{
+-		fwrite(&hdr, 1, sizeof(hdr), f);
+-		fwrite(&m_dkph, 1, sizeof(m_dkph), f);
+-		FileAlign256(f);
++		static const char s_padding[s_shaderStartOffset] = "lol nvidia why did you make us waste space here";
++		fwrite(s_padding, 1, sizeof(s_padding), f);
++		fwrite(&m_nvsh, 1, sizeof(m_nvsh), f);
++	}
+ 
+-		if (m_stage != pipeline_stage_compute)
+-		{
+-			static const char s_padding[s_shaderStartOffset] = "lol nvidia why did you make us waste space here";
+-			fwrite(s_padding, 1, sizeof(s_padding), f);
+-			fwrite(&m_nvsh, 1, sizeof(m_nvsh), f);
+-		}
++	fwrite(m_code, 1, m_codeSize, f);
++	FileAlign256(f);
+ 
+-		fwrite(m_code, 1, m_codeSize, f);
++	if (m_dataSize)
++	{
++		fwrite(m_data, 1, m_dataSize, f);
+ 		FileAlign256(f);
+-
+-		if (m_dataSize)
+-		{
+-			fwrite(m_data, 1, m_dataSize, f);
+-			FileAlign256(f);
+-		}
+-
+-		fclose(f);
+ 	}
+ }
+ 
+diff --git a/source/compiler_iface.h b/source/compiler_iface.h
+index 63e1042..d6260e9 100644
+--- a/source/compiler_iface.h
++++ b/source/compiler_iface.h
+@@ -39,6 +39,11 @@ public:
+ 
+ 	bool CompileGlsl(const char* glsl);
+ 	void OutputDksh(const char* dkshFile);
++	/* the same bytes OutputDksh writes, into a file the caller opens and
++	closes: the Switch port holds the card's one lock for the write alone,
++	not for the compile (a compile is most of a tenth of a second of CPU
++	with no card in it, and the game's file calls wait on that lock) */
++	void WriteDksh(FILE* f);
+ 	void OutputRawCode(const char* rawFile);
+ 	void OutputTgsi(const char* tgsiFile);
+ };
 diff --git a/source/glsl_frontend.cpp b/source/glsl_frontend.cpp
 index 5e940ca..d61522c 100644
 --- a/source/glsl_frontend.cpp

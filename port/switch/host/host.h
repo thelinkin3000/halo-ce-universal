@@ -151,6 +151,10 @@ int host_native_thread_create(void *(*function)(void *), void *argument, size_t 
 /* runs the guest's __guest_start on the calling thread (one made by
 host_native_thread_create); does not return */
 void host_run_guest_main(uint32_t boot) __attribute__((noreturn));
+/* moves the calling thread onto a core the game thread does not keep, for
+threads that never run guest code (host_dk_shaders.c's compile thread);
+logs "a thread starts on core N" when it does */
+void host_thread_place_on_helper_core(void);
 
 /* ---------- the renderer (host_main.c)
 
@@ -174,6 +178,37 @@ uint32_t host_dk_retired(void);
 /* called as each 16 MB chunk of the window is committed (host_memory.c);
 under the deko3d renderer the chunk gets a deko3d memory block (phase 3) */
 void host_dk_window_chunk_committed(uint64_t address, uint64_t size);
+/* the deko3d device, made on the game thread (the only thread that touches
+deko3d), for the shader cache's code memory (host_dk_shaders.c). It starts
+the backend if the guest has not yet handed a frame over. (deko3d.h's
+DkDevice, an opaque struct tag_DkDevice *; spelled out so this header needs
+no deko3d.h.) */
+struct tag_DkDevice *host_dk_device(void);
+
+/* host_dk_compiler.cpp (UAM's compiler; DEKO3D.md, phase 5, step 2) or
+host_dk_compiler_stub.c, when this build has no UAM: compiles GLSL into a
+DKSH file at dksh_path (written complete: .tmp then renamed, by the caller).
+Returns 0 on failure. Called on the compile thread only, and locked inside,
+so nothing else can ever be compiling at the same time. */
+int host_dk_compile_glsl(int fragment, const char *glsl, const char *dksh_path);
+
+/* host_dk_shaders.c (DEKO3D.md, phase 5, step 3): the shader cache, called
+by the guest through imports. stage: 0 vertex, 1 pixel. A shader is known by
+a 64-bit hash of its key; the host never sees keys, only hashes and GLSL. */
+/* a handle (1 or more) if the shader is in GPU code memory; else 0, and
+*state (when state_out is a guest address) says which: 0 unknown, 1 queued
+or compiling. Loads a shader whose file is on the card (~2 ms), on the game
+thread, the only thread that touches deko3d. */
+uint32_t host_dk_shader_find(uint32_t stage, uint64_t hash, uint32_t state_out);
+/* queues the shader to be compiled in the background and written to the
+card. glsl is a guest address, copied into host memory. Already queued: the
+priority is raised if the new one is higher, and the GLSL is ignored (the
+old copy compiles the same). Already on the card or compiled: nothing. */
+void host_dk_shader_compile(uint32_t stage, uint64_t hash, uint32_t glsl, uint32_t glsl_size,
+	uint32_t priority);
+/* what the host has of a shader, without loading it: 0 nothing, 1 queued
+or being compiled, 2 on the card, 3 loaded (the guest's startup pass) */
+uint32_t host_dk_shader_known(uint32_t stage, uint64_t hash);
 
 /* ---------- debugging (host_debug.c) */
 
@@ -208,6 +243,10 @@ int host_https_get(const char *url, int follow_redirects, host_https_body body, 
 
 /* the folder the port's files are in: sdmc:/switch/halo (host_main.c) */
 const char *host_executable_root(void);
+/* the data root, the same folder by default: config.toml and the game's
+maps are there, and the deko3d renderer's shader cache under it
+(host_dk_shaders.c) */
+const char *host_data_root(void);
 
 /* before the game, with the screens up (host_ui_open): offers a newer release
 of the port if there is one, and installs it if the player agrees, for the
