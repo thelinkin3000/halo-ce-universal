@@ -1833,10 +1833,19 @@ long long host_syscall(long long number, long long a, long long b, long long c,
 		case 93: name = "exit"; break;
 		case 94: name = "exit_group"; break;
 		case 98: name = "futex"; break;
+		case 35: name = "unlinkat"; break;
+		case 34: name = "mkdirat"; break;
 		default: break;
 		}
-		host_logf(HOST_LOG_WARN, "guest %s (%lld) failed: errno %lld (args %lld, %lld, %lld, %lld, %lld, %lld)",
-			name ? name : "call", number, -result, a, b, c, d, e, f);
+		/* A call that names a file says which: its path is the guest's
+		 * second argument, a string in guest memory. Without it a run that
+		 * opened one missing file two hundred times said only its address. */
+		if ((number == 56 || number == 35 || number == 34 || number == 79) && b > 0 && b < 0x100000000LL)
+			host_logf(HOST_LOG_WARN, "guest %s (%lld) failed: errno %lld (\"%.160s\", %lld, %lld)",
+				name ? name : "call", number, -result, (const char *)(uintptr_t)b, c, d);
+		else
+			host_logf(HOST_LOG_WARN, "guest %s (%lld) failed: errno %lld (args %lld, %lld, %lld, %lld, %lld, %lld)",
+				name ? name : "call", number, -result, a, b, c, d, e, f);
 	}
 	return result;
 }
