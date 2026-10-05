@@ -181,6 +181,7 @@ static void config_read(const char *path, struct host_settings *settings)
 		toml_datum_t seconds = toml_seek(result.toptab, "debug.sample_seconds");
 		toml_datum_t hz = toml_seek(result.toptab, "debug.profile_hz");
 		toml_datum_t probe = toml_seek(result.toptab, "debug.vk_probe");
+		toml_datum_t driver = toml_seek(result.toptab, "display.vk_driver");
 		double value = seconds.type == TOML_FP64 ? seconds.u.fp64 :
 			seconds.type == TOML_INT64 ? (double)seconds.u.int64 : 0.0;
 
@@ -190,6 +191,8 @@ static void config_read(const char *path, struct host_settings *settings)
 			settings->profile_hz = hz.u.int64 > 10000 ? 10000 : (int)hz.u.int64;
 		if (probe.type == TOML_STRING)
 			snprintf(settings->vk_probe, sizeof(settings->vk_probe), "%s", probe.u.s);
+		if (driver.type == TOML_STRING)
+			snprintf(settings->vk_driver, sizeof(settings->vk_driver), "%s", driver.u.s);
 	}
 	toml_free(result);
 }
