@@ -24,7 +24,7 @@ the phone's driver; the results are in "Progress". Not tried: a second GPU
 family (a Mali). **Phase 1 is done on the test device and committed** (the
 Vulkan image, the host's choice and its decision, the stand-ins: the game
 runs under `display.renderer = "vulkan"` on the phone's driver and on
-Turnip, with a black screen as the phase says). **Phase 2 is written out and next.** The
+Turnip, with a black screen as the phase says). **Phase 2 is done on the test device and committed** (the command stream, the device, the swapchain, the targets, clears and present: the game's clears are on the screen through Vulkan on both drivers). **Phase 3 is next.** The
 work is on the `vulkan-backend` branch, which starts again from `main`. An
 earlier attempt, kept on the `vulkan-backend-old` branch, is not the base of
 this work and nothing here builds on it; see "Lessons from the earlier
@@ -1516,6 +1516,86 @@ is kept:
 Phase 0 was worked on the test device (Lenovo TB321FU, Adreno 750, Android 16,
 API 36, the phone's own driver). The reports are in `port/android/probe/reports/`.
 Newest first.
+
+### Phase 2 — summary
+
+Worked unattended on the test device (Lenovo TB321FU, Adreno 750, Android 16) as the `.vk` build, with the validation
+layer in the APK and `debug.vk_validation = true`. **Phase 2 works on both drivers**: the game's clears reach the
+screen through Vulkan, paced by a FIFO swapchain at the display's rate, with the surface's loss and return, rotation and
+validation all clean.
+
+| | Phone's driver (Qualcomm 512.762.40) | Turnip v26.0.0 R8 |
+|---|---|---|
+| Device | `vk: device ready: queue family 0, colour targets B8G8R8A8_UNORM, depth targets D24_UNORM_S8_UINT, blit filter linear, dynamic rendering from Vulkan 1.3` | the same line |
+| Swapchain | `vk: swapchain 2560x1600, 6 images, format R8G8B8A8_UNORM, FIFO, preTransform identity`, then `vk: first frame presented` | the same |
+| The clears' self-test (below) | `vk: clears self-test: ok (a full clear, alpha only on the left half, red only on the top right quarter; 2 partial clears drawn, 2 by vkCmdClearAttachments)` | the same line |
+| Menus, with `debug.vk_present_marker` | screenshot: a red square at the top left and a green one at the top right (pixel (10,10) is (255,0,0), the top right corner (0,255,0)), the rest black: the picture is the right way up and fills the screen (the back buffer is 768x480, 16:10 as the screen) | the same |
+| Letterbox (`display.screen_width = 640`) | the picture 2133 pixels wide with 213-pixel black bars: the red square starts at x = 213, the green one ends at x = 2347 | the same |
+| Frames | `vk: 1635 frames swapped in 10.0 s, paced by the swapchain (the display mode says 165.0 Hz)`; the statistics line: `60 frames: 60 hand-overs; commands: 60 targets, 60 clears, 60 presents; clears: 0 drawn, 60 by vkCmdClearAttachments; 0 target changes; 4 images; submissions 1741, retired 1739; 0 swapchain re-creations; validation errors 0` | the same, `retired` equal to `submissions` |
+| First map's opening cinematic | 4 to 6 images (the screen's 768x480 colour and depth, 64x64 and 128x128 colour targets), 3 to 5 clears a frame, all by `vkCmdClearAttachments`; the map's objects were created at 16:27:21, 2 minutes after the start, and the game went on for 14 minutes (the opening's end was not reached, 12 of the deviations) | the same (`cryotube_1` at 16:22:20) |
+| Backgrounding, ten times (HOME, `am start`) | each loss and return logged once: `vk: the surface is lost (vkAcquireNextImageKHR)` or `(the window's ANativeWindow changed)` or `(the window has no ANativeWindow)`, then `vk: the surface is back after 4.1 ms, 1 attempts: swapchain 2560x1600, 6 images, transform identity` (2.5 s when the app was away for the whole 3 s); the picture (the marker) is back after the tenth | the same |
+| Rotation (`user_rotation` 1, 3, 1, 3, 0) | no re-creation (Android answers with `SUBOPTIMAL`, which is looked at, not obeyed); a screenshot in each: the red square top left, the green one top right | the same |
+| Validation | no message but `WARNING-cache-file-error` (the layer's own cache file) and one performance warning, expected and logged as `[expected, performance]` (5 of the deviations); 0 errors | the same |
+| `VK_ERROR_DEVICE_LOST`, a wait over two seconds | not met; tried with temporary hooks on the phone's driver (9 of the deviations) | not tried |
+
+The GL ES image is unchanged: of the GL ES image's objects only `port_config.o` changed (the settings row), and a run with
+`renderer = "gl"` shows `renderer: GL ES` and the menu drawn (a screenshot of more than 100,000 colours). Both images build with and without
+`--android-vulkan-validation`.
+
+**Found and fixed on the way**: a deadlock in the first run, the game thread waiting on the backend's lock that it held (`retire`
+took it again inside a hand-over); found from `debuggerd -b` of the stuck process (the thread was in `host_vk_frame_command`).
+
+**What the clears' self-test is.** The fog's alpha-only clear did not come in the first map's opening (0 clears drawn in
+every statistics line), so the clears are tried by the backend itself, once, when the device is made with
+`debug.vk_present_marker` on: an 8x8 colour and depth target of its own are cleared in full (0.25, 0.5, 0.75, 1.0, depth 0.5,
+stencil 7), then alpha only (0.5) on the left half, then red only (1.0) with a depth clear on the top right quarter, and read
+back with `vkCmdCopyImageToBuffer`; every texel is compared (within 1) with what the NV2A would give. It says `ok` on both
+drivers, so the drawn path (the built-in pipeline, glslang loaded at the device's creation) writes only the channels named and
+`vkCmdClearAttachments` clears the rest. The game's own alpha-only clear is not seen yet.
+
+**What is left for the user**: a second GPU family (a Mali) is not tried; the game's own partial-channel clear (the fog) and a
+split-screen clear are not yet met in a run; the picture is tried at 768x480 and 640x480 only.
+
+### Phase 2: deviations from the spec
+
+1. **The host is three files**, `host_vk.c` (the startup, as it was), `host_vk_render.c` (device, frames, targets,
+   rendering, clears, commands, glslang's loader and the built-in pipeline) and `host_vk_present.c` (surface, swapchain,
+   loss, the blit and the marker), as the spec allows. The device's functions are hidden globals (`host_vk.h`), so that the
+   library exports no symbol named as a Vulkan function.
+2. **The marker is drawn in a rendering on the swapchain image, not with `vkCmdClearColorImage`**: that command clears
+   whole subresources, never regions, so each square is a `vkCmdClearAttachments` of one rectangle, in a rendering on a view
+   of the swapchain image (made only with the marker on). The picture is blitted first, so the squares are over it.
+3. **The formats' checks are not all demands**: B8G8R8A8_UNORM must be a colour attachment and a blit source (and a transfer
+   source, from Vulkan 1.1); linear filtering, sampling and transfer destination add their usage bits, or fall back to
+   nearest filtering, with a log line, instead of making the backend refuse. The depth formats need only the
+   depth-stencil attachment feature. Both drivers have all of them.
+4. **A target is cleared when made by a rendering with load op CLEAR** (not by `vkCmdClearColorImage` and
+   `vkCmdClearDepthStencilImage`), so that it does not depend on the transfer destination feature of a depth format.
+5. **The layer's `WARNING-Swapchain-PreTransform`** (performance) says the swapchain's `preTransform` (identity, as the
+   spec decides) differs from the surface's current transform (rotate 90): the presentation engine does the turn, which is
+   what the spec wants. The layer's callback logs that one id at info level as `[expected, performance]`; anything else is
+   logged as the layer sent it, and errors are counted.
+6. **A hand-over that is not the frame's end submits nothing**: the commands are recorded into the frame's command buffer,
+   which stays open until `PRESENT` (the guest's stream flushes when it is full, not at a frame's end), where `host_dk.c`
+   submitted. Everything a command names is read during the call all the same.
+7. **Every barrier is a full one** (all commands to all commands, memory read and write), and one is made even to the
+   layout an image is already in, because a rendering's writes are not visible to the next without one. Correctness first;
+   a later phase can narrow them.
+8. **`vkAcquireNextImageKHR` has a one-second timeout**, and a timeout is treated as the surface being lost (with the app
+   away nothing frees an image); the spec's waits of two seconds are for fences. The window's `ANativeWindow` is also read
+   every frame, and a different pointer is a loss without waiting for a result code.
+9. **The two-second wait and the device-lost path were exercised with temporary hooks, not committed**: the wait's timeout was
+   made 1 microsecond (`vk: waiting for the frame's fence (submission 4) has taken more than two seconds; waiting on`, then
+   `... was ready after 0.0 s`) and a `VK_ERROR_DEVICE_LOST` was injected after 600 frames (`vk: VK_ERROR_DEVICE_LOST from
+   TEMP vkQueueSubmit at submission 601, on Vulkan on the phone's driver ...; the backend stops (the game goes on without a
+   picture)`); the game went on at the stand-in swap's pace (1651 frames in 10 s), with no crash. The real paths have not
+   been met on the device.
+10. **A clears' self-test** (not in the spec) runs with `debug.vk_present_marker`: see the summary.
+11. **"Target changes" in the statistics** counts a pair of colour and depth targets that differs from the one last named
+    by a command, not every rebinding (the guest names its targets again after each present).
+12. **A new game's cinematic did not end** within 14 minutes in the runs of the map, with the picture black and the keys
+    that might skip it (ESC, space, enter) doing nothing: the map was told from the log and the statistics (clears and
+    images in the map), not from play.
 
 ### Phase 1 — audit, and the rebase onto the relocatable image
 
