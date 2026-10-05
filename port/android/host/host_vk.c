@@ -475,6 +475,7 @@ int host_vk_startup(const char *vk_driver, int validation, char *line, size_t si
 			properties2.pNext = &driver;
 			host_vk.vkGetPhysicalDeviceProperties2(host_vk.physical, &properties2);
 		}
+		host_vk.driver_id = driver.driverID;
 		version_text(host_vk.properties.apiVersion, device_api, sizeof(device_api));
 		snprintf(line, size, "Vulkan on %s, %s, Vulkan %s, %s %s%s", description, host_vk.properties.deviceName, device_api,
 			driver.driverName[0] ? driver.driverName : "(driver name not reported)", driver.driverInfo,
