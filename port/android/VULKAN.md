@@ -1146,7 +1146,7 @@ as converted say nothing about a driver fault on these inputs (they are small in
 | Rotation | `SUBOPTIMAL` each time, remade in 5 to 17 ms | the same, 5 to 11 ms |
 | Pipeline creation, cold (pass / typical / large), min | 1.08 / 5.19 / 12.0 ms | **0.31 / 3.24 / 12.3 ms** |
 | From our saved cache | 0.097 / 0.091 / 0.120 ms (cache 94 KB) | 0.006 / 0.004 / 0.004 ms (cache 260 KB) |
-| Driver's own cache only (ours empty) | 1.8 / 7.9 / 17.9 ms | 0.38 / 3.3 / 12.4 ms (the driver's own cache is a hit only for the small ones) |
+| Driver's own cache only (ours empty) | 1.8 / 7.9 / 17.9 ms | 0.38 / 3.3 / 12.4 ms |
 | Static state against dynamic (typical, large) | 7.2 / 16.9 against 5.2 / 12.0 ms (dynamic cheaper) | 3.25 / 12.36 against 3.24 / 12.35 ms (no difference) |
 | Pipelines made on a second thread while a frame loop runs | no stall (0 of 12 frames over twice the median) | no stall (0 of 10) |
 | `draw`: pixels changed by the typical / large shader | 63,520 of 65,536 (the triangle's corner is off the target by construction) | the same 63,520 |
@@ -1154,8 +1154,9 @@ as converted say nothing about a driver fault on these inputs (they are small in
 
 Differences that matter for the plan: Turnip has extended dynamic state 3 and the pipeline library, which would
 let phase 5 make fewer pipelines on Turnip (the plan's decision is the same code on both, so unused for
-now); it creates pipelines faster; and its attribute offset limit is 4095, below the Xbox's vertex layouts'
-needs only if an offset reaches 4096 (none does in the game's declarations).
+now); it creates pipelines faster; and its attribute offset limit is 4095, one below the phone's driver's 4096; a vertex
+layout with an attribute at offset 4096 would not run on Turnip (not checked against the game's layouts; the Xbox's
+stride limit makes it unlikely).
 
 **Deviations from the spec**: the next section. **Left for the user**: the (to confirm) decisions; a second GPU
 family (a Mali) is not tried; the tester's part of `present` (the picture's orientation, the tone) was answered
