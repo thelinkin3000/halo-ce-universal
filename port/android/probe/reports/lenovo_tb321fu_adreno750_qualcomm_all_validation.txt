@@ -1,5 +1,5 @@
 probe.start: all
-build.git: fc0f335a+changes
+build.git: 35f29e2b
 device.model: TB321FU
 device.manufacturer: Lenovo
 device.hardware: qcom
@@ -179,7 +179,7 @@ caps.device_extension_enabled: VK_KHR_push_descriptor
 caps.device_extension_enabled: VK_KHR_external_memory_fd
 validation.message: [info] WARNING-cache-file-error: vkCreateDevice(): Cannot open shader validation cache at /tmp/shader_validation_cache-10325.bin for reading (it may not exist yet)
 caps.dynamic_rendering_used: yes
-probe.setup: ok
+driver.check: ok (the phone's driver was asked for)
 driver.loaded_library: /system/lib64/libEGL.so
 driver.loaded_library: /system/lib64/libGLESv1_CM.so
 driver.loaded_library: /system/lib64/libGLESv2.so
@@ -190,9 +190,10 @@ driver.loaded_library: /vendor/lib64/libadreno_utils.so
 driver.loaded_library: /vendor/lib64/libgsl.so
 driver.loaded_library: /vendor/lib64/egl/libGLESv2_adreno.so
 driver.loaded_library: /vendor/lib64/egl/libGLESv1_CM_adreno.so
-driver.loaded_library: /data/app/~~SL3Jd1u2qQjFgRo6JlJY6w==/com.halo.decomp.vk-JCdGYO6XIMHVAaybYnznZQ==/lib/arm64/libmain.so
+driver.loaded_library: /data/app/~~KuPxiaU1KXwLDi0gWsC3rQ==/com.halo.decomp.vk--lm1Vh6KFtV71gel20zX0Q==/lib/arm64/libmain.so
 driver.loaded_library: /vendor/lib64/hw/vulkan.adreno.so
-driver.loaded_library: /data/app/~~SL3Jd1u2qQjFgRo6JlJY6w==/com.halo.decomp.vk-JCdGYO6XIMHVAaybYnznZQ==/lib/arm64/libVkLayer_khronos_validation.so
+driver.loaded_library: /data/app/~~KuPxiaU1KXwLDi0gWsC3rQ==/com.halo.decomp.vk--lm1Vh6KFtV71gel20zX0Q==/lib/arm64/libVkLayer_khronos_validation.so
+probe.setup: ok
 step.caps: start
 caps.device.api_version: 1.3.128
 caps.device.driver_version: 0x802fa028 (512.762.40)
@@ -360,23 +361,23 @@ memory.ring.vertices: 349524 (116508 triangles)
 memory.ring.coherent.type: 6, device_local host_visible host_coherent host_cached 
 memory.ring.cached: no host-cached type without coherence exists for a vertex buffer on this device
 memory.ring.device_local.type: 0, device_local 
-memory.ring.coherent.cpu_copy_wall: min 0.077 ms, median 0.085 ms, p99 0.142 ms, max 0.697 ms (300)
-memory.ring.coherent.cpu_copy_thread_cpu: min 0.076 ms, median 0.082 ms, p99 0.111 ms, max 0.685 ms (300)
-memory.ring.gpu.baseline_pass: median 33.4 us, min 26.5 us (a pass that draws one triangle)
-memory.ring.gpu.draw_from_host_coherent: median 740.5 us, min 645.3 us (707.0 us over the baseline)
-memory.ring.gpu.copy_to_device_local_then_draw: median 1163.6 us, min 989.6 us (1130.2 us over the baseline)
-memory.ring.gpu.draw_from_device_local: median 743.6 us, min 738.1 us (710.2 us over the baseline)
+memory.ring.coherent.cpu_copy_wall: min 0.083 ms, median 0.087 ms, p99 0.208 ms, max 1.231 ms (300)
+memory.ring.coherent.cpu_copy_thread_cpu: min 0.082 ms, median 0.085 ms, p99 0.200 ms, max 1.205 ms (300)
+memory.ring.gpu.baseline_pass: median 33.5 us, min 26.5 us (a pass that draws one triangle)
+memory.ring.gpu.draw_from_host_coherent: median 751.7 us, min 659.4 us (718.2 us over the baseline)
+memory.ring.gpu.copy_to_device_local_then_draw: median 1174.8 us, min 1035.7 us (1141.3 us over the baseline)
+memory.ring.gpu.draw_from_device_local: median 757.1 us, min 747.3 us (723.6 us over the baseline)
 memory.export.cached.buffer_properties: features 0x7 (exportable yes, dedicated only yes), compatible handle types 0x1
 memory.export.cached: no such memory type for the exported buffer (it may use 0x13)
 memory.export.uncached.buffer_properties: features 0x7 (exportable yes, dedicated only yes), compatible handle types 0x1
-memory.export.uncached.get_fd: result 0, fd 142 (memory type 4, device_local host_visible host_coherent , dedicated allocation)
+memory.export.uncached.get_fd: result 0, fd 148 (memory type 4, device_local host_visible host_coherent , dedicated allocation)
 memory.export.uncached.mmap_anywhere: mapped (errno 0)
 memory.export.uncached.mmap_below_4GB: mapped at 0x13004000 (errno 0)
 memory.export.uncached.same_pages_as_the_drivers_mapping: yes
 memory.export.uncached.gpu_reads_guest_writes: yes
 memory.export.uncached.gpu_reads_rewrite: yes
-memory.export.uncached.cpu_write_MBps: 14711 here, 25251 in ordinary memory
-memory.export.uncached.cpu_read_MBps: 41525 here, 41102 in ordinary memory
+memory.export.uncached.cpu_write_MBps: 12834 here, 27751 in ordinary memory
+memory.export.uncached.cpu_read_MBps: 31258 here, 24718 in ordinary memory
 step.memory: done
 step.compile: start
 compile.glslang_library: libglslang_probe.so (glslang 16.6.0, ENABLE_OPT off, ENABLE_HLSL off), Vulkan 1.0 / SPIR-V 1.0 target, one thread
@@ -384,29 +385,29 @@ compile.load_and_initialize_process: 0.000 ms (dlopen, symbols, glslang_initiali
 compile.library_mapped_bytes: 3776512
 compile.pass.vert.source_bytes: 677
 compile.pass.vert.spirv_bytes: 1208
-compile.pass.vert.wall: first 0.985 ms, then min 0.637 ms, median 0.643 ms, max 0.724 ms (9 more)
-compile.pass.vert.thread_cpu: first 0.984 ms, then min 0.637 ms, median 0.642 ms, max 0.704 ms (9 more)
-compile.first_compile_of_the_first_shader: 0.985 ms wall, 0.984 ms thread cpu (it pays the front end's start)
+compile.pass.vert.wall: first 1.101 ms, then min 0.587 ms, median 0.592 ms, max 0.631 ms (9 more)
+compile.pass.vert.thread_cpu: first 1.065 ms, then min 0.588 ms, median 0.592 ms, max 0.632 ms (9 more)
+compile.first_compile_of_the_first_shader: 1.101 ms wall, 1.065 ms thread cpu (it pays the front end's start)
 compile.pass.frag.source_bytes: 328
 compile.pass.frag.spirv_bytes: 632
-compile.pass.frag.wall: first 0.640 ms, then min 0.558 ms, median 0.605 ms, max 0.661 ms (9 more)
-compile.pass.frag.thread_cpu: first 0.640 ms, then min 0.558 ms, median 0.605 ms, max 0.620 ms (9 more)
+compile.pass.frag.wall: first 0.590 ms, then min 0.561 ms, median 0.563 ms, max 0.589 ms (9 more)
+compile.pass.frag.thread_cpu: first 0.590 ms, then min 0.561 ms, median 0.563 ms, max 0.570 ms (9 more)
 compile.vs_typical.vert.source_bytes: 6366
 compile.vs_typical.vert.spirv_bytes: 17660
-compile.vs_typical.vert.wall: first 2.358 ms, then min 1.927 ms, median 1.954 ms, max 2.034 ms (9 more)
-compile.vs_typical.vert.thread_cpu: first 2.349 ms, then min 1.928 ms, median 1.945 ms, max 1.999 ms (9 more)
+compile.vs_typical.vert.wall: first 2.389 ms, then min 1.937 ms, median 1.962 ms, max 2.044 ms (9 more)
+compile.vs_typical.vert.thread_cpu: first 2.380 ms, then min 1.938 ms, median 1.949 ms, max 2.017 ms (9 more)
 compile.ps_typical.frag.source_bytes: 4100
 compile.ps_typical.frag.spirv_bytes: 9356
-compile.ps_typical.frag.wall: first 1.549 ms, then min 1.343 ms, median 1.365 ms, max 1.394 ms (9 more)
-compile.ps_typical.frag.thread_cpu: first 1.538 ms, then min 1.343 ms, median 1.350 ms, max 1.381 ms (9 more)
+compile.ps_typical.frag.wall: first 1.533 ms, then min 1.350 ms, median 1.383 ms, max 1.457 ms (9 more)
+compile.ps_typical.frag.thread_cpu: first 1.534 ms, then min 1.350 ms, median 1.374 ms, max 1.458 ms (9 more)
 compile.vs_large.vert.source_bytes: 11374
 compile.vs_large.vert.spirv_bytes: 35380
-compile.vs_large.vert.wall: first 3.768 ms, then min 3.474 ms, median 3.492 ms, max 6.313 ms (9 more)
-compile.vs_large.vert.thread_cpu: first 3.740 ms, then min 3.461 ms, median 3.473 ms, max 3.517 ms (9 more)
+compile.vs_large.vert.wall: first 4.059 ms, then min 3.508 ms, median 3.788 ms, max 5.150 ms (9 more)
+compile.vs_large.vert.thread_cpu: first 4.041 ms, then min 3.488 ms, median 3.776 ms, max 5.126 ms (9 more)
 compile.ps_large.frag.source_bytes: 8568
 compile.ps_large.frag.spirv_bytes: 24184
-compile.ps_large.frag.wall: first 2.717 ms, then min 2.590 ms, median 2.621 ms, max 2.701 ms (9 more)
-compile.ps_large.frag.thread_cpu: first 2.719 ms, then min 2.591 ms, median 2.604 ms, max 2.658 ms (9 more)
+compile.ps_large.frag.wall: first 2.799 ms, then min 2.618 ms, median 2.659 ms, max 2.671 ms (9 more)
+compile.ps_large.frag.thread_cpu: first 2.754 ms, then min 2.618 ms, median 2.629 ms, max 2.660 ms (9 more)
 compile.spirv_files: /storage/emulated/0/Android/data/com.halo.decomp.vk/files/vk_probe_spirv/*.spv (check off the device with spirv-val and spirv-dis)
 step.compile: done
 step.pipelines: start
@@ -414,44 +415,44 @@ pipelines.formats: colour 37, depth-stencil 129, dynamic rendering yes
 pipelines.dynamic_states_full: 22 states (VkDynamicState values 1000267003,1000267004,2,3,4,6,7,8,1000267000,1000267001,1000267002,1000267006,1000267007,1000267008,1000267009,1000267010,1000267011,1000377001,1000377002,1000377004,1000377003,1000352000)
 pipelines.dynamic_states_plain: 2 states (VkDynamicState values 0,1)
 pipelines.dynamic_state_flags: counted viewport yes, stride no, vertex input yes
-pipelines.saved_cache: 94400 bytes, header size 32 version 1 vendor 0x5143 device 0x43051401 uuid matches this device
-pipelines.salts: base 886973289
-pipelines.cold.pass.shader_modules: first 0.091 ms, then min 0.035 ms, median 0.035 ms, max 0.048 ms (5 more)
-pipelines.cold.pass.pipeline_wall: first 3.061 ms, then min 1.516 ms, median 1.561 ms, max 1.697 ms (5 more)
-pipelines.cold.pass.pipeline_thread_cpu: first 3.023 ms, then min 1.517 ms, median 1.544 ms, max 1.676 ms (5 more)
-pipelines.cold.typical.shader_modules: first 2.236 ms, then min 0.275 ms, median 0.281 ms, max 0.312 ms (5 more)
-pipelines.cold.typical.pipeline_wall: first 13.749 ms, then min 8.505 ms, median 8.557 ms, max 8.737 ms (5 more)
-pipelines.cold.typical.pipeline_thread_cpu: first 13.651 ms, then min 8.438 ms, median 8.492 ms, max 8.672 ms (5 more)
-pipelines.cold.large.shader_modules: first 4.483 ms, then min 0.693 ms, median 0.709 ms, max 0.733 ms (5 more)
-pipelines.cold.large.pipeline_wall: first 26.354 ms, then min 19.024 ms, median 19.067 ms, max 19.282 ms (5 more)
-pipelines.cold.large.pipeline_thread_cpu: first 26.059 ms, then min 18.877 ms, median 18.906 ms, max 19.102 ms (5 more)
-pipelines.warm.cache_after_loading: 94400 bytes (the file was 94400; the driver kept it)
-pipelines.warm.pass: pipeline 0.519 ms wall, 0.520 ms thread cpu (modules 0.050 ms)
-pipelines.warm.typical: pipeline 3.400 ms wall, 3.386 ms thread cpu (modules 0.278 ms)
-pipelines.warm.large: pipeline 6.940 ms wall, 6.881 ms thread cpu (modules 0.702 ms)
-pipelines.driver_cache_only.pass: pipeline 2.303 ms wall, 2.279 ms thread cpu
-pipelines.driver_cache_only.typical: pipeline 11.425 ms wall, 11.344 ms thread cpu
-pipelines.driver_cache_only.large: pipeline 25.032 ms wall, 24.843 ms thread cpu
-pipelines.no_dynamic_state.pass.shader_modules: first 0.049 ms, then min 0.036 ms, median 0.037 ms, max 0.138 ms (5 more)
-pipelines.no_dynamic_state.pass.pipeline_wall: first 1.825 ms, then min 1.620 ms, median 1.660 ms, max 1.713 ms (5 more)
-pipelines.no_dynamic_state.pass.pipeline_thread_cpu: first 1.827 ms, then min 1.622 ms, median 1.633 ms, max 1.678 ms (5 more)
-pipelines.no_dynamic_state.typical.shader_modules: first 0.285 ms, then min 0.277 ms, median 0.281 ms, max 0.304 ms (5 more)
-pipelines.no_dynamic_state.typical.pipeline_wall: first 10.616 ms, then min 10.469 ms, median 10.517 ms, max 10.552 ms (5 more)
-pipelines.no_dynamic_state.typical.pipeline_thread_cpu: first 10.544 ms, then min 10.401 ms, median 10.407 ms, max 10.451 ms (5 more)
-pipelines.no_dynamic_state.large.shader_modules: first 0.781 ms, then min 0.719 ms, median 0.740 ms, max 0.750 ms (5 more)
-pipelines.no_dynamic_state.large.pipeline_wall: first 24.233 ms, then min 24.047 ms, median 24.088 ms, max 24.144 ms (5 more)
-pipelines.no_dynamic_state.large.pipeline_thread_cpu: first 24.018 ms, then min 23.866 ms, median 23.896 ms, max 23.914 ms (5 more)
-pipelines.thread.twenty_pipelines: 309.5 ms in all, 15.5 ms each on average (the typical and the large pair, alternating)
-pipelines.thread.before.frame_cpu: min 0.493 ms, median 2.034 ms, p99 2.907 ms, max 3.284 ms (188)
-pipelines.thread.before.submit_to_fence: min 1.638 ms, median 2.621 ms, p99 2.957 ms, max 8.663 ms (188)
+pipelines.saved_cache: 260389 bytes, header size 32 version 1 vendor 0x5143 device 0x43051401 uuid DIFFERENT from this device
+pipelines.salts: base 120569566
+pipelines.cold.pass.shader_modules: first 0.094 ms, then min 0.039 ms, median 0.041 ms, max 0.099 ms (5 more)
+pipelines.cold.pass.pipeline_wall: first 3.784 ms, then min 1.676 ms, median 1.718 ms, max 1.857 ms (5 more)
+pipelines.cold.pass.pipeline_thread_cpu: first 3.752 ms, then min 1.678 ms, median 1.708 ms, max 1.860 ms (5 more)
+pipelines.cold.typical.shader_modules: first 2.289 ms, then min 0.277 ms, median 0.280 ms, max 0.332 ms (5 more)
+pipelines.cold.typical.pipeline_wall: first 12.380 ms, then min 8.500 ms, median 8.569 ms, max 9.066 ms (5 more)
+pipelines.cold.typical.pipeline_thread_cpu: first 12.299 ms, then min 8.430 ms, median 8.474 ms, max 8.993 ms (5 more)
+pipelines.cold.large.shader_modules: first 4.344 ms, then min 0.703 ms, median 0.729 ms, max 0.775 ms (5 more)
+pipelines.cold.large.pipeline_wall: first 25.934 ms, then min 19.093 ms, median 19.106 ms, max 19.174 ms (5 more)
+pipelines.cold.large.pipeline_thread_cpu: first 25.717 ms, then min 18.935 ms, median 18.957 ms, max 19.046 ms (5 more)
+pipelines.warm.cache_after_loading: 32 bytes (the file was 260389; the driver dropped some or all of it)
+pipelines.warm.pass: pipeline 2.282 ms wall, 2.247 ms thread cpu (modules 0.047 ms)
+pipelines.warm.typical: pipeline 11.403 ms wall, 11.323 ms thread cpu (modules 0.285 ms)
+pipelines.warm.large: pipeline 25.151 ms wall, 24.886 ms thread cpu (modules 0.716 ms)
+pipelines.driver_cache_only.pass: pipeline 2.333 ms wall, 2.304 ms thread cpu
+pipelines.driver_cache_only.typical: pipeline 11.614 ms wall, 11.514 ms thread cpu
+pipelines.driver_cache_only.large: pipeline 25.313 ms wall, 25.129 ms thread cpu
+pipelines.no_dynamic_state.pass.shader_modules: first 0.051 ms, then min 0.035 ms, median 0.036 ms, max 0.038 ms (5 more)
+pipelines.no_dynamic_state.pass.pipeline_wall: first 1.878 ms, then min 1.603 ms, median 1.658 ms, max 1.674 ms (5 more)
+pipelines.no_dynamic_state.pass.pipeline_thread_cpu: first 1.840 ms, then min 1.605 ms, median 1.630 ms, max 1.670 ms (5 more)
+pipelines.no_dynamic_state.typical.shader_modules: first 0.283 ms, then min 0.280 ms, median 0.281 ms, max 0.341 ms (5 more)
+pipelines.no_dynamic_state.typical.pipeline_wall: first 10.653 ms, then min 10.511 ms, median 10.533 ms, max 10.555 ms (5 more)
+pipelines.no_dynamic_state.typical.pipeline_thread_cpu: first 10.579 ms, then min 10.429 ms, median 10.444 ms, max 10.476 ms (5 more)
+pipelines.no_dynamic_state.large.shader_modules: first 0.764 ms, then min 0.722 ms, median 0.725 ms, max 0.755 ms (5 more)
+pipelines.no_dynamic_state.large.pipeline_wall: first 24.154 ms, then min 24.154 ms, median 24.237 ms, max 25.534 ms (5 more)
+pipelines.no_dynamic_state.large.pipeline_thread_cpu: first 23.997 ms, then min 23.980 ms, median 24.033 ms, max 25.055 ms (5 more)
+pipelines.thread.twenty_pipelines: 310.3 ms in all, 15.5 ms each on average (the typical and the large pair, alternating)
+pipelines.thread.before.frame_cpu: min 0.544 ms, median 2.024 ms, p99 2.762 ms, max 3.457 ms (188)
+pipelines.thread.before.submit_to_fence: min 1.719 ms, median 2.644 ms, p99 3.583 ms, max 13.865 ms (188)
 pipelines.thread.before.frames_over_twice_the_median_submit_to_fence: 1 of 188
-pipelines.thread.during.frame_cpu: min 1.315 ms, median 1.901 ms, p99 1.994 ms, max 1.994 ms (19)
-pipelines.thread.during.submit_to_fence: min 1.709 ms, median 2.134 ms, p99 2.348 ms, max 2.348 ms (19)
+pipelines.thread.during.frame_cpu: min 1.807 ms, median 1.871 ms, p99 2.018 ms, max 2.018 ms (19)
+pipelines.thread.during.submit_to_fence: min 1.782 ms, median 1.929 ms, p99 2.369 ms, max 2.369 ms (19)
 pipelines.thread.during.frames_over_twice_the_median_submit_to_fence: 0 of 19
-pipelines.thread.after.frame_cpu: min 0.497 ms, median 2.050 ms, p99 2.342 ms, max 2.995 ms (188)
-pipelines.thread.after.submit_to_fence: min 1.640 ms, median 2.639 ms, p99 2.878 ms, max 3.041 ms (188)
+pipelines.thread.after.frame_cpu: min 0.518 ms, median 2.024 ms, p99 2.275 ms, max 2.744 ms (188)
+pipelines.thread.after.submit_to_fence: min 1.757 ms, median 2.648 ms, p99 2.950 ms, max 2.969 ms (188)
 pipelines.thread.after.frames_over_twice_the_median_submit_to_fence: 0 of 188
-pipelines.saved_cache_now: 94380 bytes
+pipelines.saved_cache_now: 94367 bytes
 step.pipelines: done
 step.draw: start
 draw.textures: 64x64 R8G8B8A8, BC1, and cubes of both
@@ -506,7 +507,7 @@ draw.push.typical.matches_bound_set: yes
 step.draw: done
 step.present: start
 present.display: 2560x1600 at 165.00 Hz (SDL_GetCurrentDisplayMode)
-present.recreate: start, ok, 1.64 ms (2560x1600, transform rotate_90, 6 images)
+present.recreate: start, ok, 1.36 ms (2560x1600, transform rotate_90, 6 images)
 present.script: Watch the colour cycle, with a white square (black inside) at the top-left corner.
 present.script: Press Home and come back, ten times. Turn the device over and back.
 present.script: Press A if the picture looks right, Y if upside down or squashed, X to change the way it is cleared, B to end.
@@ -515,63 +516,16 @@ present.audio: a one-second tone queued on the default device (the tester says i
 present.gamepads: 0
 present.event: window shown
 present.event: window pixel size 2560x1600
-present.surface_lost: vkAcquireNextImageKHR
-present.recreate: surface_lost with a new surface, ok, 6.17 ms, 6.2 ms after the loss, 1 attempts (2560x1600, transform rotate_90, 6 images)
-present.pacing.t10s: 1024 intervals, min 0.272 ms, median 6.022 ms (166.1 Hz), max 1648.602 ms, 14 over 1.5x the median
-present.surface_lost: vkAcquireNextImageKHR
-present.recreate: surface_lost with a new surface, ok, 7.48 ms, 1706.2 ms after the loss, 2 attempts (2560x1600, transform rotate_90, 6 images)
-present.surface_lost: vkAcquireNextImageKHR
-present.recreate: surface_lost with a new surface, ok, 7.60 ms, 1715.7 ms after the loss, 2 attempts (2560x1600, transform rotate_90, 6 images)
-present.surface_lost: vkAcquireNextImageKHR
-present.recreate: surface_lost with a new surface, ok, 6.61 ms, 1700.2 ms after the loss, 2 attempts (2560x1600, transform rotate_90, 6 images)
-present.pacing.t22s: 1024 intervals, min 0.380 ms, median 6.039 ms (165.6 Hz), max 1721.596 ms, 22 over 1.5x the median
-present.surface_lost: vkAcquireNextImageKHR
-present.recreate: surface_lost with a new surface, ok, 6.56 ms, 1700.7 ms after the loss, 2 attempts (2560x1600, transform rotate_90, 6 images)
-present.surface_lost: vkAcquireNextImageKHR
-present.recreate: surface_lost with a new surface, ok, 4.01 ms, 4.0 ms after the loss, 1 attempts (2560x1600, transform rotate_90, 6 images)
-present.pacing.t32s: 1024 intervals, min 0.232 ms, median 6.029 ms (165.9 Hz), max 1705.450 ms, 28 over 1.5x the median
-present.surface_lost: vkAcquireNextImageKHR
-present.recreate: surface_lost with a new surface, ok, 5.54 ms, 1733.2 ms after the loss, 2 attempts (2560x1600, transform rotate_90, 6 images)
-present.surface_lost: vkAcquireNextImageKHR
-present.recreate: surface_lost with a new surface, ok, 6.18 ms, 1719.8 ms after the loss, 2 attempts (2560x1600, transform rotate_90, 6 images)
-present.pacing.t42s: 1024 intervals, min 0.429 ms, median 6.027 ms (165.9 Hz), max 1737.644 ms, 21 over 1.5x the median
-present.surface_lost: vkAcquireNextImageKHR
-present.recreate: surface_lost with a new surface, ok, 8.16 ms, 1685.6 ms after the loss, 2 attempts (2560x1600, transform rotate_90, 6 images)
-present.surface_lost: vkAcquireNextImageKHR
-present.recreate: surface_lost with a new surface, ok, 3.77 ms, 3.8 ms after the loss, 1 attempts (2560x1600, transform rotate_90, 6 images)
-present.pacing.t52s: 1024 intervals, min 0.324 ms, median 6.016 ms (166.2 Hz), max 1692.224 ms, 20 over 1.5x the median
-present.recreate: suboptimal, ok, 6.03 ms (2560x1600, transform identity, 6 images)
-present.recreate: suboptimal, ok, 7.06 ms (2560x1600, transform rotate_90, 6 images)
-present.recreate: suboptimal, ok, 15.26 ms (2560x1600, transform rotate_270, 6 images)
-present.event: display orientation 2
-present.recreate: suboptimal, ok, 5.34 ms (2560x1600, transform rotate_90, 6 images)
-present.event: display orientation 1
-present.pacing.t62s: 1024 intervals, min 0.182 ms, median 6.046 ms (165.4 Hz), max 56.138 ms, 6 over 1.5x the median
-present.recreate: suboptimal, ok, 16.97 ms (2560x1600, transform rotate_270, 6 images)
-present.event: display orientation 2
-present.recreate: suboptimal, ok, 16.76 ms (2560x1600, transform rotate_90, 6 images)
-present.event: display orientation 1
-present.input: key A (scancode 4)
-present.tester: picture looks right
-present.pacing.t72s: 1024 intervals, min 0.195 ms, median 6.066 ms (164.9 Hz), max 54.136 ms, 33 over 1.5x the median
-present.input: key X (scancode 27)
-present.mode: dynamic rendering
-present.input: key X (scancode 27)
-present.mode: render pass
-present.input: key X (scancode 27)
-present.mode: vkCmdClearColorImage (no render pass)
-present.pacing.t82s: 1024 intervals, min 4.367 ms, median 6.035 ms (165.7 Hz), max 8.301 ms, 0 over 1.5x the median
+present.pacing.t10s: 1024 intervals, min 0.250 ms, median 6.034 ms (165.7 Hz), max 8.824 ms, 0 over 1.5x the median
 present.input: key B (scancode 5)
 present.tester: B, ending the step
-present.pacing.last_window: 58 intervals, min 3.966 ms, median 6.036 ms (165.7 Hz), max 7.255 ms, 0 over 1.5x the median
-present.presented_frames: 10449
+present.pacing.last_window: 909 intervals, min 3.983 ms, median 6.036 ms (165.7 Hz), max 7.860 ms, 0 over 1.5x the median
+present.presented_frames: 2563
 present.recreations.start: 1
-present.recreations.suboptimal: 6
-present.recreations.surface_lost: 10
-present.transforms_seen: identity yes, rotate_90 yes, rotate_180 no, rotate_270 yes
-present.suboptimal_reported: 6 times
-present.tester_answers: right 1, wrong 0; input events 5; sdl input arrived: yes
-present.mean_interval: 8.107 ms over the whole step
+present.transforms_seen: identity no, rotate_90 yes, rotate_180 no, rotate_270 no
+present.suboptimal_reported: 0 times
+present.tester_answers: right 0, wrong 0; input events 1; sdl input arrived: yes
+present.mean_interval: 6.052 ms over the whole step
 step.present: done
 validation.message: [info] WARNING-cache-write-error: vkDestroyDevice(): Cannot open shader validation cache at /tmp/shader_validation_cache-10325.bin for writing
 validation.summary: 2 messages, 0 errors
