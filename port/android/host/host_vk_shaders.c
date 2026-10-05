@@ -693,30 +693,32 @@ static struct pipeline *pipeline_lookup(uint64_t vertex_hash, uint64_t pixel_has
 	return NULL;
 }
 
-void host_vk_pipeline_command(const struct vk_command_pipeline *command)
+/* the pipeline for two shader handles and a state: made on the compile thread when new, and the VkPipeline once it is ready,
+else VK_NULL_HANDLE (the draw is skipped, counted). B.lock is held. */
+VkPipeline host_vk_pipeline_find(uint32_t vertex_handle, uint32_t pixel_handle, const struct vk_pipeline_state *state)
 {
 	struct shader *vertex, *pixel;
 	struct pipeline *pipeline;
 	uint64_t state_hash;
+	VkPipeline ready = VK_NULL_HANDLE;
 
 	if (!S.started)
-		return;
+		return VK_NULL_HANDLE;
 	/* a draw whose shader is not ready asks for nothing (it is skipped, counted) */
-	if (!command->vertex_shader || !command->pixel_shader || command->vertex_shader > HANDLE_LIMIT ||
-		command->pixel_shader > HANDLE_LIMIT)
+	if (!vertex_handle || !pixel_handle || vertex_handle > HANDLE_LIMIT || pixel_handle > HANDLE_LIMIT)
 	{
 		B.counts.draws_skipped_shader++;
-		return;
+		return VK_NULL_HANDLE;
 	}
-	state_hash = state_hash_of(&command->state);
+	state_hash = state_hash_of(state);
 	pthread_mutex_lock(&S.lock);
-	vertex = S.handles[command->vertex_shader - 1];
-	pixel = S.handles[command->pixel_shader - 1];
+	vertex = S.handles[vertex_handle - 1];
+	pixel = S.handles[pixel_handle - 1];
 	if (!vertex || !pixel)
 	{
 		pthread_mutex_unlock(&S.lock);
 		B.counts.draws_skipped_shader++;
-		return;
+		return VK_NULL_HANDLE;
 	}
 	pipeline = pipeline_lookup(vertex->hash, pixel->hash, state_hash);
 	if (!pipeline)
@@ -729,9 +731,9 @@ void host_vk_pipeline_command(const struct vk_command_pipeline *command)
 			pipeline->vertex_hash = vertex->hash;
 			pipeline->pixel_hash = pixel->hash;
 			pipeline->state_hash = state_hash;
-			pipeline->vertex = command->vertex_shader;
-			pipeline->pixel = command->pixel_shader;
-			pipeline->state = command->state;
+			pipeline->vertex = vertex_handle;
+			pipeline->pixel = pixel_handle;
+			pipeline->state = *state;
 			pipeline->status = PIPELINE_QUEUED;
 			pipeline->next_in_bucket = S.pipeline_buckets[key % BUCKETS];
 			S.pipeline_buckets[key % BUCKETS] = pipeline;
@@ -745,10 +747,20 @@ void host_vk_pipeline_command(const struct vk_command_pipeline *command)
 		}
 	}
 	if (pipeline && pipeline->status == PIPELINE_READY)
+	{
 		B.counts.draws_ready++;
+		ready = pipeline->pipeline;
+	}
 	else
 		B.counts.draws_skipped_pipeline++;
 	pthread_mutex_unlock(&S.lock);
+	return ready;
+}
+
+/* a pipeline asked for in the stream by itself (phase 5's command; the draw record does it now) */
+void host_vk_pipeline_command(const struct vk_command_pipeline *command)
+{
+	host_vk_pipeline_find(command->vertex_shader, command->pixel_shader, &command->state);
 }
 
 static VkFormat format_of(uint32_t which, int depth)

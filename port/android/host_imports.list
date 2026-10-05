@@ -62,3 +62,4 @@ host_vk_submit
 host_vk_retired
 host_vk_shader_find
 host_vk_shader_compile
+host_vk_format_supported
