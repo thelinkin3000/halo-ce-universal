@@ -778,6 +778,108 @@ the menus and a map, at the CPU cost phase 7 then measures.
 6. **The high-res HUD and text, and the menus' art**, whose GL calls do
    nothing under deko3d now (`hud_hires.c`, `text_hires.c`, `menu_files.c`).
 
+### Step 3 in detail: a map
+
+The menus (step 2) are a few hundred draws of one kind; a map is thousands
+a frame, of every kind the game has - the BSP's lightmapped geometry, models
+with skinning, transparent effects, decals, the sky, the HUD - read from the
+map's data in the window. Most of the path exists (step 1 built indexed
+draws, the vertex format and every state; step 2 textures). This step is
+about what a map adds, and about the limits a busy frame meets.
+
+**Where to test.** Two scenes, and the same two under `renderer = "gl"`
+for comparison (by eye until screenshots work - see the last point):
+- **Blood Gulch**, in a local multiplayer game (no network needed): open
+  terrain, the sky, vehicles, fog in the distance, grass (detail objects).
+- **The Silent Cartographer** or **The Pillar of Autumn**, early in the level:
+  interiors, many lights and decals, AI characters (skinned models),
+  transparent effects (shields, plasma).
+For each, the log's draw statistics (`gpu_stats`, every 60 frames) and the
+`fps` and `game thread` lines, against the OpenGL image's in the same place.
+
+**What a map adds, and what to check.**
+
+1. **Culling and winding.** The menus barely cull; a map culls everything.
+   If geometry is missing or seen from inside (back faces drawn instead of
+   front), the winding convention under `DkDeviceFlags_OriginUpperLeft`
+   differs from desktop OpenGL's under `glClipControl` - the cull mapping
+   copies `d3d8_gl.c`'s desktop path (`front_face_ccw`, `cull` in
+   `draw_state_make`, mapped in `host_dk.c`'s `state_apply`). The fix, if
+   needed, is to invert the front face there (one line, as `d3d8_gl.c`'s
+   Android branch does for its own flip), not the shaders.
+2. **Depth, stencil, z bias.** Depth testing and writing (most of the map),
+   the depth range from the viewport, stencil (the game uses it for some
+   effects), and `SetRenderState_ZBias` as a polygon offset (decals - bullet
+   holes, scorch marks - flicker or vanish if it is wrong; `d3d8_gl.c`'s
+   comment on `D3DDevice_SetRenderState_ZBias` explains the slope term).
+   Check `dkCmdBufSetDepthBias`'s units against glPolygonOffset's if decals
+   misbehave.
+3. **Every vertex attribute type.** Maps use what the menus do not: packed
+   normals (`NORMPACKED3`, unpacked in the shader from a `1x32 Uint`
+   attribute), normalized shorts (texture coordinates, `NORMSHORT2`),
+   skinning weights and indices. A model with garbled or exploded geometry
+   points at an attribute's format or offset (`format_receive`,
+   `attribute_format_make`).
+4. **Index and vertex data from the window**, through `window_read`. A range
+   crossing from one 16 MB chunk of the window into the next is copied into
+   the upload buffer instead (`range_read`); index data made by
+   `CreateIndexBuffer` is in ordinary guest memory, and copied too. Watch the
+   log for "a frame needs more than ... bytes of uploads": the upload slice
+   is 4 MB a frame (`UPLOAD_SLICE_SIZE`), and a draw whose data does not fit
+   is skipped.
+5. **Command memory: a full frame ends the program.** The host records a
+   frame's commands into one 8 MB slice (`COMMAND_MEMORY_SIZE`), every
+   mid-frame submission continuing in it, and when it is full
+   `command_memory_exhausted` calls `host_fatal`. A map frame of thousands
+   of draws, many with vertex constants (skinned models change dozens of
+   registers a draw; up to 3 KB pushed inline each), may get there. Before
+   testing in a busy scene, make it safe: when the slice is near full,
+   submit what is recorded and continue in the next slice (waiting for its
+   fence), or give the command buffer more memory through `cbAddMem`
+   instead of failing - and log the frame's peak use, so the size can be
+   chosen from what maps really take.
+6. **Dynamic geometry.** Vertex buffers the game rewrites every frame:
+   detail objects (grass; their buffer is locked and rebuilt each frame -
+   the lock waits for the GPU through `Lock`, phase 3), contrails and
+   lightning (which draw from an offset into one buffer, through
+   `SetIndices`' base vertex), particles. Stale or flickering effects point
+   at the busy tracking (`draw_resources_used`, `halo_resource_wait`) or at
+   `window_read`'s cleaning.
+7. **The remaining texture formats and kinds.** Cube maps (environment
+   reflections: `DK_TEXTURE_CUBE`, six faces), 3D textures, palettized
+   textures (`P8`, with the stage's palette), bump maps with signed channels
+   (`D3DTSS_COLORSIGN`, handled in the pixel shader), linear (unswizzled)
+   textures with their coordinate scale (`texture_scale`), and every format
+   `xbox_textures_dk.c` decodes. A texture that is all black or noise points
+   at its format; `debug.texture_log` logs every upload.
+8. **Fog.** Distance fog is in the pixel shader (`fog_parameters`,
+   `fog_color`); Halo's atmospheric fog also uses a "fog screen" that clears
+   only the back buffer's alpha (the clear's per-channel mask, already done)
+   and blends with destination alpha.
+9. **Expected, not this step's:** anything drawn through a render target -
+   the water's reflections and ripples, the sniper scope, the HUD's motion
+   tracker, some screen effects - is wrong until step 4; lens flares are
+   missing until step 5 (the visibility tests answer 0); the high-res HUD and
+   text are missing until step 6 (the map's own HUD bitmaps draw).
+10. **Performance, measured, not tuned.** The game thread's ms a frame in
+    each scene against the OpenGL image's. Two costs to watch, for phase 7:
+    each indexed draw scans its whole index list for its vertex range
+    (`d3d8_gl.c` cached that), and a texture written after draws puts a full
+    barrier first.
+11. **Screenshots, if the comparisons need them.** They fault the GPU now
+    (reading the hardware-compressed back buffer; see step 1's entry under
+    "Progress"). If comparing by eye is not enough, rework them first, as a
+    test of its own: make the back buffer (and the targets the game reads
+    back) without `DkImageFlags_HwCompression`, or blit it into an
+    uncompressed image the GPU renders into, and copy from that; check it in
+    the menus before relying on it in a map.
+
+**Done when:** both scenes draw as they do under OpenGL, apart from the
+render-target, lens-flare and high-res items above; nothing ends the
+program in a busy frame; the draw statistics show nothing skipped but for a
+shader still compiling; and the game thread's time a frame in both scenes,
+against OpenGL's, is under "Progress".
+
 ### Where the work goes: guest or host
 
 The rule from "Where the renderer lives": the guest reads Direct3D's state
