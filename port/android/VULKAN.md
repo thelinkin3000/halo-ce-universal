@@ -24,7 +24,7 @@ the phone's driver; the results are in "Progress". Not tried: a second GPU
 family (a Mali). **Phase 1 is done on the test device and committed** (the
 Vulkan image, the host's choice and its decision, the stand-ins: the game
 runs under `display.renderer = "vulkan"` on the phone's driver and on
-Turnip, with a black screen as the phase says). **Phase 2 is done on the test device and committed** (the command stream, the device, the swapchain, the targets, clears and present: the game's clears are on the screen through Vulkan on both drivers). **Phase 3 is done on the test device and committed** (data records, the 4 MB stream, the upload rings and the data table; the data self-test is `ok` on both drivers). **Phase 4 is written out and next.** The
+Turnip, with a black screen as the phase says). **Phase 2 is done on the test device and committed** (the command stream, the device, the swapchain, the targets, clears and present: the game's clears are on the screen through Vulkan on both drivers). **Phase 3 is done on the test device and committed** (data records, the 4 MB stream, the upload rings and the data table; the data self-test is `ok` on both drivers). **Phase 4 is done on the test device and committed** (the GLSL generators for glslang, the pixel shader key, the dump, the PC check and the probe's `shaders` step: all 308 shaders of the corpus compile, validate and compare clean on both drivers and on the PC). **Phase 5 is next.** The
 work is on the `vulkan-backend` branch, which starts again from `main`. An
 earlier attempt, kept on the `vulkan-backend-old` branch, is not the base of
 this work and nothing here builds on it; see "Lessons from the earlier
@@ -1857,6 +1857,73 @@ For phase 6: data offsets are aligned to 256 (or the uniform alignment), but
 an offset a command adds inside a piece is the command's to align: an index
 buffer's offset must be a multiple of its index size, and a draw's vertex and
 index ranges should start at offsets the formats are aligned for.
+
+### Phase 4 — summary
+
+Worked unattended on the test device (Adreno 750) and the PC. **Phase 4 works**: every shader the game met in the corpus compiles with
+glslang, validates, lays its blocks out as `vk_shaders.h` says, and says exactly what the GL ES generators say, on the PC and on both
+drivers.
+
+**The corpus.** Collected with `display.renderer = "vulkan"` and `debug.gpu_dump_shaders` naming a folder (pulled to `build/shaders`, not
+committed): the main menu and its screens (each item entered and left), then a new game's opening cinematic on the first map, about 15
+minutes in all. The screen is black, so the first fight and a second map were not reached (nothing can be played until phase 6): the
+corpus is the menus' and the opening's shaders. 835 files: 90 vertex shaders (67 programs with their immediate-mode form, mask 0, and 23
+with a packed-attribute mask, `e` or `8e`) and 218 pixel shaders, each with its `.gl` twin (and a `.key`). The 218 keys give 76 distinct
+GLSL texts (keys differ in combiner words that the text does not use). How the key's fields vary over the 218: 35 of its 57 combiner
+words vary; `texture_modes` 13 values; `sampler_type[0..3]` 3, 4, 4, 3 (none, 2D, cube); `alpha_kill[0]` 2 (stages 1 to 3 never);
+`alpha_test_function` 2; `coverage_alpha` 2; `color_sign`, `fog_enable` and `fog_table_mode` never vary; `count_samples` is 0 by design.
+The fields that never vary are the corpus's, not an unfilled key: **the same run under the GL ES renderer** (`debug.gpu_dump_shaders`
+under `renderer = "gl"`, `build/shaders_gl`) made 218 pixel shaders too, and **213 of the 218 key hashes are identical** (`hash_words`
+of the key's bytes); the other 5 are GL's own keys with `count_samples` 1 (a visibility test with atomic counters, which the Vulkan
+device never sets), whose GLSL is the same text apart from the counter. The GL ES run's 76 distinct pixel texts (normalised for the
+counter) are the Vulkan run's 76, and its 31 distinct vertex texts are among the Vulkan run's 90 (GL compiled only what it drew; the
+Vulkan dump writes every program at mask 0 as well).
+
+| | PC | Phone's driver (Qualcomm 512.762.40) | Turnip v26.0.0 R8 |
+|---|---|---|---|
+| Compile (`glslangValidator -V --target-env vulkan1.0`; glslang in the probe) | 308 of 308 | 90 vertex, 218 pixel, 0 failed | the same |
+| Reflection against `vk_shaders.h` (binding, size, offsets, samplers) | 0 differences | | |
+| spirv-val (built from the SPIRV-Tools glslang pins) / the layer's validation of each module | 0 failures | `shaders.vertex.count: 90 compiled and made without a complaint, 0 failed`, `shaders.fragment.count: 218 ... 0 failed`, `validation.summary: 2 messages, 0 errors` (the layer's cache-file notes) | the same, 2 messages, 0 errors |
+| Comparison with the GL ES twins | 308 of 308 identical after the listed changes | | |
+| Times (glslang / `vkCreateShaderModule`) | | vertex 3.9 / 1.8 ms average, 350 / 163 ms in all; pixel 1.6 / 0.41 ms average, 348 / 89 ms in all; 1.0 s for all 308 | vertex 3.6 / 1.7 ms, pixel 1.6 / 0.37 ms; 0.9 s |
+| Slowest | | glslang: `vs_48_e` 100 ms (the first compile of the process: it pays the front end's start), then `vs_11_0` 5.5, `vs_32_e` 4.7, `vs_10_e` 4.6 ms; pixel `ps_297f687f` 4.7, `ps_59a624fb` 3.9, `ps_1034bada` 3.7 ms | `vs_48_e` 78 ms (the same), `ps_297f687f` 3.2 ms |
+
+The comparison was tried on a changed shader (a one-line difference in a pixel shader): it fails with the diff. The game itself, with
+the dump off, runs as in phase 3 on both drivers (4 images, 240 clears per 60 frames, validation errors 0, no wait over two seconds),
+and `renderer = "gl"` runs (the corpus was also collected under it): `port/linux/src` is not changed.
+
+**What is left for the user**: the corpus has no map's fight, fog, colour-signed textures or alpha-killed stages 1 to 3 (they never
+occur in what was played unattended): a corpus from play (the dump while playing under GL ES, which writes `ps_<hash>.glsl`, or under
+the Vulkan image once it draws) would add them; `tools/vk_shader_check.py` runs on any folder of the Vulkan image's dump. A second GPU
+family is not tried.
+
+### Phase 4: deviations from the spec
+
+1. **The key is made only when `debug.gpu_dump_shaders` names a folder** (the dump is its only use until phase 6), not at every draw
+   unconditionally. Phase 6 makes it unconditional.
+2. **The draw's note does not bind the targets** (`prepare_draw` skips a draw with no target; the Vulkan device's `targets_bind` writes a
+   command, which phase 6 owns), so a draw without a target is dumped too.
+3. **`coverage_alpha`** is decided as the texture cache does (`hud_hires_override_find` on the bitmap's address and sizes, then
+   `hud_hires_override_coverage`), without the high-res texture's own decoding (that needs GL, and would fail only there). The key
+   matched the GL renderer's for 213 of 213 comparable keys. A render-target texture is not told from a bitmap here (`d3d8_gl.c` tells
+   it by its target table); it takes the bitmap's path, and has coverage only if its pixels are a HUD bitmap's.
+4. **The vertex generator keeps the camera-plane guard** (`if (!(abs(position.w) > 0.0)) position = vec4(0.0, 0.0, 0.0, -1.0);`) that the
+   original has and `nv2a_vsh_dk.c` lost: the spec says everything else is kept line for line, and the comparison proves it.
+5. **The copies' instruction words are `const uint32_t *`** (as the deko3d copies), because `vk_shaders.h` is shared with the host, which has
+   no `DWORD`; the generated text is the same.
+6. **Every vertex shader is also written at mask 0 at the 60th Present, not the first**: the game makes its vertex shaders during its
+   start-up, so the first Present would find some missing. The log says `shader dump: N vertex shaders and M pixel shaders written`
+   every 600 frames when more came.
+7. **The GL ES twins are made in the Vulkan image** by the original generators, with `xgpu_capabilities.shading_language` set to
+   `"310 es"` for the call (the Vulkan image has no context to read it from).
+8. **A pixel file name collision** (two keys with one 32-bit hash) would get `_<n>` appended (none met: 0 in 218).
+9. **The comparison** builds the Vulkan text it expects from the GL twin and from `vk_shaders.h`'s numbers (the whole header of each stage,
+   exactly), and compares the rest line by line. The reflection reads glslang's `-q` output (members the shader does not use are not
+   listed there, so only the used ones are checked; the blocks' sizes always are). `spirv-val` is fetched and built into
+   `build/host-spirv-tools` from the commits glslang's `known_good.json` pins, once.
+10. **The probe step reads the folder from `config.toml` itself** (`debug.gpu_dump_shaders`), like the probe's other settings; "all" runs
+    it, and it says `skipped` when no folder is named. A warning or error from the validation layer while a module is made is a failure
+    of that shader; the first compile of the process (80 to 100 ms) is the front end's start, not a slow shader.
 
 ### Phase 3 — summary
 
