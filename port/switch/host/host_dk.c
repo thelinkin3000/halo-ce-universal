@@ -48,6 +48,11 @@ give.
 #include <string.h>
 
 #define FRAMES 3
+/* the swapchain's images: three, so a frame that misses the display's
+refresh starts the next one rather than waiting for the refresh after (a
+17 ms frame cost 33 with two; 10.8% of the game thread in a match was the
+wait for an image) */
+#define SCREEN_IMAGES 3
 #define COMMAND_MEMORY_SIZE (8 * 1024 * 1024)
 /* a frame's command memory is added to the command buffer a piece at a time,
 so that the host knows how much of it a frame has used (command_memory_added) */
@@ -132,6 +137,14 @@ static struct
 	uint32_t command_pieces;
 	uint32_t command_rolled_bytes;
 	uint32_t command_peak_bytes;
+	/* the GPU's time (gpu_timing_*) */
+	DkCmdBuf timing_commands;
+	DkMemBlock timing_memory;
+	uint32_t timing_count[FRAMES];
+	/* the timing list has its memory (the first frame_begin gives it) */
+	int timing_armed;
+	uint64_t gpu_busy_total_ns, gpu_busy_peak_ns;
+	uint32_t gpu_frames;
 	uint32_t command_rollovers;
 	/* set when the last piece is given: the rest of the frame's commands will
 	not fit unless the host submits and starts over (host_dk_submit does, between
@@ -139,7 +152,7 @@ static struct
 	int command_memory_low;
 
 	DkMemBlock screen_memory;
-	DkImage screen_images[2];
+	DkImage screen_images[SCREEN_IMAGES];
 	DkSwapchain swapchain;
 
 	struct image_block image_blocks[IMAGE_BLOCK_LIMIT];
@@ -403,6 +416,85 @@ static void fence_wait_said(int index, const char *what)
 		host_logf(HOST_LOG_ERROR, "deko3d: %s: the GPU finished after all", what);
 }
 
+/* ---------- the GPU's time a frame
+
+Each submission is bracketed by two timestamps: the first in a small command
+list of its own submitted just before it, the second at the end of the
+submission itself. The GPU's busy time in a frame is the sum of each pair's
+difference - the time it waits between submissions for the CPU to hand
+over more is not in it. A frame slot's reports are read when its fence has
+passed (frame_begin), and the average and the longest go into the log every
+60 frames. Reports are 16 bytes, the timestamp in the second half. */
+
+#define TIMING_PAIRS 32
+#define TIMING_COMMAND_SIZE (16 * 1024)
+
+static void gpu_timing_initialize(void)
+{
+	DkCmdBufMaker maker;
+
+	dk.timing_memory = memory_block(FRAMES * (TIMING_PAIRS * 2 * 16 + TIMING_COMMAND_SIZE),
+		DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached, NULL);
+	if (!dk.timing_memory)
+		return;
+	dkCmdBufMakerDefaults(&maker, dk.device);
+	dk.timing_commands = dkCmdBufCreate(&maker);
+}
+
+static uint32_t gpu_timing_region(int frame)
+{
+	return (uint32_t)frame * (TIMING_PAIRS * 2 * 16 + TIMING_COMMAND_SIZE);
+}
+
+/* (frame_begin, once the slot's fence has passed) the slot's last frame
+counted, and its command memory given back for this one */
+static void gpu_timing_frame_begin(void)
+{
+	const uint64_t *reports;
+	uint64_t busy = 0;
+	uint32_t pair;
+
+	if (!dk.timing_commands)
+		return;
+	reports = (const uint64_t *)((const char *)dkMemBlockGetCpuAddr(dk.timing_memory) + gpu_timing_region(dk.frame));
+	for (pair = 0; pair < dk.timing_count[dk.frame]; pair++)
+	{
+		uint64_t start = reports[pair * 4 + 1], end = reports[pair * 4 + 3];
+
+		if (end > start)
+			busy += dkTimestampToNs(end - start);
+	}
+	if (dk.timing_count[dk.frame])
+	{
+		dk.gpu_busy_total_ns += busy;
+		if (busy > dk.gpu_busy_peak_ns)
+			dk.gpu_busy_peak_ns = busy;
+		dk.gpu_frames++;
+	}
+	dk.timing_count[dk.frame] = 0;
+	dkCmdBufClear(dk.timing_commands);
+	dkCmdBufAddMemory(dk.timing_commands, dk.timing_memory, gpu_timing_region(dk.frame) + TIMING_PAIRS * 2 * 16,
+		TIMING_COMMAND_SIZE);
+	dk.timing_armed = 1;
+}
+
+/* (commands_submit_serial, before the submission) the start's list
+submitted, the end's report recorded in the submission; 0 if not timed */
+static int gpu_timing_bracket(void)
+{
+	DkGpuAddr reports;
+	uint32_t pair = dk.timing_count[dk.frame];
+
+	if (!dk.timing_commands || !dk.timing_armed || pair >= TIMING_PAIRS)
+		return 0;
+	reports = dkMemBlockGetGpuAddr(dk.timing_memory) + gpu_timing_region(dk.frame) + pair * 2 * 16;
+	dkCmdBufReportCounter(dk.timing_commands, DkCounter_Timestamp, reports);
+	dkQueueSubmitCommands(dk.queue, dkCmdBufFinishList(dk.timing_commands));
+	dkCmdBufReportCounter(dk.commands, DkCounter_Timestamp, reports + 16);
+	dk.timing_count[dk.frame] = pair + 1;
+	return 1;
+}
+
 static void frame_begin(void)
 {
 	/* (under the lock: the guest's other threads read the fences through
@@ -416,6 +508,7 @@ static void frame_begin(void)
 			dk.serial_retired = dk.fence_serial[dk.frame];
 	}
 	pthread_mutex_unlock(&dk_lock);
+	gpu_timing_frame_begin();
 	command_memory_begin();
 	/* the upload slice is reused the same way, behind the same fence */
 	dk.upload_used = 0;
@@ -625,6 +718,7 @@ static void commands_submit_serial(uint32_t finished)
 {
 	static int fault_said;
 
+	gpu_timing_bracket();
 	dkQueueSubmitCommands(dk.queue, dkCmdBufFinishList(dk.commands));
 	if (!fault_said && dkQueueIsInErrorState(dk.queue))
 	{
@@ -700,7 +794,7 @@ static int initialize(void)
 	DkCmdBufMaker command_maker;
 	DkSwapchainMaker swapchain_maker;
 	DkImageLayout layout;
-	DkImage const *screen_images[2];
+	DkImage const *screen_images[SCREEN_IMAGES];
 	uint32_t image_size;
 	int index;
 
@@ -716,19 +810,20 @@ static int initialize(void)
 	dkCmdBufMakerDefaults(&command_maker, dk.device);
 	command_maker.cbAddMem = command_memory_exhausted;
 	dk.commands = dkCmdBufCreate(&command_maker);
+	gpu_timing_initialize();
 
 	layout_make(&layout, DkImageFormat_RGBA8_Unorm,
 		DkImageFlags_UsageRender | DkImageFlags_UsagePresent | DkImageFlags_Usage2DEngine | DkImageFlags_HwCompression,
 		SCREEN_WIDTH, SCREEN_HEIGHT);
 	image_size = (uint32_t)((dkImageLayoutGetSize(&layout) + dkImageLayoutGetAlignment(&layout) - 1) &
 		~(uint64_t)(dkImageLayoutGetAlignment(&layout) - 1));
-	dk.screen_memory = memory_block(2 * image_size, DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image, NULL);
-	for (index = 0; index < 2; index++)
+	dk.screen_memory = memory_block(SCREEN_IMAGES * image_size, DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image, NULL);
+	for (index = 0; index < SCREEN_IMAGES; index++)
 	{
 		dkImageInitialize(&dk.screen_images[index], &layout, dk.screen_memory, (uint32_t)index * image_size);
 		screen_images[index] = &dk.screen_images[index];
 	}
-	dkSwapchainMakerDefaults(&swapchain_maker, dk.device, nwindowGetDefault(), screen_images, 2);
+	dkSwapchainMakerDefaults(&swapchain_maker, dk.device, nwindowGetDefault(), screen_images, SCREEN_IMAGES);
 	dk.swapchain = dkSwapchainCreate(&swapchain_maker);
 	host_logf(HOST_LOG_INFO, "deko3d: device ready, presenting at %dx%d", SCREEN_WIDTH, SCREEN_HEIGHT);
 
@@ -980,6 +1075,12 @@ static void present(const struct dk_command_present *command)
 		host_logf(HOST_LOG_INFO, "deko3d: command memory, the most a frame used in the last 60: %u KB of %u KB "
 			"(%u rollovers in all)", (unsigned)(dk.command_peak_bytes / 1024), (unsigned)(COMMAND_MEMORY_SIZE / 1024),
 			(unsigned)dk.command_rollovers);
+		if (dk.gpu_frames)
+			host_logf(HOST_LOG_INFO, "deko3d: GPU busy %.2f ms a frame on average, %.2f ms the longest (%u frames)",
+				(double)dk.gpu_busy_total_ns / dk.gpu_frames / 1e6, (double)dk.gpu_busy_peak_ns / 1e6,
+				(unsigned)dk.gpu_frames);
+		dk.gpu_busy_total_ns = dk.gpu_busy_peak_ns = 0;
+		dk.gpu_frames = 0;
 		dk.command_peak_bytes = 0;
 	}
 	dk.frame = (dk.frame + 1) % FRAMES;
