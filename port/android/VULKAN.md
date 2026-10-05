@@ -810,6 +810,15 @@ reads `display.renderer` and loads one, falling back to GL ES (logged) if the
 Vulkan image is missing or Vulkan does not come up with what phase 0
 requires. No GL context is made under Vulkan.
 
+"Comes up" is decided by the host before it loads either image, because a
+custom driver's failures show only after `vkCreateInstance` and cannot be
+undone in the process (`host_vk_driver.h`, and phase 0 B's deviation 3): open
+the driver (`host_vk_driver_open`), make an instance, call
+`host_vk_driver_verify`, and look for a physical device with what phase 0
+requires. A failed check (the hook fell back to the phone's driver) or no
+device (the library is no driver) means the GL ES image, with the reason in
+the log; the instance found here is kept for the backend, not made twice.
+
 **Acceptance:** with `renderer = "vulkan"` the game runs to the menus and
 plays (sound, input) with a black screen; with `"gl"` it is as before; a
 device without Vulkan falls back with a line in the log.
@@ -1259,7 +1268,9 @@ asked; the rest are for the user to accept or to have undone.
    by git.
 4. **The probe knows its build by a compile-time define** (`-DHALO_PROBE_BUILD`, the
    commit with `+changes` if the tree is dirty, taken at configure time), because the game's
-   log prints no git hash for it to copy.
+   log prints no git hash for it to copy. *(Since part B's audit it is written at every build,
+   into `build/android/host/probe_build.h`, by `tools/android_build_stamp.py`: at configure
+   time it went stale whenever a commit was made without configuring again.)*
 5. **Documentation beyond the spec's list:** `port/android/README.md` gained the three
    settings, the probe, the profiler and the `.vk` install under "Settings" and "Find
    problems" (the spec asked for the settings and "Find problems" only).
