@@ -136,6 +136,7 @@ VkCommandBuffer host_vk_frame_command(void)
 			HOST_VK_CHECK(vkResetFences(B.device, 1, &frame->fence));
 			frame->submitted = 0;
 		}
+		host_vk_draw_frame_reset(frame);
 		HOST_VK_CHECK(vkResetCommandPool(B.device, frame->pool, 0));
 		begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 		if (HOST_VK_CHECK(vkBeginCommandBuffer(frame->command, &begin)))
@@ -409,7 +410,7 @@ void host_vk_rendering_end(void)
 
 /* opens a rendering on the current targets, loading what they hold and storing what is drawn; 0 if there are
 none. Viewport and scissor are set after every opening: Vulkan keeps no state across renderings. */
-static int rendering_begin(void)
+int host_vk_rendering_begin(void)
 {
 	VkCommandBuffer command;
 	VkRenderingAttachmentInfo color = { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
@@ -617,7 +618,7 @@ static void command_clear(const struct vk_command_clear *command, uint32_t size)
 		if (!depth && !stencil)
 			return;
 	}
-	if (!count || !rendering_begin())
+	if (!count || !host_vk_rendering_begin())
 		return;
 	cmd = host_vk_frame_command();
 	rectangles = malloc(sizeof(*rectangles) * count);
@@ -1068,6 +1069,9 @@ static void log_statistics(void)
 		c->targets, c->clears, c->presents, c->clears_drawn, c->clears_attachments, c->target_changes, B.images,
 		(unsigned long long)B.submission, retired_locked(), c->recreations, host_vk_validation_errors(), c->data_records,
 		c->data_bytes / 1024 / (c->frames ? c->frames : 1), host_vk_data_buffers());
+	host_logf(HOST_LOG_INFO, "vk: draws in %u frames: %u made; skipped %u for a shader, %u for a pipeline, %u no target, %u data "
+		"missing, %u other", c->frames, c->draws_made, c->draws_skipped_shader, c->draws_skipped_pipeline,
+		c->draws_skipped_target, c->draws_skipped_data, c->draws_skipped_other);
 	{
 		char services[400];
 
@@ -1079,6 +1083,7 @@ static void log_statistics(void)
 			host_logf(HOST_LOG_INFO, "vk: services: %s", services);
 	}
 	c->draws_ready = c->draws_skipped_shader = c->draws_skipped_pipeline = 0;
+	c->draws_made = c->draws_skipped_target = c->draws_skipped_data = c->draws_skipped_other = 0;
 	c->frames = c->hand_overs = c->targets = c->clears = c->presents = c->clears_drawn = c->clears_attachments = 0;
 	c->target_changes = 0;
 	c->data_records = c->data_bytes = 0;
@@ -1308,6 +1313,21 @@ static int device_create(void)
 		dynamic_rendering.dynamicRendering = VK_TRUE;
 		features.pNext = &dynamic_rendering;
 	}
+	/* the optional features the draws use, where the device has them: anisotropic filtering, non-solid fill (wireframe and
+	point fill), precise occlusion queries (visibility tests) and the block-compressed textures (BC1 to BC3) */
+	{
+		VkPhysicalDeviceFeatures2 available = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+
+		host_vk.vkGetPhysicalDeviceFeatures2(host_vk.physical, &available);
+		features.features.samplerAnisotropy = available.features.samplerAnisotropy;
+		features.features.fillModeNonSolid = available.features.fillModeNonSolid;
+		features.features.occlusionQueryPrecise = available.features.occlusionQueryPrecise;
+		features.features.textureCompressionBC = available.features.textureCompressionBC;
+		B.sampler_anisotropy = available.features.samplerAnisotropy != 0;
+		B.fill_mode_non_solid = available.features.fillModeNonSolid != 0;
+		B.occlusion_query_precise = available.features.occlusionQueryPrecise != 0;
+		B.texture_compression_bc = available.features.textureCompressionBC != 0;
+	}
 	for (index = 0; index < name_count; index++)
 		host_logf(HOST_LOG_INFO, "vk: device extension %s", names[index]);
 	queue_info.queueFamilyIndex = B.family;
@@ -1393,10 +1413,11 @@ static int device_create(void)
 	if (host_vk_self_test)
 		clears_selftest();
 	host_logf(HOST_LOG_INFO, "vk: device ready: queue family %u, colour targets %s, depth targets %s, blit filter %s, "
-		"dynamic rendering from %s", B.family, "B8G8R8A8_UNORM",
+		"dynamic rendering from %s; anisotropy %d, non-solid fill %d, precise occlusion %d, BC textures %d", B.family, "B8G8R8A8_UNORM",
 		B.depth_format == VK_FORMAT_D24_UNORM_S8_UINT ? "D24_UNORM_S8_UINT" : "D32_SFLOAT_S8_UINT",
 		B.blit_filter == VK_FILTER_LINEAR ? "linear" : "nearest",
-		host_vk.api >= VK_API_VERSION_1_3 ? "Vulkan 1.3" : "VK_KHR_dynamic_rendering");
+		host_vk.api >= VK_API_VERSION_1_3 ? "Vulkan 1.3" : "VK_KHR_dynamic_rendering", B.sampler_anisotropy,
+		B.fill_mode_non_solid, B.occlusion_query_precise, B.texture_compression_bc);
 	return 1;
 failed:
 	backend_unavailable("the device's frames could not be made");
@@ -1408,6 +1429,18 @@ void host_vk_device_ensure_locked(void)
 {
 	if (B.state == 0)
 		device_create();
+}
+
+/* whether the device reads a format as a vertex attribute (the guest asks once for each of the optional ones and expands the
+rest to four floats) */
+uint32_t host_vk_format_supported(uint32_t format)
+{
+	VkFormatProperties properties;
+
+	if (!host_vk.instance || !host_vk.physical)
+		return 1;
+	host_vk.vkGetPhysicalDeviceFormatProperties(host_vk.physical, (VkFormat)format, &properties);
+	return (properties.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT) != 0;
 }
 
 /* runs size bytes of commands at commands (a guest address), during the call */
@@ -1463,6 +1496,10 @@ void host_vk_submit(uint32_t commands, uint32_t size)
 		case VK_COMMAND_PIPELINE:
 			if (header->size >= sizeof(struct vk_command_pipeline))
 				host_vk_pipeline_command((const struct vk_command_pipeline *)header);
+			break;
+		case VK_COMMAND_DRAW:
+			if (header->size >= sizeof(struct vk_command_draw))
+				host_vk_command_draw((const struct vk_command_draw *)header, header->size);
 			break;
 		case VK_COMMAND_TEST_DRAW:
 			if (header->size >= sizeof(struct vk_command_test_draw))

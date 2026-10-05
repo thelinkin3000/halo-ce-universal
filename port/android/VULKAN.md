@@ -2323,6 +2323,33 @@ Phase 0 was worked on the test device (Lenovo TB321FU, Adreno 750, Android 16,
 API 36, the phone's own driver). The reports are in `port/android/probe/reports/`.
 Newest first.
 
+### Phase 6 — progress (under way; each step's result, newest first)
+
+**Step 1, first draws: done on the device, both drivers.** `VK_COMMAND_DRAW` (`vk_commands.h`) is one self-contained record
+(shader handles, `vk_pipeline_state`, viewport, scissor, depth bias, blend constants, stencil masks, the three uniform blocks and the
+vertex and index data as data references, four texture slots); the guest makes it in `draw_make` (`d3d8_vk.c`: `prepare_draw`'s
+shaders and key, `apply_raster_state`'s state through one table from the Xbox's enumerants (which are OpenGL's) to Vulkan's,
+`setup_streams`' vertex input, `quad_indices`, a line loop as a strip with its first vertex again) and the host records it
+(`host_vk_draw.c`: the pipeline from `host_vk_pipeline_find`, a descriptor set a draw from the frame's pools, the dummies of the
+three sampler types, a sampler table, the viewport with a negative height, the scissor following it, the draw). The draw note of
+phase 5 (the placeholder `VK_COMMAND_PIPELINE`) is gone from the guest. `memory_watch_initialize` is started where `d3d8_gl.c` starts it.
+
+Main menu (`display.menus = "pc"`), 60-frame windows, validation on:
+
+| | GL ES | Vulkan, phone's driver | Vulkan, Turnip |
+|---|---|---|---|
+| draws a frame | 7 draws + 118 immediate (125) | 1 immediate made, 124 skipped as textured (125) | the same |
+| skipped for a shader / pipeline / data / target / other | 0 | 0 / 0 (after the first window) / 0 / 0 / 0 | the same |
+| validation errors | | 0 | 0 |
+
+The screen is the fade only (every other draw is textured until step 2): the picture is black, the GL ES one is the whole menu.
+The GL stub count stays 0. Not decided by this step: the front face (nothing culls in the menus), the picture's orientation.
+
+Choices of this step: the unfed attributes are one stride-0 binding put whenever `SetVertexData` changed them (compared with what
+this frame last put); formats the device cannot read as attributes are asked for (`host_vk_format_supported`, an import, once for
+each optional format, lazily instead of at the device's creation) and expanded to four floats by the guest; the device is created
+with `samplerAnisotropy`, `fillModeNonSolid`, `occlusionQueryPrecise` and `textureCompressionBC` where it has them.
+
 ### Phase 3 — audit
 
 Nothing to fix. Read against the spec and the code: the guest's
