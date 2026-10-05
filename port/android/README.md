@@ -119,10 +119,11 @@ These settings are only for Android:
 | `display.screen_width` | The number of columns of the 480-line picture. `0` (the default): the shape of the display (1068 on a 20:9 phone). `640`: the 4:3 shape of the Xbox. |
 | `debug.sample_seconds` | Refer to "Find problems". |
 | `debug.profile_hz` | Refer to "Find problems". |
-| `display.renderer` | How the game draws: `"gl"` (the default: OpenGL ES over the phone's driver) or `"vulkan"`. **In development: under Vulkan nothing is drawn yet (the screen is black), but the game runs.** The host brings Vulkan up first and, if the device or the driver cannot do it, logs why (`renderer: GL ES (Vulkan was asked for: ...)`) and runs the GL ES renderer. Anything else is `"gl"`, with a warning. Takes effect the next time the game starts. See `port/android/VULKAN.md`. |
+| `display.renderer` | How the game draws: `"gl"` (the default: OpenGL ES over the phone's driver) or `"vulkan"`. **In development: under Vulkan only the game's clears reach the screen (black, and the menus' clear colours); the game runs.** The host brings Vulkan up first and, if the device or the driver cannot do it, logs why (`renderer: GL ES (Vulkan was asked for: ...)`) and runs the GL ES renderer. Anything else is `"gl"`, with a warning. Takes effect the next time the game starts. See `port/android/VULKAN.md`. |
 | `display.vk_driver` | The Vulkan driver of the Vulkan probe and of the Vulkan renderer. Empty (the default): the phone's own. Otherwise the name of a driver archive left in the game's data folder (see "Find problems"). |
 | `debug.vk_probe` | Refer to "Find problems". |
 | `debug.vk_validation` | Refer to "Find problems". |
+| `debug.vk_present_marker` | Under the Vulkan renderer, draws a red square at the top left and a green one at the top right of the picture, so that a screenshot shows which way up it is, and at start-up tries the renderer's clears on a small target of its own (the log says `clears self-test: ok`). Default `false`. |
 
 ## Internet play
 
