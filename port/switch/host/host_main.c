@@ -615,18 +615,19 @@ static void environment_copy_halo(struct environment *environment)
 
 int host_renderer_deko3d;
 
-/* whether config.toml's display.renderer asks for deko3d (host.h) */
+/* whether the game draws with deko3d (host.h): the default, unless
+config.toml's display.renderer asks for "gl", OpenGL over Mesa */
 static int config_renderer_is_deko3d(const char *path)
 {
 	toml_result_t result = toml_parse_file_ex(path);
-	int deko3d = 0;
+	int deko3d = 1;
 
 	if (!result.ok)
-		return 0;
+		return 1;
 	{
 		toml_datum_t renderer = toml_seek(result.toptab, "display.renderer");
 
-		deko3d = renderer.type == TOML_STRING && !strcmp(renderer.u.s, "deko3d");
+		deko3d = !(renderer.type == TOML_STRING && !strcmp(renderer.u.s, "gl"));
 	}
 	toml_free(result);
 	return deko3d;
@@ -833,7 +834,7 @@ static void *game_main(void *unused)
 			host_renderer_deko3d ? "halo_guest_dk.elf" : "halo_guest.elf");
 		if (host_renderer_deko3d && access(path, R_OK) != 0)
 		{
-			host_logf(HOST_LOG_WARN, "display.renderer is deko3d, but there is no %s; using OpenGL", path);
+			host_logf(HOST_LOG_WARN, "the renderer is deko3d, but there is no %s; using OpenGL", path);
 			host_renderer_deko3d = 0;
 			snprintf(path, sizeof(path), "%s/halo_guest.elf", executable_root);
 		}

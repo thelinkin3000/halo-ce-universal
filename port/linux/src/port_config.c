@@ -96,8 +96,9 @@ static const struct config_setting config_settings[] =
 #ifdef HALO_SWITCH
 	/* read by the Switch host before the game starts, to choose the game
 	image built with that renderer (port/switch/DEKO3D.md) */
-	{ "display.renderer", _config_string, "\"gl\"", "HALO_RENDERER", _environment_value, _platform_android,
-		"How the game draws: \"gl\" (OpenGL over Mesa) or \"deko3d\" (in development).\n"
+	{ "display.renderer", _config_string, "\"deko3d\"", "HALO_RENDERER", _environment_value, _platform_android,
+		"How the game draws: \"deko3d\" (the console's own GPU interface) or \"gl\"\n"
+		"(OpenGL over Mesa, slower: the fallback if deko3d draws something wrong).\n"
 		"Takes effect the next time the game starts." },
 #endif
 	{ "display.vsync", _config_boolean, "true", "HALO_NO_VSYNC", _environment_set_is_false, _platform_all,
