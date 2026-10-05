@@ -86,7 +86,7 @@ as a Vulkan function */
 	X(vkCreateDescriptorPool) X(vkDestroyDescriptorPool) X(vkResetDescriptorPool) X(vkAllocateDescriptorSets) \
 	X(vkUpdateDescriptorSets) X(vkCmdBindDescriptorSets) X(vkCmdBindIndexBuffer) X(vkCmdDrawIndexed) X(vkCmdSetDepthBias) \
 	X(vkCmdSetBlendConstants) X(vkCmdSetStencilCompareMask) X(vkCmdSetStencilWriteMask) X(vkCmdSetStencilReference) \
-	X(vkCreateSampler) X(vkDestroySampler)
+	X(vkCreateSampler) X(vkDestroySampler) X(vkCmdCopyBufferToImage)
 
 #define X(name) extern PFN_##name name __attribute__((visibility("hidden")));
 HOST_VK_DEVICE_FUNCTIONS(X)
@@ -190,11 +190,35 @@ struct host_vk_backend
 		unsigned recreations;
 		unsigned data_records, data_bytes;
 		unsigned draws_ready, draws_skipped_shader, draws_skipped_pipeline;
-		unsigned draws_made, draws_skipped_target, draws_skipped_data, draws_skipped_other;
+		unsigned draws_made, draws_skipped_target, draws_skipped_data, draws_skipped_other, draws_texture_missing;
+		unsigned textures_skipped, texture_bytes;
 	} counts;
 };
 
 extern struct host_vk_backend host_vkb;
+
+/* host_vk_texture.c (phase 6): the guest's textures as images */
+struct host_vk_image
+{
+	uint32_t id, kind, format, width, height, depth, levels, layers;
+	VkImage image;
+	VkImageView view;
+	VkImageLayout layout;
+	unsigned block;
+	VkDeviceSize offset, size;
+	int has_memory;
+};
+void host_vk_texture_command(const struct vk_command_texture *command);
+void host_vk_texture_data_command(const struct vk_command_texture_data *command);
+void host_vk_texture_free_command(const struct vk_command_texture_free *command);
+/* the images written since a draw last needed them are made readable (outside a rendering: ends the one open) */
+void host_vk_textures_flush(void);
+/* a frame slot's fence has passed: the images retired in it are destroyed */
+void host_vk_texture_frame_reset(unsigned slot);
+/* the image of a guest's id, or NULL */
+struct host_vk_image *host_vk_image_get(uint32_t id);
+unsigned host_vk_texture_images(void);
+unsigned host_vk_texture_megabytes(void);
 
 /* host_vk_draw.c (phase 6): the draws */
 void host_vk_command_draw(const struct vk_command_draw *draw, uint32_t size);

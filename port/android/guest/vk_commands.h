@@ -33,6 +33,9 @@ enum
 	VK_COMMAND_TEST_DRAW,
 	VK_COMMAND_PIPELINE,
 	VK_COMMAND_DRAW,
+	VK_COMMAND_TEXTURE,
+	VK_COMMAND_TEXTURE_DATA,
+	VK_COMMAND_TEXTURE_FREE,
 };
 
 /* a surface's kind, as the host makes its image */
@@ -244,5 +247,53 @@ struct vk_command_draw
 #define VK_VERTEX_FORMAT_R32G32_SFLOAT 103
 #define VK_VERTEX_FORMAT_R32G32B32_SFLOAT 106
 #define VK_VERTEX_FORMAT_R32G32B32A32_SFLOAT 109
+
+/* ---------- textures (phase 6, step 2)
+
+An image the guest numbers (from 1, VK_TEXTURE_LIMIT of them; it takes numbers back when its cache drops a texture) and
+describes; its texels follow, a level of a face (or a 3D texture's whole level) at a time, put with vk_data_put. */
+
+#define VK_TEXTURE_LIMIT 16384
+
+enum
+{
+	VK_IMAGE_2D = 1,
+	VK_IMAGE_3D,
+	VK_IMAGE_CUBE,
+};
+
+enum
+{
+	VK_IMAGE_FORMAT_BGRA = 1, /* 8 bits a channel, B8G8R8A8_UNORM: the texels as the guest decoded them (32-bit ARGB words) */
+	VK_IMAGE_FORMAT_BC1, /* BC1 to BC3 as the Xbox keeps them */
+	VK_IMAGE_FORMAT_BC2,
+	VK_IMAGE_FORMAT_BC3,
+};
+
+/* makes image id (the same description again keeps the image it has; another replaces it), its texels undefined until the
+data comes */
+struct vk_command_texture
+{
+	struct vk_command_header header;
+	uint32_t id, kind, format, width, height, depth, levels;
+};
+
+/* the texels of one level of one face (face 0 unless a cube), all of it (rows 0: the host knows its size from the image's), or
+the rows [top, top + rows) of a 2D BGRA level (the text's atlas, which gains glyphs a few rows at a time). The host copies them
+into the image outside any rendering */
+struct vk_command_texture_data
+{
+	struct vk_command_header header;
+	uint32_t id, level, face;
+	struct vk_data_ref data;
+	uint32_t top, rows;
+};
+
+/* the image is let go once the frames that may use it have passed */
+struct vk_command_texture_free
+{
+	struct vk_command_header header;
+	uint32_t id;
+};
 
 #endif

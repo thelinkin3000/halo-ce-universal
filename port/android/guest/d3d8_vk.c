@@ -30,6 +30,7 @@ host's Vulkan backend (port/android/host/host_vk.c).
 #include "port_config.h"
 #include "vk_commands.h"
 #include "vk_shaders.h"
+#include "vk_device.h"
 #include "hud_hires.h"
 
 #include <math.h>
@@ -371,8 +372,8 @@ static void stream_flush(void)
 	stream_used = 0;
 }
 
-/* room for a command of size bytes, its header filled in */
-static void *stream_command(uint32_t type, unsigned long size)
+/* room for a command of size bytes, its header filled in (vk_device.h) */
+void *vk_stream_command(uint32_t type, unsigned long size)
 {
 	struct vk_command_header *header;
 
@@ -385,6 +386,8 @@ static void *stream_command(uint32_t type, unsigned long size)
 	stream_used += size;
 	return header;
 }
+
+#define stream_command vk_stream_command
 
 /* The data a draw reads is copied here, into the stream, when the draw is made, and
 nowhere later: the game rewrites its buffers between draws of a frame. Returns the
@@ -2293,6 +2296,88 @@ static WORD *loop_indices(const WORD *indices, unsigned long count, unsigned lon
 	return result;
 }
 
+/* ---------- textures: bind_textures in d3d8_gl.c */
+
+static unsigned long stage_texture_mode_of(int stage)
+{
+	return stage_texture_mode(stage);
+}
+
+/* the Vulkan address mode for a Direct3D one (address_mode in d3d8_gl.c) */
+static uint32_t address_mode(DWORD mode)
+{
+	switch (mode)
+	{
+	case D3DTADDRESS_MIRROR: return 1; /* mirrored repeat */
+	case D3DTADDRESS_CLAMP:
+	case D3DTADDRESS_CLAMPTOEDGE: return 2; /* clamp to edge */
+	case D3DTADDRESS_BORDER: return 3; /* clamp to border */
+	default: return 0; /* repeat */
+	}
+}
+
+/* configure_sampler in d3d8_gl.c, as a state the host keeps a VkSampler for. hires: a high-res HUD texture (hud_hires.h),
+drawn smaller than it is, so filtered and from its mip levels whatever the game asks */
+static void sampler_state_make(int stage, BOOL mipmapped, BOOL hires, struct vk_sampler_state *out)
+{
+	DWORD *state = D3D__TextureState[stage];
+	DWORD min_filter = hires ? D3DTEXF_LINEAR : state[D3DTSS_MINFILTER];
+	DWORD mip_filter = hires ? D3DTEXF_LINEAR : mipmapped ? state[D3DTSS_MIPFILTER] : D3DTEXF_NONE;
+	DWORD mag_filter = hires ? D3DTEXF_LINEAR : state[D3DTSS_MAGFILTER];
+	DWORD maximum_mip_level = hires ? 0 : state[D3DTSS_MAXMIPLEVEL];
+	DWORD lod_bias = hires ? 0 : state[D3DTSS_MIPMAPLODBIAS];
+
+	memset(out, 0, sizeof(*out));
+	out->min_filter = min_filter == D3DTEXF_POINT ? 0 : 1;
+	out->mag_filter = mag_filter == D3DTEXF_POINT ? 0 : 1;
+	out->mip_mode = mip_filter == D3DTEXF_NONE ? 0 : mip_filter == D3DTEXF_POINT ? 1 : 2;
+	out->address[0] = address_mode(state[D3DTSS_ADDRESSU]);
+	out->address[1] = address_mode(state[D3DTSS_ADDRESSV]);
+	out->address[2] = address_mode(state[D3DTSS_ADDRESSW]);
+	out->border_color = state[D3DTSS_BORDERCOLOR];
+	/* Vulkan's sampler has the LOD bias (phase 4 took it out of the shaders) and the lowest level used */
+	out->lod_bias = dword_to_float(lod_bias);
+	out->min_lod = (float)maximum_mip_level;
+	out->anisotropy = (min_filter == D3DTEXF_ANISOTROPIC && state[D3DTSS_MAXANISOTROPY] > 1) ?
+		(float)state[D3DTSS_MAXANISOTROPY] : 1.0f;
+}
+
+/* what each stage samples, and the scale a linear texture's coordinates get */
+static void textures_make(struct vk_command_draw *draw, const struct nv2a_pixel_shader_key *key, float texture_scale[4][4])
+{
+	int stage;
+
+	for (stage = 0; stage < D3DTSS_MAXSTAGES; stage++)
+	{
+		D3DBaseTexture *texture = device.textures[stage];
+		unsigned long mode = stage_texture_mode_of(stage);
+		struct vk_draw_texture *out = &draw->textures[stage];
+
+		texture_scale[stage][0] = texture_scale[stage][1] = texture_scale[stage][2] = texture_scale[stage][3] = 1.0f;
+		out->sampler_type = key->sampler_type[stage];
+		if (!texture || !texture->Data || mode == 0 || mode == 0x04 || mode == 0x05 || mode == 0x11)
+			continue;
+		{
+			struct xgpu_texture_description description;
+			const D3DCOLOR *palette = device.palettes[stage] && device.palettes[stage]->Data ?
+				(const D3DCOLOR *)PLATFORM_PHYSICAL_TO_VIRTUAL(device.palettes[stage]->Data) : NULL;
+			int kind;
+			uint32_t id = vk_texture_get((const DWORD *)texture, palette, &kind, &description);
+
+			if (!id)
+				continue;
+			if (description.linear)
+			{
+				texture_scale[stage][0] = 1.0f / (float)description.width;
+				texture_scale[stage][1] = 1.0f / (float)description.height;
+			}
+			out->kind = VK_TEXTURE_IMAGE;
+			out->id = id;
+			sampler_state_make(stage, description.levels > 1, description.hires, &out->sampler);
+		}
+	}
+}
+
 /* a draw: prepare_draw and the draw calls of d3d8_gl.c, as one VK_COMMAND_DRAW. index_data is the game's indices (NULL for
 a draw of consecutive vertices from start); immediate is End's draw of the vertices of Begin. */
 static void draw_make(D3DPRIMITIVETYPE type, unsigned long count, BOOL immediate, const WORD *index_data, unsigned long start)
@@ -2324,17 +2409,8 @@ static void draw_make(D3DPRIMITIVETYPE type, unsigned long count, BOOL immediate
 		stats.skipped_shader++;
 		return;
 	}
-	/* (textures come with phase 6's second step: a draw that samples one is not made yet) */
-	for (stage = 0; stage < D3DTSS_MAXSTAGES; stage++)
-	{
-		texture_scale[stage][0] = texture_scale[stage][1] = texture_scale[stage][2] = texture_scale[stage][3] = 1.0f;
-		if (key.sampler_type[stage] != _xgpu_sampler_none)
-		{
-			stats.skipped_texture++;
-			return;
-		}
-	}
 	memset(&record, 0, sizeof(record));
+	textures_make(&record, &key, texture_scale);
 	record.vertex_shader = vertex;
 	record.pixel_shader = pixel;
 	raster_state_make(&record, targets_told.color.kind != VK_SURFACE_NONE, has_depth);
@@ -2590,6 +2666,7 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 		targets_known = FALSE;
 		data_id = 0;
 		puts_reset();
+		vk_texture_cache_begin_frame();
 		stats.presents++;
 		if (!statistics_read)
 		{
