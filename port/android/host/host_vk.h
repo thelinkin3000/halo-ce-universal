@@ -78,7 +78,7 @@ as a Vulkan function */
 	X(vkCreateGraphicsPipelines) X(vkDestroyPipeline) X(vkCreatePipelineLayout) X(vkDestroyPipelineLayout) \
 	X(vkCreateSwapchainKHR) X(vkDestroySwapchainKHR) X(vkGetSwapchainImagesKHR) X(vkAcquireNextImageKHR) \
 	X(vkCreateBuffer) X(vkDestroyBuffer) X(vkGetBufferMemoryRequirements) X(vkBindBufferMemory) X(vkMapMemory) \
-	X(vkUnmapMemory) X(vkCmdCopyImageToBuffer)
+	X(vkUnmapMemory) X(vkCmdCopyImageToBuffer) X(vkCmdBindVertexBuffers)
 
 #define X(name) extern PFN_##name name __attribute__((visibility("hidden")));
 HOST_VK_DEVICE_FUNCTIONS(X)
@@ -110,6 +110,8 @@ struct host_vk_frame
 	VkFence fence;
 	VkSemaphore acquired;
 	int recording; /* the command buffer is open */
+	int ring_valid; /* its upload ring has been reset for this use of the frame (host_vk_data.c) */
+	struct host_vk_ring *ring;
 	int submitted; /* the fence is (to be) signalled by submission number */
 	uint64_t number;
 };
@@ -167,6 +169,7 @@ struct host_vk_backend
 	{
 		unsigned frames, hand_overs, targets, clears, presents, clears_drawn, clears_attachments, target_changes;
 		unsigned recreations;
+		unsigned data_records, data_bytes;
 	} counts;
 };
 
@@ -185,6 +188,22 @@ void host_vk_rendering_end(void);
 struct host_vk_target *host_vk_target_get(const struct vk_surface *surface);
 /* the current frame's command buffer, open for recording */
 VkCommandBuffer host_vk_frame_command(void);
+
+/* a memory type allowed by bits with the properties wanted, else the first allowed; UINT32_MAX if none */
+uint32_t host_vk_memory_type(uint32_t bits, VkMemoryPropertyFlags preferred);
+/* the upload rings and the frame's data table (host_vk_data.c): the guest's DATA records land here */
+/* a DATA record (size bytes): placed in the frame's ring. 0 if it is bad (said once): the rest of the
+hand-over is dropped */
+int host_vk_data_command(const struct vk_command_data *command, uint32_t size);
+/* a command's data: the buffer and the offset in it of size bytes at offset in the data of id; 0 (said once)
+if the id or the range is not known */
+int host_vk_data_find(uint32_t id, uint32_t offset, uint32_t size, VkBuffer *buffer, VkDeviceSize *buffer_offset);
+/* the frame's data is let go (PRESENT): its ring is reset when the frame is used again */
+void host_vk_data_frame_end(void);
+/* ring buffers alive, in all frames */
+unsigned host_vk_data_buffers(void);
+/* a buffer of host-visible, coherent memory, mapped; 0 (said) if it cannot be made */
+int host_vk_buffer_make(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer *buffer, VkDeviceMemory *memory, void **mapped);
 
 /* host_vk_present.c */
 /* the surface and swapchain for the window as it is now; 0 if there is no window to make one on */

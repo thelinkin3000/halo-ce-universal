@@ -123,7 +123,8 @@ These settings are only for Android:
 | `display.vk_driver` | The Vulkan driver of the Vulkan probe and of the Vulkan renderer. Empty (the default): the phone's own. Otherwise the name of a driver archive left in the game's data folder (see "Find problems"). |
 | `debug.vk_probe` | Refer to "Find problems". |
 | `debug.vk_validation` | Refer to "Find problems". |
-| `debug.vk_present_marker` | Under the Vulkan renderer, draws a red square at the top left and a green one at the top right of the picture, so that a screenshot shows which way up it is, and at start-up tries the renderer's clears on a small target of its own (the log says `clears self-test: ok`). Default `false`. |
+| `debug.vk_present_marker` | Under the Vulkan renderer, draws a red square at the top left and a green one at the top right of the picture, so that a screenshot shows which way up it is. Default `false`. |
+| `debug.vk_self_test` | Under the Vulkan renderer, at start-up tries the renderer's clears and the copying of a draw's data (rewritten buffers, data larger than the command stream) on small targets of its own; the log says `clears self-test: ok` and `data self-test: id N ok`, or `FAILED`. Default `false`. |
 
 ## Internet play
 
