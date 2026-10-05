@@ -31,6 +31,9 @@ extern char **__environ;
 
 /* where the host put the Xbox memory window (port/linux/src/platform.h) */
 extern unsigned long platform_contiguous_base;
+/* how far the host moved this image from where it was linked
+(halo_port_window.h) */
+unsigned long platform_image_shift;
 
 __attribute__((section("__TEXT,__guest_header"), used))
 const struct halo_guest_header __guest_header =
@@ -60,6 +63,7 @@ void __guest_start(const struct halo_guest_boot *boot)
 	libc.auxv = (size_t *)"\0\0\0\0\0\0\0";
 	__environ = (char **)boot->environment;
 	platform_contiguous_base = boot->contiguous_base;
+	platform_image_shift = boot->image_shift;
 	__guest_thread_initialize_main();
 
 	for (constructor = __guest_init_start; constructor < __guest_init_end; constructor++)
