@@ -351,7 +351,7 @@ host reads them during the call and nothing later. */
 
 void host_vk_submit(unsigned int commands, unsigned int size);
 
-#define STREAM_SIZE (1024 * 1024)
+#define STREAM_SIZE (4 * 1024 * 1024)
 
 static uint32_t stream[STREAM_SIZE / 4];
 static unsigned long stream_used;
@@ -376,6 +376,54 @@ static void *stream_command(uint32_t type, unsigned long size)
 	header->size = (uint32_t)size;
 	stream_used += size;
 	return header;
+}
+
+/* The data a draw reads is copied here, into the stream, when the draw is made, and
+nowhere later: the game rewrites its buffers between draws of a frame. Returns the
+frame's running number of the data (from 1; reset at Present), which commands name,
+with an offset, to read it. Data that does not fit in what is left of the stream is
+split into parts, across hand-overs: the host places them contiguously. */
+static uint32_t data_id;
+
+/* what is left in the stream for the payload of a data record, a multiple of 4 */
+static unsigned long data_room(void)
+{
+	unsigned long left = STREAM_SIZE - stream_used;
+
+	return left > sizeof(struct vk_command_data) ? (left - sizeof(struct vk_command_data)) & ~3UL : 0;
+}
+
+uint32_t vk_data_put(const void *bytes, unsigned long size)
+{
+	const unsigned char *at = bytes;
+	unsigned long done = 0;
+	uint32_t id = ++data_id;
+
+	do
+	{
+		unsigned long part = size - done, room = data_room();
+		struct vk_command_data *command;
+
+		/* a part of a few bytes is not worth a record at the end of the stream */
+		if (room < 64 && room < part)
+		{
+			stream_flush();
+			room = data_room();
+		}
+		if (part > room)
+			part = room;
+		command = stream_command(VK_COMMAND_DATA, sizeof(*command) + part);
+		command->id = id;
+		command->part_offset = (uint32_t)done;
+		command->total_size = (uint32_t)size;
+		command->part_size = (uint32_t)part;
+		if (part)
+			memcpy(command->payload, at + done, part);
+		if (part & 3)
+			memset((unsigned char *)command->payload + part, 0, 4 - (part & 3));
+		done += part;
+	} while (done < size);
+	return id;
 }
 
 /* the pixels per unit of the bound targets: what the screen's targets are drawn at,
@@ -475,6 +523,72 @@ struct xgpu_render_target *xgpu_render_target_find(unsigned long data)
 calls, which under Vulkan have no context and do nothing */
 void xgpu_gl_state_invalidate(void)
 {
+}
+
+/* ---------- debug.vk_self_test: the data a draw reads is copied at the draw (phase 3)
+
+A buffer of three vertices in the game's memory, a red triangle that covers the target,
+is put; the same buffer is rewritten in place (green) and put again; a third, larger
+than the stream, blue, with its vertices across the boundary of its first part, is put
+in parts. Only then does the host draw each: red, green and blue say that the copies
+were made at the puts, and not at the hand-over, and that parts land contiguously.
+The host says what it saw in its log. */
+
+static void test_vertices(struct vk_test_vertex *vertices, float red, float green, float blue)
+{
+	static const float corners[3][2] = { { -1.0f, -1.0f }, { 3.0f, -1.0f }, { -1.0f, 3.0f } };
+	int index;
+
+	for (index = 0; index < 3; index++)
+	{
+		vertices[index].position[0] = corners[index][0];
+		vertices[index].position[1] = corners[index][1];
+		vertices[index].position[2] = 0.5f;
+		vertices[index].color[0] = red;
+		vertices[index].color[1] = green;
+		vertices[index].color[2] = blue;
+		vertices[index].color[3] = 1.0f;
+	}
+}
+
+static void test_draw(uint32_t id, uint32_t offset, uint32_t red, uint32_t green, uint32_t blue, uint32_t last)
+{
+	struct vk_command_test_draw *command = stream_command(VK_COMMAND_TEST_DRAW, sizeof(*command));
+
+	command->data.id = id;
+	command->data.offset = offset;
+	command->expected[0] = red;
+	command->expected[1] = green;
+	command->expected[2] = blue;
+	command->last = last;
+}
+
+static void data_self_test(void)
+{
+	struct vk_test_vertex vertices[3];
+	const unsigned long total = STREAM_SIZE + 4096;
+	unsigned char *large = malloc(total);
+	uint32_t red, green, blue, offset;
+
+	if (!large)
+		return;
+	test_vertices(vertices, 1.0f, 0.0f, 0.0f);
+	red = vk_data_put(vertices, sizeof(vertices));
+	test_vertices(vertices, 0.0f, 1.0f, 0.0f);
+	green = vk_data_put(vertices, sizeof(vertices));
+	/* the first part ends where the stream does: the vertices start 40 bytes before that, and end in the second */
+	if (data_room() < 64)
+		stream_flush();
+	offset = (uint32_t)data_room() - 40;
+	memset(large, 0xa5, total);
+	test_vertices((struct vk_test_vertex *)(large + offset), 0.0f, 0.0f, 1.0f);
+	blue = vk_data_put(large, total);
+	free(large);
+	test_draw(red, 0, 255, 0, 0, 0);
+	test_draw(green, 0, 0, 255, 0, 0);
+	test_draw(blue, offset, 0, 0, 255, 1);
+	stream_flush();
+	data_id = 0;
 }
 
 /* ---------- device creation */
@@ -622,6 +736,8 @@ HRESULT WINAPI Direct3D_CreateDevice(UINT adapter, D3DDEVTYPE device_type, void 
 		else
 			platform_log("Direct3D: running without a window (nothing is displayed)");
 		device.created = TRUE;
+		if (device.video_ready && config_boolean("debug.vk_self_test"))
+			data_self_test();
 	}
 	*returned_device = device_pointer();
 	return S_OK;
@@ -1299,8 +1415,9 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 
 		surface_describe(&device.back_buffer, FALSE, &command->back_buffer, scale);
 		stream_flush();
-		/* the host starts the next frame with nothing bound */
+		/* the host starts the next frame with nothing bound, and with no data */
 		targets_known = FALSE;
+		data_id = 0;
 	}
 	/* the stand-in window's swap: holds the frame to the display's rate until the
 	host's swapchain presents (host_vk_presenting), after which it does */
