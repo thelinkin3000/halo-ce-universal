@@ -40,6 +40,7 @@ the phone's driver beside the chosen one.
 #include "tomlc17.h"
 
 #include <SDL3/SDL.h>
+#include <dirent.h>
 #include <dlfcn.h>
 #include <link.h>
 #include <errno.h>
@@ -345,6 +346,8 @@ static char *version_text(uint32_t version)
 static int expecting_errors;
 static int validation_messages;
 static int validation_errors;
+/* warnings and errors: what a module that the layer minds adds to */
+static int validation_complaints;
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
 	VkDebugUtilsMessageTypeFlagsEXT types, const VkDebugUtilsMessengerCallbackDataEXT *data, void *user)
@@ -357,6 +360,8 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverity
 	validation_messages++;
 	if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
 		validation_errors++;
+	if (severity & (VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT))
+		validation_complaints++;
 	rep("validation.message: [%s%s%s] %s: %s", level, expecting_errors ? ", from a negative test" : "",
 		types & VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT ? ", performance" : "",
 		data->pMessageIdName ? data->pMessageIdName : "-", data->pMessage ? data->pMessage : "");
@@ -382,6 +387,26 @@ static int config_validation(void)
 	}
 	toml_free(result);
 	return value;
+}
+
+/* a string setting of config.toml, "" if it is not there (the probe reads its settings itself) */
+static void config_string_setting(const char *key, char *out, size_t size)
+{
+	char path[640];
+	toml_result_t result;
+
+	out[0] = 0;
+	snprintf(path, sizeof(path), "%s/config.toml", P.data_root);
+	result = toml_parse_file_ex(path);
+	if (!result.ok)
+		return;
+	{
+		toml_datum_t datum = toml_seek(result.toptab, key);
+
+		if (datum.type == TOML_STRING)
+			snprintf(out, size, "%s", datum.u.s);
+	}
+	toml_free(result);
 }
 
 /* ---------- instance, surface, device */
@@ -5593,6 +5618,174 @@ cleanup:
 }
 
 
+/* ---------- step 7: the game's shaders (shaders), phase 4 of port/android/VULKAN.md
+
+Every .vert and .frag (not the .gl.* twins) in the folder debug.gpu_dump_shaders names, which the Vulkan image's
+generators wrote while the game met them, is compiled with glslang and made a shader module. With the validation
+layer on, which checks each module's SPIR-V, a warning or an error while a module is made is a failure. The report
+says how many, the time of each stage, and the slowest ten of each kind. */
+
+struct shader_time
+{
+	char name[96];
+	double compile, module;
+};
+
+static void shader_slowest(const char *what, struct shader_time *times, int count, int by_module)
+{
+	int rank, index;
+
+	for (rank = 0; rank < 10 && rank < count; rank++)
+	{
+		int best = -1;
+
+		for (index = 0; index < count; index++)
+		{
+			double value = by_module ? times[index].module : times[index].compile;
+
+			if (value < 0)
+				continue;
+			if (best < 0 || value > (by_module ? times[best].module : times[best].compile))
+				best = index;
+		}
+		if (best < 0)
+			break;
+		rep("shaders.slowest.%s.%d: %s %.3f ms", what, rank + 1, times[best].name,
+			by_module ? times[best].module : times[best].compile);
+		if (by_module)
+			times[best].module = -1;
+		else
+			times[best].compile = -1;
+	}
+}
+
+static void step_shaders(void)
+{
+	char folder[512];
+	DIR *directory;
+	struct dirent *entry;
+	struct shader_time *times[2] = { NULL, NULL };
+	int count[2] = { 0, 0 }, capacity[2] = { 0, 0 }, failed[2] = { 0, 0 }, complained[2] = { 0, 0 };
+	double compile_total[2] = { 0, 0 }, module_total[2] = { 0, 0 };
+	int stage_index, reported = 0;
+	uint64_t start = now_ns();
+
+	rep("step.shaders: start");
+	config_string_setting("debug.gpu_dump_shaders", folder, sizeof(folder));
+	if (!folder[0])
+	{
+		rep("step.shaders: skipped (debug.gpu_dump_shaders names no folder)");
+		return;
+	}
+	if (!glslang_load())
+	{
+		rep("step.shaders: failed (glslang did not load)");
+		return;
+	}
+	directory = opendir(folder);
+	if (!directory)
+	{
+		rep("step.shaders: failed (cannot open %s: %s)", folder, strerror(errno));
+		return;
+	}
+	rep("shaders.folder: %s", folder);
+	rep("shaders.validation_layer: %s", P.validation ? "on (it validates each module's SPIR-V)" : "off (modules are made, not validated)");
+	while ((entry = readdir(directory)) != NULL)
+	{
+		const char *name = entry->d_name;
+		size_t length = strlen(name);
+		int fragment, complaints_before, file_failed = 0;
+		char path[1024];
+		char *text;
+		FILE *file;
+		long size;
+		struct spirv code;
+		uint64_t wall = 0, module_start;
+		VkShaderModule module;
+		struct shader_time *time;
+
+		if (length < 6 || strstr(name, ".gl.") || (strcmp(name + length - 5, ".vert") && strcmp(name + length - 5, ".frag")))
+			continue;
+		fragment = name[length - 1] == 'g';
+		snprintf(path, sizeof(path), "%s/%s", folder, name);
+		file = fopen(path, "rb");
+		if (!file)
+			continue;
+		fseek(file, 0, SEEK_END);
+		size = ftell(file);
+		fseek(file, 0, SEEK_SET);
+		text = malloc((size_t)size + 1);
+		if (!text || fread(text, 1, (size_t)size, file) != (size_t)size)
+		{
+			fclose(file);
+			free(text);
+			continue;
+		}
+		text[size] = 0;
+		fclose(file);
+		if (count[fragment] == capacity[fragment])
+		{
+			capacity[fragment] = capacity[fragment] ? capacity[fragment] * 2 : 256;
+			times[fragment] = realloc(times[fragment], sizeof(*times[fragment]) * (size_t)capacity[fragment]);
+		}
+		time = &times[fragment][count[fragment]++];
+		snprintf(time->name, sizeof(time->name), "%s", name);
+		time->compile = time->module = 0;
+		if (!glslang_compile(text, fragment ? GLSLANG_STAGE_FRAGMENT : GLSLANG_STAGE_VERTEX, &code, &wall, NULL, 1))
+		{
+			/* said again, loudly, for the log */
+			failed[fragment]++;
+			rep("shaders.FAILED.%s: glslang did not compile it", name);
+			glslang_compile(text, fragment ? GLSLANG_STAGE_FRAGMENT : GLSLANG_STAGE_VERTEX, &code, &wall, NULL, 0);
+			free(text);
+			continue;
+		}
+		free(text);
+		time->compile = (double)wall / 1e6;
+		compile_total[fragment] += time->compile;
+		complaints_before = validation_complaints;
+		module_start = now_ns();
+		module = make_shader_module(&code);
+		time->module = (double)(now_ns() - module_start) / 1e6;
+		module_total[fragment] += time->module;
+		if (module == VK_NULL_HANDLE)
+		{
+			file_failed = 1;
+			rep("shaders.FAILED.%s: vkCreateShaderModule failed", name);
+		}
+		else
+		{
+			vkDestroyShaderModule(P.device, module, NULL);
+		}
+		if (validation_complaints != complaints_before)
+		{
+			complained[fragment]++;
+			file_failed = 1;
+			rep("shaders.FAILED.%s: the validation layer complained while the module was made (see validation.message above)", name);
+		}
+		failed[fragment] += file_failed;
+		free(code.words);
+		reported++;
+	}
+	closedir(directory);
+	for (stage_index = 0; stage_index < 2; stage_index++)
+	{
+		const char *what = stage_index ? "fragment" : "vertex";
+		int n = count[stage_index];
+
+		rep("shaders.%s.count: %d compiled and made without a complaint, %d failed (%d of them with a validation complaint)", what, n - failed[stage_index], failed[stage_index], complained[stage_index]);
+		if (!n)
+			continue;
+		rep("shaders.%s.glslang_total: %.1f ms, average %.3f ms", what, compile_total[stage_index], compile_total[stage_index] / n);
+		rep("shaders.%s.vkCreateShaderModule_total: %.1f ms, average %.3f ms", what, module_total[stage_index], module_total[stage_index] / n);
+		shader_slowest(what, times[stage_index], n, 0);
+		shader_slowest(what, times[stage_index], n, 1);
+		free(times[stage_index]);
+	}
+	rep("shaders.wall: %.1f s for %d shaders", (double)(now_ns() - start) / 1e9, reported);
+	rep("step.shaders: done");
+}
+
 /* ---------- running it */
 
 static const struct { const char *name; void (*run)(void); } step_table[] = {
@@ -5602,6 +5795,7 @@ static const struct { const char *name; void (*run)(void); } step_table[] = {
 	{ "pipelines", step_pipelines },
 	{ "draw", step_draw },
 	{ "present", step_present },
+	{ "shaders", step_shaders },
 };
 #define STEP_COUNT ((int)(sizeof(step_table) / sizeof(step_table[0])))
 
