@@ -24,7 +24,7 @@ the phone's driver; the results are in "Progress". Not tried: a second GPU
 family (a Mali). **Phase 1 is done on the test device and committed** (the
 Vulkan image, the host's choice and its decision, the stand-ins: the game
 runs under `display.renderer = "vulkan"` on the phone's driver and on
-Turnip, with a black screen as the phase says). **Phase 2 is done on the test device and committed** (the command stream, the device, the swapchain, the targets, clears and present: the game's clears are on the screen through Vulkan on both drivers). **Phase 3 is done on the test device and committed** (data records, the 4 MB stream, the upload rings and the data table; the data self-test is `ok` on both drivers). **Phase 4 is done on the test device and committed** (the GLSL generators for glslang, the pixel shader key, the dump, the PC check and the probe's `shaders` step: all 308 shaders of the corpus compile, validate and compare clean on both drivers and on the PC). **Phase 5 is written out and next.** The
+Turnip, with a black screen as the phase says). **Phase 2 is done on the test device and committed** (the command stream, the device, the swapchain, the targets, clears and present: the game's clears are on the screen through Vulkan on both drivers). **Phase 3 is done on the test device and committed** (data records, the 4 MB stream, the upload rings and the data table; the data self-test is `ok` on both drivers). **Phase 4 is done on the test device and committed** (the GLSL generators for glslang, the pixel shader key, the dump, the PC check and the probe's `shaders` step: all 308 shaders of the corpus compile, validate and compare clean on both drivers and on the PC). **Phase 5 is done on the test device and committed** (glslang in the backend, the shader and pipeline services with their compile thread and the per-driver pipeline cache, tried cold and warm on both drivers). **Phase 6 is next.** The
 work is on the `vulkan-backend` branch, which starts again from `main`. An
 earlier attempt, kept on the `vulkan-backend-old` branch, is not the base of
 this work and nothing here builds on it; see "Lessons from the earlier
@@ -2031,6 +2031,65 @@ stages 1 to 3 (none met in the menus and the opening). The generators are
 line-for-line copies there too, but nothing has compiled those paths yet:
 run the dump and `tools/vk_shader_check.py` again on a corpus from play once
 the game draws.
+
+### Phase 5 — summary
+
+Worked unattended on the test device (Adreno 750, validation layer on in every run) as the `.vk` build. **Phase 5 works on both
+drivers**: the guest asks for each draw's shaders by hash, the host compiles what it lacks on a thread of its own and keeps the SPIR-V
+on the device, a pipeline (with the placeholder state) is made for each pair, and a `VkPipelineCache` per driver is kept and saved.
+
+| | Phone's driver (Qualcomm 512.762.40) | Turnip v26.0.0 R8 |
+|---|---|---|
+| Cold start (`vk_cache/` removed), menus and a new game's opening | 143 shaders compiled (glslang 2.5 to 3.4 ms, `vkCreateShaderModule` 0.7 to 1.4 ms each), 108 to 109 pipelines made (first batch 9 pipelines at 11.0 ms each, later ones 0.3 to 8 ms), 0 failed; the first 60-frame window had 1495 draws that would be skipped for a shader and 1357 for a pipeline, the next window 0; a new screen's window had 22 and 13, the next 0 | the same numbers (first batch 16 shaders at 2.8 ms glslang, 9 pipelines at 9.0 ms), 143 compiled, 109 pipelines, 0 failed |
+| Second start | `shader cache ...: 143 shaders on the device`, `pipeline cache ...: loaded from the device`; 143 from the cache, 0 compiled, 0 failed; pipelines **0.42 ms** each on average in the first batch (cold: 11.0 ms) and 0.37 ms later | 143 from the cache, 1 compiled (a menu screen the first run had not met), pipelines **0.17 ms** (cold: 9.0 ms) |
+| The files | `pipelines/ae4a9208435100000000011405430000-8-802fa028.bin`, 568 KB after the menus and the opening; 144 `.spv` files in `spirv/16.6.0-1/` | `pipelines/980bbf894907979323fe10eda42c11f3-18-06463063.bin`, 895 KB; the same `.spv` files |
+| Both in turn (Turnip's cache present, then the phone's started, then Turnip again, no removal in between) | each loads its own file (`loaded from the device`; the phone's, started `new` when only Turnip's existed), both files are kept, the SPIR-V files are shared | |
+| Broken files (Turnip) | three `.spv` truncated to 100 bytes: `the cached shader ... is damaged (100 bytes); deleted, to be compiled again` x3, then 3 compiled; the pipeline cache truncated to 400000 bytes: `is damaged (400000 bytes); deleted, a new one is started`, then a new file saved (895 KB) | |
+| A cache file that passes the file's own checks but is junk to the driver (phone, 4 KB of random bytes) | the driver accepts it and ignores it (the spec allows it; the log says `loaded`, the next save replaces it) | |
+| The save | `pipeline cache saved (the app went to the background): N bytes` the moment HOME is pressed (see deviation 5); also `(the surface was lost)` on return and `(five minutes)` after five minutes of a run (568 KB) | the same |
+| Frames, validation | 1650 frames per 10 s in every run (as phase 3, the compile thread does not show); validation errors 0, no `[error]` line, the layer's two cache-file notes only | the same |
+| Shader service self-test (`debug.vk_self_test`) | `a vertex shader that compiles ok (handle 1, ...)`, `a pixel shader that compiles ok`, `a pixel shader that does not ok (handle 0, status 3 ...)`: glslang's message logged once (`'this' : Reserved word`) and the GLSL in `vk_cache/failed/f5e1f7e57deadbef1.frag`; the clears and data self-tests as before | |
+
+The 64-bit hash crosses the import boundary intact: the guest logs `hash aa684cffee1030c6` and the host `hash aa684cffee1030c6` for the
+first find. `renderer = "gl"` runs unchanged (`renderer: GL ES`, no `vk:` line). The phase 4 probe step `shaders` still passes with the
+renamed library (90 vertex, 218 pixel shaders, `validation.summary: 2 messages, 0 errors`).
+
+**Found on the way**: the first placeholder gave every attribute `R32G32B32A32_SFLOAT`; the layer rejected the pipelines of the
+programs with a packed attribute (`in uint` in the shader: VUID-VkGraphicsPipelineCreateInfo-Input-08733). A packed attribute's format
+is now `R32_UINT` (the placeholder takes the mask); phase 6 must do the same from the declaration.
+
+**What is left for the user**: a second GPU family is not tried; a shader that fails to compile was only met by the self-test
+(none in the game's corpus); the cache is saved at the background, at the surface's loss, every five minutes and at the game's own exit
+(`host_exit`), but a process killed from the task switcher while it is in front is lost since the last of those (the first
+four-or-five minutes' pipelines); the pipeline cache grows with the placeholder pairs and phase 6's states make many more, which a
+size limit has not been put on.
+
+### Phase 5: deviations from the spec
+
+1. **`host_vk_shader_find`'s out parameter** is a guest address of a `uint32_t` (as deko3d's `state_out`), written during the call, with
+   the statuses of `vk_shaders.h` (unknown, queued, compiling, failed) and one more, `NOT_READY` (the backend's device is not made yet).
+2. **The imports make the device if it is not made yet** (`host_vk_backend_ensure`): the game's first draws come before its first
+   hand-over, which is where the device was made, and a shader asked for earlier would have been counted as unknown.
+3. **Pipelines are looked up by handles** as far as the guest is concerned (the command carries the handles), and by the two shaders'
+   hashes and the state's FNV-1a hash in the host's table, which is the identity the spec asks for.
+4. **One queue each for shaders and pipelines**, shaders first; a pipeline is only asked for with made handles, so none ever waits behind a
+   shader.
+5. **The pipeline cache is also saved from SDL's `WILL_ENTER_BACKGROUND` event** (an event watch, on the activity's thread): Android stops
+   the game thread when the app goes away, so the surface's loss is found only when it returns, and a process ended meanwhile would
+   have saved nothing. The surface's loss, five minutes and `host_exit` save as the spec says. Nothing is written when no pipeline
+   was made since the last save.
+6. **The pipeline cache file is wrapped** in a header of its own (magic, size, CRC) that is checked before the driver sees the data; the
+   driver's own check (`vkCreatePipelineCache` failing on it) is kept as the spec says, but the drivers here ignore bad data instead
+   of failing, which the spec allows.
+7. **The SPIR-V files** have the header the spec describes (magic, version, hash, size, CRC); a file that fails is deleted when it is
+   asked for (not at the start: the start only lists names).
+8. **The statistics**: the services' line is printed with one statistic line in ten (about every four seconds), the compile thread's every
+   five seconds when it worked.
+9. **The placeholder takes the packed mask** (found above), which the spec's placeholder (sixteen four-float attributes) does not say.
+10. **The self-test** of `debug.vk_self_test` gained the shader service's three cases.
+11. **The compile thread** is niced with `setpriority(PRIO_PROCESS, tid, 10)`.
+12. **An old `libglslang_probe.so`** in the build's staging folder is removed by `tools/android_build.py` so that it does not ride along in
+    the APK.
 
 ### Phase 4 — summary
 
