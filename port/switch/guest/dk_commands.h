@@ -38,6 +38,9 @@ enum
 	DK_COMMAND_TEXTURE_FREE,
 	DK_COMMAND_TEXTURES,
 	DK_COMMAND_TEXTURE_ROWS,
+	DK_COMMAND_COMPOSITE,
+	DK_COMMAND_VISIBILITY_BEGIN,
+	DK_COMMAND_VISIBILITY_END,
 };
 
 /* a surface's kind, as the host makes its image */
@@ -342,12 +345,46 @@ struct dk_sampler
 
 /* a stage samples image id, or (id 0) the color render target whose
 surface's data is target - the one drawn into last, if several sizes share
-the address - or nothing if both are 0 */
+the address - or, composite being its level count, the mip composite at
+target (DK_COMMAND_COMPOSITE), or nothing if id and target are 0 */
 struct dk_stage_texture
 {
 	uint32_t id;
 	uint32_t target;
+	uint32_t composite;
 	struct dk_sampler sampler;
+};
+
+/* a texture the game renders a level at a time, each level a surface of its
+own (the water's ripple map): the host samples it as one image with every
+level, copied from the levels' targets whenever one has been drawn into
+since, the levels the game did not draw made from the last one it did (as
+mip_composite_get in d3d8_gl.c). Sent before the first stage that samples
+it, and again if its levels' addresses change. */
+#define DK_COMPOSITE_LEVELS 12
+
+struct dk_command_composite
+{
+	struct dk_command_header header;
+	uint32_t data;
+	uint32_t width;
+	uint32_t height;
+	uint32_t levels;
+	uint32_t level_data[DK_COMPOSITE_LEVELS];
+};
+
+/* ---------- visibility tests (lens flares)
+
+The pixels the draws between a begin and an end pass go to result slot
+index (1 to DK_VISIBILITY_SLOTS - 1), which the GPU writes when it gets
+there; host_dk_visibility reads a slot's latest count. */
+
+#define DK_VISIBILITY_SLOTS 4096
+
+struct dk_command_visibility_end
+{
+	struct dk_command_header header;
+	uint32_t index;
 };
 
 /* the four texture stages' images and samplers, for the draws that follow */

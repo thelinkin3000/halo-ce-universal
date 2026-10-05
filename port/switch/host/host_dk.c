@@ -380,6 +380,7 @@ static pthread_mutex_t dk_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void textures_frame_begin(void);
 static void textures_initialize(void);
+static void visibility_initialize(void);
 
 /* waits for frame slot index's fence (under dk_lock), saying so in the log
 if the GPU takes more than two seconds: a stop with nothing said is what a
@@ -754,6 +755,7 @@ static int initialize(void)
 		host_logf(HOST_LOG_ERROR, "deko3d: no upload buffer; data outside the window will not draw");
 
 	textures_initialize();
+	visibility_initialize();
 	dk.uniform_memory = memory_block(UNIFORM_MEMORY_SIZE, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached, NULL);
 	if (dk.uniform_memory)
 		dk.uniform_gpu = dkMemBlockGetGpuAddr(dk.uniform_memory);
@@ -1064,7 +1066,11 @@ static struct
 
 	/* the stages' images and samplers as told, and as handles for the next draw */
 	uint32_t stage_target[4];
+	uint32_t stage_composite[4];
 	int targets_sampled;
+	/* a composite's copies read targets since the last barrier: the 2D
+	engine's reads end before a target is drawn into again */
+	int targets_copied;
 	uint32_t stage_id[4];
 	uint32_t stage_sampler[4];
 	int stages_dirty;
@@ -1640,6 +1646,7 @@ static void textures_receive(const struct dk_command_textures *command)
 	{
 		tex.stage_id[stage] = command->stages[stage].id;
 		tex.stage_target[stage] = command->stages[stage].target;
+		tex.stage_composite[stage] = command->stages[stage].composite;
 		tex.stage_sampler[stage] = sampler_slot(&command->stages[stage].sampler);
 	}
 	tex.stages_dirty = 1;
@@ -1650,7 +1657,12 @@ is drawn into only once the draws that sampled it are done, and a stage that
 samples a target looks again (textures_apply) */
 static void textures_targets_changing(void)
 {
-	if (tex.targets_sampled)
+	if (tex.targets_copied)
+	{
+		dkCmdBufBarrier(dk.commands, DkBarrier_Full, 0);
+		tex.targets_copied = tex.targets_sampled = 0;
+	}
+	else if (tex.targets_sampled)
 	{
 		dkCmdBufBarrier(dk.commands, DkBarrier_Fragments, 0);
 		tex.targets_sampled = 0;
@@ -1699,6 +1711,218 @@ static struct target *target_sampled(uint32_t data)
 	return best;
 }
 
+/* ---------- mip composites (DK_COMMAND_COMPOSITE) */
+
+#define COMPOSITE_LIMIT 32
+
+static struct composite
+{
+	struct dk_command_composite defined;
+	DkImage image;
+	uint32_t slot;
+	/* dk.target_clock when last copied, and how many levels came from targets */
+	uint32_t stamp;
+	uint32_t rendered_levels;
+	int copied;
+} composites[COMPOSITE_LIMIT];
+static int composite_count;
+
+static void composite_receive(const struct dk_command_composite *command)
+{
+	struct composite *composite = NULL;
+	DkImageLayoutMaker maker;
+	DkImageLayout layout;
+	DkImageView view;
+	DkMemBlock block;
+	uint32_t offset;
+	int index;
+
+	if (!dk.ready || !tex.image_descriptors || !command->width || !command->height || command->levels < 2 ||
+		command->levels > DK_COMPOSITE_LEVELS || command->width > TEXTURE_SIZE_LIMIT ||
+		command->height > TEXTURE_SIZE_LIMIT)
+		return;
+	for (index = 0; index < composite_count; index++)
+	{
+		struct dk_command_composite *defined = &composites[index].defined;
+
+		if (defined->data == command->data && defined->width == command->width &&
+			defined->height == command->height && defined->levels == command->levels)
+		{
+			/* (the levels' addresses, which may be new) */
+			memcpy(defined->level_data, command->level_data, sizeof(defined->level_data));
+			composites[index].copied = 0;
+			return;
+		}
+	}
+	if (composite_count == COMPOSITE_LIMIT)
+	{
+		texture_problem("more than %d mip composites; %08x is not made", COMPOSITE_LIMIT, (unsigned)command->data);
+		return;
+	}
+	dkImageLayoutMakerDefaults(&maker, dk.device);
+	maker.flags = DkImageFlags_Usage2DEngine;
+	maker.format = DkImageFormat_RGBA8_Unorm;
+	maker.dimensions[0] = command->width;
+	maker.dimensions[1] = command->height;
+	maker.mipLevels = command->levels;
+	dkImageLayoutInitialize(&layout, &maker);
+	if (!image_memory(&layout, &block, &offset))
+	{
+		texture_problem("no image memory for the %ux%u mip composite at %08x", (unsigned)command->width,
+			(unsigned)command->height, (unsigned)command->data);
+		return;
+	}
+	composite = &composites[composite_count];
+	memset(composite, 0, sizeof(*composite));
+	if (!slot_take(&composite->slot))
+		return;
+	composite->defined = *command;
+	dkImageInitialize(&composite->image, &layout, block, offset);
+	dkImageViewDefaults(&view, &composite->image);
+	dkImageDescriptorInitialize(&((DkImageDescriptor *)dkMemBlockGetCpuAddr(tex.image_descriptors))[composite->slot],
+		&view, false, false);
+	dkCmdBufBarrier(dk.commands, DkBarrier_None, DkInvalidateFlags_Descriptors);
+	dk.recorded = 1;
+	composite_count++;
+}
+
+/* the color target at data of exactly this size, the one bound last */
+static struct target *target_exact(uint32_t data, uint32_t width, uint32_t height)
+{
+	struct target *best = NULL;
+	int index;
+
+	for (index = 0; index < dk.target_count; index++)
+	{
+		struct target *target = &dk.targets[index];
+
+		if (target->surface.data == data && target->surface.kind == DK_SURFACE_COLOR &&
+			target->surface.width == width && target->surface.height == height && (!best || target->bound > best->bound))
+			best = target;
+	}
+	return best;
+}
+
+/* the composite a stage samples, its levels copied from their targets if one
+has been drawn into since the last copy; NULL if there is none, or no level
+has been drawn */
+static struct composite *composite_sampled(uint32_t data, uint32_t levels)
+{
+	struct composite *composite = NULL;
+	struct target *sources[DK_COMPOSITE_LEVELS];
+	uint32_t level, rendered = 0, newest = 0;
+	int index;
+
+	for (index = 0; index < composite_count; index++)
+	{
+		if (composites[index].defined.data == data && composites[index].defined.levels == levels)
+		{
+			composite = &composites[index];
+			break;
+		}
+	}
+	if (!composite)
+		return NULL;
+	/* the levels the game drew, from the top, up to the first it did not */
+	for (level = 0; level < levels; level++)
+	{
+		sources[level] = target_exact(composite->defined.level_data[level],
+			level_size(composite->defined.width, level), level_size(composite->defined.height, level));
+		if (!sources[level])
+			break;
+		if (sources[level]->bound > newest)
+			newest = sources[level]->bound;
+		rendered++;
+	}
+	if (!rendered)
+		return NULL;
+	if (composite->copied && composite->rendered_levels == rendered && newest <= composite->stamp)
+		return composite;
+	/* the targets' draws done, then each level copied (the 2D engine), the
+	ones not drawn halved from the one above, and the copies done before
+	the draws that sample them */
+	dkCmdBufBarrier(dk.commands, DkBarrier_Fragments, 0);
+	for (level = 0; level < levels; level++)
+	{
+		DkImageView source, destination;
+		DkImageRect from, to;
+
+		dkImageViewDefaults(&destination, &composite->image);
+		destination.mipLevelOffset = (uint8_t)level;
+		destination.mipLevelCount = 1;
+		to.x = to.y = to.z = 0;
+		to.width = level_size(composite->defined.width, level);
+		to.height = level_size(composite->defined.height, level);
+		to.depth = 1;
+		from = to;
+		if (level < rendered)
+		{
+			dkImageViewDefaults(&source, &sources[level]->image);
+			dkCmdBufBlitImage(dk.commands, &source, &from, &destination, &to, 0, 0);
+		}
+		else
+		{
+			dkCmdBufBarrier(dk.commands, DkBarrier_Full, 0);
+			dkImageViewDefaults(&source, &composite->image);
+			source.mipLevelOffset = (uint8_t)(level - 1);
+			source.mipLevelCount = 1;
+			from.width = level_size(composite->defined.width, level - 1);
+			from.height = level_size(composite->defined.height, level - 1);
+			dkCmdBufBlitImage(dk.commands, &source, &from, &destination, &to, DkBlitFlag_FilterLinear, 0);
+		}
+	}
+	dkCmdBufBarrier(dk.commands, DkBarrier_Full, DkInvalidateFlags_Image);
+	composite->copied = 1;
+	composite->rendered_levels = rendered;
+	composite->stamp = dk.target_clock;
+	tex.targets_copied = 1;
+	dk.recorded = 1;
+	return composite;
+}
+
+/* ---------- visibility tests (DK_COMMAND_VISIBILITY_*) */
+
+static DkMemBlock visibility_memory;
+
+static void visibility_initialize(void)
+{
+	visibility_memory = memory_block(DK_VISIBILITY_SLOTS * 16, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached,
+		NULL);
+	if (visibility_memory)
+		memset(dkMemBlockGetCpuAddr(visibility_memory), 0, DK_VISIBILITY_SLOTS * 16);
+}
+
+static void visibility_begin(void)
+{
+	if (!visibility_memory)
+		return;
+	dkCmdBufResetCounter(dk.commands, DkCounter_SamplesPassed);
+	dk.recorded = 1;
+}
+
+/* (a report is 16 bytes: the count, 64 bits, then a timestamp) */
+static void visibility_end(const struct dk_command_visibility_end *command)
+{
+	if (!visibility_memory || !command->index || command->index >= DK_VISIBILITY_SLOTS)
+		return;
+	dkCmdBufReportCounter(dk.commands, DkCounter_SamplesPassed,
+		dkMemBlockGetGpuAddr(visibility_memory) + (DkGpuAddr)command->index * 16);
+	dk.recorded = 1;
+}
+
+/* the latest count the GPU has written to a slot: from the slot's latest
+test, or while the GPU is behind, an earlier one (as d3d8_gl.c's query
+buffer). Any guest thread. */
+uint32_t host_dk_visibility(uint32_t index)
+{
+	uint64_t count;
+
+	if (!visibility_memory || !index || index >= DK_VISIBILITY_SLOTS)
+		return 0;
+	count = *(volatile uint64_t *)((char *)dkMemBlockGetCpuAddr(visibility_memory) + (size_t)index * 16);
+	return count > 0xffffffffu ? 0xffffffffu : (uint32_t)count;
+}
+
 /* the stages' textures bound for the next draw: the descriptor sets once a
 frame (frame_begin), the handles when they change */
 static int textures_apply(void)
@@ -1724,8 +1948,19 @@ static int textures_apply(void)
 	{
 		uint32_t id = tex.stage_id[stage];
 		const struct texture *texture = id && tex.table[id].present ? &tex.table[id] : &tex.dummy;
-		struct target *target = tex.stage_target[stage] ? target_sampled(tex.stage_target[stage]) : NULL;
+		struct target *target;
 
+		if (tex.stage_target[stage] && tex.stage_composite[stage])
+		{
+			struct composite *composite = composite_sampled(tex.stage_target[stage], tex.stage_composite[stage]);
+
+			if (composite)
+			{
+				handles[stage] = dkMakeTextureHandle(composite->slot, tex.stage_sampler[stage]);
+				continue;
+			}
+		}
+		target = tex.stage_target[stage] ? target_sampled(tex.stage_target[stage]) : NULL;
 		if (target)
 		{
 			handles[stage] = dkMakeTextureHandle(target->slot, tex.stage_sampler[stage]);
@@ -2291,6 +2526,15 @@ void host_dk_submit(uint32_t commands, uint32_t size)
 			break;
 		case DK_COMMAND_TEXTURE_ROWS:
 			texture_rows_receive((const struct dk_command_texture_rows *)header);
+			break;
+		case DK_COMMAND_COMPOSITE:
+			composite_receive((const struct dk_command_composite *)header);
+			break;
+		case DK_COMMAND_VISIBILITY_BEGIN:
+			visibility_begin();
+			break;
+		case DK_COMMAND_VISIBILITY_END:
+			visibility_end((const struct dk_command_visibility_end *)header);
 			break;
 		default:
 			host_logf(HOST_LOG_ERROR, "deko3d: unknown command %u", (unsigned)header->type);
