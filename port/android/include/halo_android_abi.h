@@ -28,7 +28,11 @@ This header is included by both halves.
 
 /* the guest image is linked to run here. The window is 256 MB-aligned and
 	128 MB long, so it can neither cover nor reach this address, and the host
-	reserves the range before the guest's own pools take any of it */
+	reserves the range before the guest's own pools take any of it. Where the
+	Java runtime already holds it, the Android host loads the image somewhere
+	free instead and moves its pointers (halo_guest.relocs, made by
+	tools/guest_relocations.py), and tells the guest how far
+	(halo_guest_boot.image_shift) */
 #define HALO_GUEST_IMAGE_BASE 0x40000000u
 #define HALO_GUEST_IMAGE_RESERVE 0x01000000u
 
@@ -70,7 +74,7 @@ works wherever it lands */
 #define HALO_GUEST_MAGIC 0x4f4c4148u /* 'HALO' */
 #define HALO_GUEST_ABI_VERSION 2
 
-/* at HALO_GUEST_IMAGE_BASE */
+/* at the image's start (HALO_GUEST_IMAGE_BASE, unless the host moved it) */
 struct halo_guest_header
 {
 	uint32_t magic;
@@ -95,6 +99,7 @@ struct halo_guest_boot
 	uint32_t environment;        /* char ** in guest memory, NULL-terminated */
 	uint32_t page_size;
 	uint32_t contiguous_base;     /* where the host put the Xbox window */
+	uint32_t image_shift;         /* where the host put the image, less HALO_GUEST_IMAGE_BASE */
 };
 
 #endif

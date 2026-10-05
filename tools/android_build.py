@@ -525,16 +525,23 @@ def generate_android_build(n: Writer, sln: Any) -> None:
     # ---------- the guest image
 
     linker_script = PORT_DIR / "guest" / "guest.ld"
+    # where the image's 32-bit pointers are, so the host can load it elsewhere
+    # when its address is taken (tools/guest_relocations.py): linked with its
+    # relocations, which the table is made from and the image then drops
+    relocations = BUILD / "halo_guest.relocs"
     n.rule(
         name="android_guest_link",
         command=(f"$android_ndk_bin/ld.lld -m aarch64linux -static -nostdlib -T {linker_script} "
-                 f"-Map $out.map -o $out @$out.rsp {libguestc} "
-                 "$$($android_host_cc -print-libgcc-file-name)"),
+                 f"--emit-relocs -Map $out.map -o $out.full @$out.rsp {libguestc} "
+                 "$$($android_host_cc -print-libgcc-file-name) && "
+                 f"{python} tools/guest_relocations.py $out.full {relocations} && "
+                 "$android_ndk_bin/llvm-objcopy --remove-section='.rela*' $out.full $out && rm -f $out.full"),
         description="ANDROID LINK $out",
         rspfile="$out.rsp",
         rspfile_content="$in_newline",
     )
-    n.build(outputs=image, rule="android_guest_link", inputs=objects, implicit=[libguestc, linker_script])
+    n.build(outputs=image, rule="android_guest_link", inputs=objects, implicit_outputs=[relocations],
+            implicit=[libguestc, linker_script, Path("tools/guest_relocations.py")])
 
     # ---------- SDL3
 
@@ -606,11 +613,14 @@ def generate_android_build(n: Writer, sln: Any) -> None:
     n.rule(name="android_copy", command="cp $in $out", description="ANDROID STAGE $out")
     n.build(outputs=staged_sdl, rule="android_copy", inputs=libsdl)
     n.build(outputs=staged_image, rule="android_copy", inputs=image)
+    staged_relocations = assets_dir / "halo_guest.relocs"
+    n.build(outputs=staged_relocations, rule="android_copy", inputs=relocations)
     # internet play's MQTT brokers, in the APK: the app writes them beside
     # config.toml (port/android/host/host_main.c)
     staged_brokers = assets_dir / "brokers.txt"
     n.build(outputs=staged_brokers, rule="android_copy", inputs=Path("port/assets/network/brokers.txt"))
-    n.build(outputs="android", rule="phony", inputs=[libmain, staged_sdl, staged_image, staged_brokers])
+    n.build(outputs="android", rule="phony", inputs=[libmain, staged_sdl, staged_image, staged_relocations,
+                                                     staged_brokers])
 
     apk = PORT_DIR / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk"
     sdl_android_mouse_listener = SDL_DIR / SDL_ANDROID_MOUSE_LISTENER
@@ -622,7 +632,8 @@ def generate_android_build(n: Writer, sln: Any) -> None:
         description="ANDROID GRADLE $out",
         pool="console",
     )
-    n.build(outputs=apk, rule="android_gradle", inputs=[libmain, staged_sdl, staged_image, staged_brokers],
+    n.build(outputs=apk, rule="android_gradle", inputs=[libmain, staged_sdl, staged_image, staged_relocations,
+                                                       staged_brokers],
             implicit=[sdl_android_mouse_listener])
     n.build(outputs="android_apk", rule="phony", inputs=apk)
     n.newline()
