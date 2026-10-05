@@ -69,6 +69,14 @@ VALIDATION_URL = ("https://github.com/KhronosGroup/Vulkan-ValidationLayers/relea
                   f"vulkan-sdk-{VALIDATION_VERSION}/android-binaries-{VALIDATION_VERSION}.tar.gz")
 VALIDATION_DIR = THIRD_PARTY / f"vulkan-validation-{VALIDATION_VERSION}"
 PROBE_DIR = PORT_DIR / "probe"
+# loads a Vulkan driver of the app's own (port/android/VULKAN.md, phase 0, part B): Eden's fork of
+# libadrenotools (BSD-2-Clause) at a pinned commit, with its submodule lib/linkernsbypass (the
+# commit the superproject records) and port/android/probe/adrenotools.patch applied
+ADRENOTOOLS_COMMIT = "8ba23b42d742545b709064d6e2523cdb86de68f5"
+ADRENOTOOLS_DIR = THIRD_PARTY / "libadrenotools"
+ADRENOTOOLS_URL = "https://github.com/eden-emulator/libadrenotools"
+# the library and the hooks it loads by name from the native library directory
+ADRENOTOOLS_HOOKS = ("libhook_impl.so", "libmain_hook.so", "libfile_redirect_hook.so", "libgsl_alloc_hook.so")
 
 # The guest ABI: AArch64 code with 32-bit pointers (clang's only such target
 # is Apple's arm64_32, whose Mach-O output is converted afterwards). The
@@ -157,7 +165,7 @@ VARIADIC_PROTOTYPE_FILES = {
     "source/render/render.c",
 }
 
-HOST_LIBRARIES = ["SDL3", "GLESv3", "EGL", "log", "android", "m", "dl"]
+HOST_LIBRARIES = ["SDL3", "GLESv3", "EGL", "log", "android", "m", "dl", "z"]
 
 
 def _quote(path: Any) -> str:
@@ -196,7 +204,7 @@ def _find_ndk() -> Optional[Path]:
 
 
 def fetch_third_party(validation: bool = False) -> None:
-    """Download musl, SDL3, glslang and, if asked, the validation layer (configure time, once)."""
+    """Download musl, SDL3, glslang, libadrenotools and, if asked, the validation layer (configure time, once)."""
     THIRD_PARTY.mkdir(parents=True, exist_ok=True)
     if not MUSL_DIR.is_dir():
         print(f"Downloading {MUSL_URL}")
@@ -223,6 +231,18 @@ def fetch_third_party(validation: bool = False) -> None:
         print(f"Cloning glslang {GLSLANG_TAG}")
         subprocess.run(["git", "clone", "-q", "--depth", "1", "--branch", GLSLANG_TAG, GLSLANG_URL,
                         str(GLSLANG_DIR)], check=True)
+    if not ADRENOTOOLS_DIR.is_dir():
+        print(f"Cloning libadrenotools {ADRENOTOOLS_COMMIT[:8]}")
+        try:
+            subprocess.run(["git", "clone", "-q", ADRENOTOOLS_URL, str(ADRENOTOOLS_DIR)], check=True)
+            subprocess.run(["git", "-C", str(ADRENOTOOLS_DIR), "checkout", "-q", ADRENOTOOLS_COMMIT], check=True)
+            subprocess.run(["git", "-C", str(ADRENOTOOLS_DIR), "submodule", "update", "--init", "-q"], check=True)
+            subprocess.run(["git", "-C", str(ADRENOTOOLS_DIR), "apply", str((PROBE_DIR / "adrenotools.patch").resolve())],
+                           check=True)
+        except (subprocess.CalledProcessError, OSError):
+            # a half-made folder would be taken for a finished one at the next configure
+            shutil.rmtree(ADRENOTOOLS_DIR, ignore_errors=True)
+            raise
     if validation and not VALIDATION_DIR.is_dir():
         print(f"Downloading {VALIDATION_URL}")
         archive = THIRD_PARTY / "vulkan-validation.tar.gz"
@@ -608,6 +628,26 @@ def generate_android_build(n: Writer, sln: Any) -> None:
     n.build(outputs=libglslang, rule="android_glslang",
             implicit=[GLSLANG_DIR / "CMakeLists.txt", PROBE_DIR / "glslang" / "CMakeLists.txt"])
 
+    # ---------- libadrenotools and its hooks, for host_vk_driver.c: dlopen-ed by name, never linked
+
+    adrenotools_build = BUILD / "adrenotools-build"
+    adrenotools_built = [adrenotools_build / "libadrenotools.so"] + [
+        adrenotools_build / "src" / "hook" / name for name in ADRENOTOOLS_HOOKS]
+    n.rule(
+        name="android_adrenotools",
+        command=(f"cmake -S {ADRENOTOOLS_DIR} -B {adrenotools_build} -G Ninja "
+                 f"-DCMAKE_TOOLCHAIN_FILE={ndk}/build/cmake/android.toolchain.cmake "
+                 f"-DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-{ANDROID_API} -DCMAKE_BUILD_TYPE=Release "
+                 f"-DBUILD_SHARED_LIBS=ON -DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384 "
+                 f"> {BUILD}/adrenotools-configure.log && ninja -C {adrenotools_build} "
+                 f"> {BUILD}/adrenotools-build.log"),
+        description="ANDROID ADRENOTOOLS",
+        pool="console",
+    )
+    # one rule makes all five files
+    n.build(outputs=adrenotools_built, rule="android_adrenotools",
+            implicit=[ADRENOTOOLS_DIR / "CMakeLists.txt", PROBE_DIR / "adrenotools.patch"])
+
     # ---------- the host library
 
     host_objects: List[Path] = []
@@ -678,6 +718,10 @@ def generate_android_build(n: Writer, sln: Any) -> None:
     staged_glslang = jni_dir / "libglslang_probe.so"
     n.build(outputs=staged_glslang, rule="android_copy", inputs=libglslang)
     probe_staged = [staged_glslang]
+    for built in adrenotools_built:
+        staged = jni_dir / built.name
+        n.build(outputs=staged, rule="android_copy", inputs=built)
+        probe_staged.append(staged)
     for source in sorted(PROBE_DIR.glob("*.vert")) + sorted(PROBE_DIR.glob("*.frag")):
         staged = assets_dir / "vk_probe" / source.name
         n.build(outputs=staged, rule="android_copy_into", inputs=source)
