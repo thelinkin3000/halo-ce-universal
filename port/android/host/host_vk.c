@@ -63,6 +63,13 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverity
 	{
 		priority = HOST_LOG_WARN;
 	}
+	/* the swapchain asks for the identity transform on purpose (the compositor turns the picture: VULKAN.md, phase 2),
+	and the layer's performance warning about it is expected */
+	if (data->pMessageIdName && !strcmp(data->pMessageIdName, "WARNING-Swapchain-PreTransform"))
+	{
+		host_logf(HOST_LOG_INFO, "vk: [expected, performance] %s: %s", data->pMessageIdName, data->pMessage ? data->pMessage : "");
+		return VK_FALSE;
+	}
 	host_logf(priority, "vk: [%s%s] %s: %s",
 		severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT ? "error" :
 		severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT ? "warning" :
@@ -479,5 +486,6 @@ int host_vk_startup(const char *vk_driver, int validation, char *line, size_t si
 				line[index] = ' ';
 		}
 	}
+	snprintf(host_vk.line, sizeof(host_vk.line), "%s", line);
 	return 1;
 }
