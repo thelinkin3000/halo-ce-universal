@@ -1009,6 +1009,13 @@ and fenced; the guest can ask which number the GPU has finished
 on every turn) make the swapchain again; phase 0 saw no SDL lifecycle events
 reach the loop, so the loss is found from the result codes.
 
+Phase 1's `host_vk_startup` chose the queue family before there was a
+surface (the first family with graphics). With the surface made on the
+game's window, check that family with `vkGetPhysicalDeviceSurfaceSupportKHR`
+and, if it cannot present, take the first graphics family that can; none is
+a failure to log, and the GL ES image is then the player's way back (phase
+2 cannot fall back in the same process: the guest image is already chosen).
+
 **Acceptance**, on the phone's driver and on Turnip: the menus' clears show
 (colour changes are visible), frames are paced by the display, backgrounding
 and returning works ten times in a row, and a validation layer run is clean.
@@ -1155,6 +1162,16 @@ list of the traps.
   sampled after it is drawn needs a barrier between.
 - Constants a vertex format does not feed are reset when the format changes.
 
+**The GL calls left in the Vulkan image.** Phase 1 turned every GL import of
+the Vulkan image into a stub that counts the call and returns zero
+(`host_gl.c`): it writes no output, so `glGenTextures` leaves its array as it
+was and `glGetIntegerv` its integer. Nothing reached them in phase 1 (they
+are reached through `d3d8_gl.c`'s paths); each step here that brings back a
+caller (`xbox_textures.c`, `hud_hires.c`, `text_hires.c`, `menu_files.c`,
+`nv2a_vsh.c`'s `glClipControl`) replaces it in the Vulkan image, and the
+count (`debug.gpu_stats`) is read at the end of each step: it must stay at
+zero.
+
 ### Diagnostics, from the first step
 
 - A log line every 60 frames: draws, immediate-mode draws, pipelines made,
@@ -1287,6 +1304,42 @@ is kept:
 Phase 0 was worked on the test device (Lenovo TB321FU, Adreno 750, Android 16,
 API 36, the phone's own driver). The reports are in `port/android/probe/reports/`.
 Newest first.
+
+### Phase 1 — audit, and the rebase onto the relocatable image
+
+The audit of phase 1 found its results sound: `d3d8_vk.c`'s cut checks out
+against `d3d8_gl.c` (sixty functions byte-for-byte, the others differing only
+by GL; the exported symbols identical; no GL import), `host_vk.c` handles
+`VK_INCOMPLETE`, dynamic rendering's dependencies by version, the driver check
+before the device, and its failures; the stand-ins do what the spec says.
+What changed after it:
+
+- **`main` made the game image relocatable** (commit "Load the Android game
+  image elsewhere when its address is taken": a table of the image's 32-bit
+  pointers, `halo_guest.relocs`, and the image loaded elsewhere where the Java
+  runtime holds `0x40000000`). The branch was rebased onto it, and phase 1's
+  split joined with it: `host_memory_initialize` reserves the larger image's
+  span there or wherever there is room, and `host_load_image_reserved` loads
+  the chosen image into it with that image's own table. The link rule now
+  writes one table per image (`halo_guest.relocs`, `halo_guest_vk.relocs`:
+  9,128 pointers each, at different offsets) where it wrote one fixed file,
+  which the Vulkan image's link would have overwritten.
+- **One log line for the renderer**: a reason found before Vulkan is tried
+  (no `halo_guest_vk.elf`, or not a guest image) went out as its own
+  `renderer:` line, followed by a second, `renderer: GL ES`. It is now the
+  reason in the one line.
+- Notes for later phases, added to their sections: phase 2 checks that the
+  queue family `host_vk_startup` chose can present; phase 6 replaces each GL
+  stub's caller (the stubs write no output parameters).
+- A finding of the audit that was wrong, for the record: it took
+  `halo_ui_pointer_update` in `d3d8_vk.c` (no menu pointer) for a stub that
+  changes what the game sees; `d3d8_gl.c`'s Android branch is the same
+  function (the menu pointer is the desktop's).
+
+Not tried on the device: the image loaded away from `0x40000000` (nothing on
+the test device holds that address; `main`'s commit tested the GL image's
+move on a Nokia 8). The Vulkan image's table is made by the same tool, which
+fails the build on any pointer it cannot move.
 
 ### Phase 1 — summary
 
