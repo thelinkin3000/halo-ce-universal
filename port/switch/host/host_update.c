@@ -53,14 +53,18 @@ Sphaira the new build stopped as soon as it had started.
 #define UPDATE_ASSET "halo-switch-" HALO_BUILD_FLAVOR ".zip"
 #define UPDATE_PROGRAM "halo.nro"
 #define UPDATE_IMAGE "halo_guest.elf"
+/* the deko3d renderer's image (display.renderer): in the releases that have it */
+#define UPDATE_DK_IMAGE "halo_guest_dk.elf"
 
 enum
 {
 	ZIP_LOCAL_HEADER = 30,
 	ZIP_LOCAL_SIGNATURE = 0x04034b50,
 	ZIP_CENTRAL_SIGNATURE = 0x02014b50,
-	/* the files the archive must hold: the program and the game image */
-	WANTED_FILES = 2,
+	/* the files taken from the archive: the program and the game image,
+	which it must hold, then the deko3d image, which it may */
+	WANTED_FILES = 3,
+	REQUIRED_FILES = 2,
 	PROGRESS_EVERY = 512 * 1024,
 };
 
@@ -115,7 +119,7 @@ static void wanted_path(int which, char *path, size_t size)
 	if (which == 0)
 		program_path(path, size);
 	else
-		snprintf(path, size, "%s/%s", host_executable_root(), UPDATE_IMAGE);
+		snprintf(path, size, "%s/%s", host_executable_root(), which == 1 ? UPDATE_IMAGE : UPDATE_DK_IMAGE);
 }
 
 /* ---------- the check */
@@ -249,7 +253,8 @@ static int unpack_entry(struct unpack *unpack)
 	int which;
 
 	unpack->name[unpack->name_length < sizeof(unpack->name) ? unpack->name_length : sizeof(unpack->name) - 1] = 0;
-	which = !strcmp(unpack->name, UPDATE_PROGRAM) ? 0 : !strcmp(unpack->name, UPDATE_IMAGE) ? 1 : -1;
+	which = !strcmp(unpack->name, UPDATE_PROGRAM) ? 0 : !strcmp(unpack->name, UPDATE_IMAGE) ? 1 :
+		!strcmp(unpack->name, UPDATE_DK_IMAGE) ? 2 : -1;
 	unpack->remaining = compressed;
 	unpack->expected_crc = little(header + 14, 4);
 	unpack->crc = 0;
@@ -258,7 +263,8 @@ static int unpack_entry(struct unpack *unpack)
 	if (which < 0)
 		return 1;
 	/* the release is stored, and says each size up front; anything else is
-	an archive this was not written for */
+	an archive this was not written for (the releases' are stored:
+.github/workflows/build.yml) */
 	if (method != 0 || (flags & 8) || compressed != size)
 		return unpack_failed(unpack, "The release's %s is packed in a way the console cannot unpack.", unpack->name);
 	wanted_path(which, path, sizeof(path));
@@ -412,18 +418,26 @@ static int replace(const char *new_path, const char *target)
 	return rename(new_path, target) == 0;
 }
 
-/* Puts the new program in place, and leaves the new game image waiting.
+/* Puts the new program in place, and leaves the new game images waiting.
 
 The session goes on after an update, on the program that is running, which
 loads the game image when the game starts: it has to be the image built with
 it, or its imports and the image's may not agree. So the image stays as
 halo_guest.elf.new until the next start, when the new program puts it in
 place before anything loads it (host_update_finish). The program itself can be
-replaced now: the loader read it whole when it started. */
-static int install(char *error, size_t error_size)
+replaced now: the loader read it whole when it started. The deko3d image goes
+the same way; a release without one takes the old one away, which was built
+for the old program, so that the game falls back to OpenGL rather than load
+it. */
+static int install(int dk_image, char *error, size_t error_size)
 {
 	char target[512], temporary[520];
 
+	if (!dk_image)
+	{
+		wanted_path(2, target, sizeof(target));
+		remove(target);
+	}
 	wanted_path(0, target, sizeof(target));
 	snprintf(temporary, sizeof(temporary), "%s.new", target);
 	if (!replace(temporary, target))
@@ -433,19 +447,24 @@ static int install(char *error, size_t error_size)
 
 void host_update_finish(void)
 {
-	char target[512], temporary[520];
-	FILE *pending;
+	int which;
 
-	wanted_path(1, target, sizeof(target));
-	snprintf(temporary, sizeof(temporary), "%s.new", target);
-	pending = fopen(temporary, "rb");
-	if (!pending)
-		return;
-	fclose(pending);
-	if (replace(temporary, target))
-		host_logf(HOST_LOG_INFO, "update: the new game image is in place");
-	else
-		host_logf(HOST_LOG_ERROR, "update: cannot put %s in place; it is still %s", target, temporary);
+	for (which = 1; which < WANTED_FILES; which++)
+	{
+		char target[512], temporary[520];
+		FILE *pending;
+
+		wanted_path(which, target, sizeof(target));
+		snprintf(temporary, sizeof(temporary), "%s.new", target);
+		pending = fopen(temporary, "rb");
+		if (!pending)
+			continue;
+		fclose(pending);
+		if (replace(temporary, target))
+			host_logf(HOST_LOG_INFO, "update: the new %s is in place", target);
+		else
+			host_logf(HOST_LOG_ERROR, "update: cannot put %s in place; it is still %s", target, temporary);
+	}
 }
 
 static void remove_partial_files(void)
@@ -466,7 +485,7 @@ static int download_and_install(long build, char *error, size_t error_size)
 {
 	char url[256];
 	struct unpack *unpack = calloc(1, sizeof(*unpack));
-	int status, which;
+	int status, which, dk_image;
 
 	if (!unpack)
 		return fail(error, error_size, "Out of memory for the update.");
@@ -488,7 +507,7 @@ static int download_and_install(long build, char *error, size_t error_size)
 		fail(error, error_size, "GitHub answered %d for build %ld's %s.", status, build, UPDATE_ASSET);
 		status = -1;
 	}
-	for (which = 0; status == 200 && which < WANTED_FILES; which++)
+	for (which = 0; status == 200 && which < REQUIRED_FILES; which++)
 	{
 		if (!unpack->written[which])
 		{
@@ -496,13 +515,14 @@ static int download_and_install(long build, char *error, size_t error_size)
 			status = -1;
 		}
 	}
+	dk_image = unpack->written[2];
 	free(unpack);
 	if (status != 200)
 	{
 		remove_partial_files();
 		return 0;
 	}
-	return install(error, error_size);
+	return install(dk_image, error, error_size);
 }
 
 void host_update_offer(void *pad)

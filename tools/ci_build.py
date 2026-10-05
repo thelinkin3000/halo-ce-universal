@@ -35,7 +35,7 @@ OUTPUTS = {
     # program the console runs, and the ELF is the ILP32 game image it loads
     # from the card. A release with only the NRO is a release that cannot
     # start.
-    "switch": ["build/switch/halo.nro", "build/switch/halo_guest.elf"],
+    "switch": ["build/switch/halo.nro", "build/switch/halo_guest.elf", "build/switch/halo_guest_dk.elf"],
 }
 APKS = {
     "debug": "port/android/app/build/outputs/apk/debug/app-debug.apk",
