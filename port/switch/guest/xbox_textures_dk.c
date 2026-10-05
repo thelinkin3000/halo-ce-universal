@@ -19,13 +19,19 @@ the texture locks and the file reads) are what memory_watch_generation counts.
 
 The OpenGL version's replacements of a texture by a high-res HUD bitmap, by
 the text's atlas and by a menu's art (hud_hires.h, text_hires.h, menu_files.h)
-are not here yet: they make GL textures, and are phase 6's last step.
+are images of their own here, numbered from the same allocator: their texels
+(the PNGs decoded, mip levels made by halving; the atlas's coverage as white
+with that alpha) go to the host as rows (DK_COMMAND_TEXTURE_ROWS), a piece at
+a time, and only the atlas's rows that changed are sent again.
 */
 
 #include "xgpu.h"
 #include "port_config.h"
 #include "dk_commands.h"
 #include "dk_textures.h"
+#include "hud_hires.h"
+#include "menu_files.h"
+#include "text_hires.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -488,6 +494,8 @@ struct texture_entry
 	unsigned long address, size;
 	unsigned long generation;
 	unsigned long last_used_frame;
+	/* the high-res HUD bitmap that stands for it (hud_hires.h), or -1 */
+	long override;
 };
 
 #define TEXTURE_BUCKET_COUNT 4096
@@ -545,10 +553,282 @@ static unsigned long palette_hash(const D3DCOLOR *palette)
 	return hash ? hash : 1;
 }
 
+/* ---------- high-res replacements */
+
+/* the most bytes of rows one command names: small enough that the buffer is
+seldom split between two of the host's window chunks, which sends it
+through the staging buffer instead */
+#define ROWS_PIECE_BYTES (1024 * 1024)
+
+/* sends rows [top, top + rows) of a level width texels wide, whose BGRA
+texels are in buffer (malloc'd; the stream frees it once handed over) */
+static void rows_send(uint32_t id, unsigned long level, unsigned long width, unsigned long top, unsigned long rows,
+	unsigned char *buffer)
+{
+	struct dk_command_texture_rows *command = dk_stream_command(DK_COMMAND_TEXTURE_ROWS, sizeof(*command));
+
+	command->id = id;
+	command->level = (uint32_t)level;
+	command->top = (uint32_t)top;
+	command->rows = (uint32_t)rows;
+	command->source = (uint32_t)(uintptr_t)buffer;
+	command->source_bytes = (uint32_t)(rows * width * 4);
+	/* (last: it may hand the stream over, which the command is in) */
+	dk_stream_free_after_handover(buffer, rows * width * 4);
+}
+
+/* makes 2D BGRA image id, its texels left for rows_send */
+static void image_make(uint32_t id, unsigned long width, unsigned long height, unsigned long levels)
+{
+	struct dk_command_texture *command = dk_stream_command(DK_COMMAND_TEXTURE, sizeof(*command));
+
+	command->id = id;
+	command->kind = DK_TEXTURE_2D;
+	command->format = DK_TEXTURE_BGRA;
+	command->width = (uint32_t)width;
+	command->height = (uint32_t)height;
+	command->depth = 1;
+	command->levels = (uint32_t)levels;
+	command->source = 0;
+	command->face_bytes = 0;
+	command->source_bytes = 0;
+}
+
+/* sends a whole level of BGRA texels, a piece at a time */
+static BOOL level_send(uint32_t id, unsigned long level, unsigned long width, unsigned long height,
+	const unsigned char *texels)
+{
+	unsigned long piece_rows = ROWS_PIECE_BYTES / (width * 4), top;
+
+	if (!piece_rows)
+		piece_rows = 1;
+	for (top = 0; top < height; top += piece_rows)
+	{
+		unsigned long rows = height - top < piece_rows ? height - top : piece_rows;
+		unsigned char *buffer = malloc(rows * width * 4);
+
+		if (!buffer)
+			return FALSE;
+		memcpy(buffer, texels + top * width * 4, rows * width * 4);
+		rows_send(id, level, width, top, rows, buffer);
+	}
+	return TRUE;
+}
+
+/* an image of a PNG (8-bit RGBA) with all its mip levels, as
+hud_hires_png_texture makes in GL: its number, or 0 */
+static uint32_t png_image(const void *png, unsigned long size, unsigned long *levels)
+{
+	unsigned long width, height, level, largest, index;
+	unsigned char *pixels = hud_hires_png_pixels(png, size, &width, &height);
+	uint32_t id;
+
+	if (!pixels)
+		return 0;
+	id = id_take();
+	if (!id)
+	{
+		free(pixels);
+		return 0;
+	}
+	*levels = 1;
+	for (largest = width > height ? width : height; largest > 1; largest >>= 1)
+		(*levels)++;
+	/* (red first to blue first) */
+	for (index = 0; index < width * height; index++)
+	{
+		unsigned char red = pixels[index * 4];
+
+		pixels[index * 4] = pixels[index * 4 + 2];
+		pixels[index * 4 + 2] = red;
+	}
+	image_make(id, width, height, *levels);
+	for (level = 0; level < *levels; level++)
+	{
+		unsigned long next_width = width > 1 ? width / 2 : 1, next_height = height > 1 ? height / 2 : 1, x, y, c;
+		unsigned char *next;
+
+		level_send(id, level, width, height, pixels);
+		if (level + 1 == *levels)
+			break;
+		/* the next level: each texel the mean of the (up to) four above it */
+		next = malloc(next_width * next_height * 4);
+		if (!next)
+			break;
+		for (y = 0; y < next_height; y++)
+		{
+			unsigned long y0 = y * 2, y1 = y * 2 + 1 < height ? y * 2 + 1 : y * 2;
+
+			for (x = 0; x < next_width; x++)
+			{
+				unsigned long x0 = x * 2, x1 = x * 2 + 1 < width ? x * 2 + 1 : x * 2;
+
+				for (c = 0; c < 4; c++)
+					next[(y * next_width + x) * 4 + c] = (unsigned char)((pixels[(y0 * width + x0) * 4 + c] +
+						pixels[(y0 * width + x1) * 4 + c] + pixels[(y1 * width + x0) * 4 + c] +
+						pixels[(y1 * width + x1) * 4 + c] + 2) / 4);
+			}
+		}
+		free(pixels);
+		pixels = next;
+		width = next_width;
+		height = next_height;
+	}
+	free(pixels);
+	return id;
+}
+
+/* the text's atlas (text_hires.h): its image, made and its changed rows sent
+when data is its placeholder bitmap's; 0 if not */
+static uint32_t atlas_image(unsigned long data)
+{
+	static uint32_t id;
+	static BOOL failed;
+	long size, top, bottom;
+	const unsigned char *coverage;
+
+	if (failed)
+		return 0;
+	coverage = text_hires_atlas_rows(data, &size, id == 0, &top, &bottom);
+	if (!coverage)
+		return 0;
+	if (!id)
+	{
+		id = id_take();
+		if (!id)
+		{
+			failed = TRUE;
+			return 0;
+		}
+		image_make(id, (unsigned long)size, (unsigned long)size, 1);
+	}
+	while (top < bottom)
+	{
+		/* (white, the glyph's coverage its alpha, as the maps' fonts are) */
+		long rows = ROWS_PIECE_BYTES / (size * 4), index;
+		unsigned char *buffer;
+
+		if (rows > bottom - top)
+			rows = bottom - top;
+		buffer = malloc((size_t)rows * size * 4);
+		if (!buffer)
+			break;
+		for (index = 0; index < rows * size; index++)
+		{
+			buffer[index * 4 + 0] = buffer[index * 4 + 1] = buffer[index * 4 + 2] = 255;
+			buffer[index * 4 + 3] = coverage[top * size + index];
+		}
+		rows_send(id, 0, (unsigned long)size, (unsigned long)top, (unsigned long)rows, buffer);
+		top += rows;
+	}
+	return id;
+}
+
+/* a menu's art (menu_files.h), by its file: made on first use, and kept */
+#define MAXIMUM_MENU_IMAGES 256
+
+static struct
+{
+	char *name;
+	uint32_t id;
+	unsigned long levels;
+} menu_images[MAXIMUM_MENU_IMAGES];
+static long menu_image_count;
+
+static uint32_t menu_image(unsigned long data, unsigned long *levels)
+{
+	const char *name = menu_art_name(data);
+	const unsigned char *png;
+	unsigned long size = 0;
+	long index;
+
+	if (!name)
+		return 0;
+	for (index = 0; index < menu_image_count; index++)
+	{
+		if (!strcmp(menu_images[index].name, name))
+		{
+			*levels = menu_images[index].levels;
+			return menu_images[index].id;
+		}
+	}
+	if (menu_image_count == MAXIMUM_MENU_IMAGES)
+		return 0;
+	/* (failed ones are remembered too, as image 0) */
+	menu_images[menu_image_count].name = strdup(name);
+	if (!menu_images[menu_image_count].name)
+		return 0;
+	png = menu_art_png(name, &size);
+	menu_images[menu_image_count].id = png ? png_image(png, size, &menu_images[menu_image_count].levels) : 0;
+	if (!menu_images[menu_image_count].id)
+		platform_log("menus: could not draw %s", name);
+	*levels = menu_images[menu_image_count].levels;
+	return menu_images[menu_image_count++].id;
+}
+
+/* a high-res HUD bitmap (hud_hires.h): made on first use, and kept */
+static struct
+{
+	uint32_t id;
+	unsigned long levels;
+	BOOL tried;
+} *hud_images;
+
+static uint32_t hud_image(long asset, unsigned long *levels)
+{
+	if (asset < 0 || asset >= (long)hud_hires_embedded_count)
+		return 0;
+	if (!hud_images)
+	{
+		hud_images = calloc(hud_hires_embedded_count, sizeof(*hud_images));
+		if (!hud_images)
+			return 0;
+	}
+	if (!hud_images[asset].tried)
+	{
+		const struct hud_hires_embedded *embedded = &hud_hires_embedded[asset];
+
+		hud_images[asset].tried = TRUE;
+		hud_images[asset].id = png_image(embedded->png, embedded->png_size, &hud_images[asset].levels);
+		if (!hud_images[asset].id)
+			platform_log("high-res hud: could not decode the texture for %s bitmap %d", embedded->tag,
+				embedded->bitmap);
+	}
+	*levels = hud_images[asset].levels;
+	return hud_images[asset].id;
+}
+
+/* an entry's image and description: its replacement's, if it has one (as
+texture_entry_result in xbox_textures.c), with the bitmap's own size, which
+its coordinates are in */
 static uint32_t texture_entry_result(struct texture_entry *entry, int *kind, struct xgpu_texture_description *description)
 {
+	unsigned long levels = 1;
+	uint32_t id;
+
 	*kind = (int)entry->kind;
 	*description = entry->description;
+	if ((id = atlas_image(entry->data)) != 0)
+	{
+		*kind = DK_TEXTURE_2D;
+		description->levels = 1;
+		return id;
+	}
+	if ((id = menu_image(entry->data, &levels)) != 0)
+	{
+		*kind = DK_TEXTURE_2D;
+		description->levels = levels;
+		description->hires = TRUE;
+		return id;
+	}
+	if (entry->override >= 0 && (id = hud_image(entry->override, &levels)) != 0)
+	{
+		*kind = DK_TEXTURE_2D;
+		description->levels = levels;
+		description->hires = TRUE;
+		description->hires_coverage = hud_hires_override_coverage(entry->override);
+		return id;
+	}
 	return entry->id;
 }
 
@@ -613,6 +893,7 @@ uint32_t dk_texture_get(const DWORD *resource, const D3DCOLOR *palette, int *kin
 		entry->address = (unsigned long)PLATFORM_PHYSICAL_TO_VIRTUAL(data);
 		entry->size = xgpu_texture_face_size(&entry->description) * (entry->description.cube_map ? 6 : 1);
 		entry->generation = 0;
+		entry->override = -1;
 		entry->id = id;
 		entry->next = *bucket;
 		*bucket = entry;
@@ -628,7 +909,19 @@ uint32_t dk_texture_get(const DWORD *resource, const D3DCOLOR *palette, int *kin
 		entry->generation = memory_watch_generation(entry->address, entry->size);
 		if (!entry->generation)
 			entry->generation = 1;
-		if (platform_is_contiguous((void *)entry->address) &&
+		/* (which bitmap is here may have changed with the pixels) */
+		entry->override = -1;
+		if (!palettized && !entry->description.cube_map && entry->description.depth == 1)
+		{
+			unsigned long levels;
+
+			entry->override = hud_hires_override_find(entry->address, entry->description.width,
+				entry->description.height, entry->description.levels > 1 ?
+				xgpu_texture_level_offset(&entry->description, 1) : xgpu_texture_face_size(&entry->description));
+			if (entry->override >= 0 && !hud_image(entry->override, &levels))
+				entry->override = -1;
+		}
+		if (entry->override < 0 && platform_is_contiguous((void *)entry->address) &&
 			platform_is_contiguous((void *)(entry->address + entry->size - 1)))
 		{
 			if (config_boolean("debug.texture_log"))
