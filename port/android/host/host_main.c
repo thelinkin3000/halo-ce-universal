@@ -15,8 +15,9 @@ maps/) is the app's external files directory,
 /sdcard/Android/data/<package>/files, where the launcher activity copies it
 on first run; saves go to its save/ subdirectory. The settings,
 config.toml, live there too (port/linux/src/port_config.c, which the game
-reads); this file reads only debug.sample_seconds from it, for the sampler
-that runs here.
+reads); this file reads only debug.sample_seconds and debug.profile_hz from
+it, for the samplers that run here, and debug.vk_probe, which runs the
+Vulkan probe (host_vk_probe.c) instead of the game.
 */
 
 #include "host.h"
@@ -158,27 +159,36 @@ static void environment_set(struct environment *environment, const char *name, c
 		free(entry);
 }
 
-/* debug.sample_seconds from config.toml, as text for the sampler, or 0 */
-static int config_sample_seconds(const char *path, char *text, size_t size)
+/* the settings of [debug] that this file reads, from config.toml */
+struct host_settings
+{
+	char sample_seconds[32]; /* as text for the sampler; empty for none */
+	int profile_hz;
+	char vk_probe[128]; /* empty: the game runs */
+};
+
+static void config_read(const char *path, struct host_settings *settings)
 {
 	toml_result_t result = toml_parse_file_ex(path);
-	int found = 0;
 
+	memset(settings, 0, sizeof(*settings));
 	if (!result.ok)
-		return 0;
+		return;
 	{
 		toml_datum_t seconds = toml_seek(result.toptab, "debug.sample_seconds");
+		toml_datum_t hz = toml_seek(result.toptab, "debug.profile_hz");
+		toml_datum_t probe = toml_seek(result.toptab, "debug.vk_probe");
 		double value = seconds.type == TOML_FP64 ? seconds.u.fp64 :
 			seconds.type == TOML_INT64 ? (double)seconds.u.int64 : 0.0;
 
 		if (value > 0.0)
-		{
-			snprintf(text, size, "%g", value);
-			found = 1;
-		}
+			snprintf(settings->sample_seconds, sizeof(settings->sample_seconds), "%g", value);
+		if (hz.type == TOML_INT64 && hz.u.int64 > 0)
+			settings->profile_hz = hz.u.int64 > 10000 ? 10000 : (int)hz.u.int64;
+		if (probe.type == TOML_STRING)
+			snprintf(settings->vk_probe, sizeof(settings->vk_probe), "%s", probe.u.s);
 	}
 	toml_free(result);
-	return found;
 }
 
 /* POSIX TZ for the current local offset (the guest's musl has no zone
@@ -244,6 +254,7 @@ static void *game_main(void *unused)
 	size_t image_size = 0;
 	void *image;
 	uint32_t boot;
+	struct host_settings settings;
 
 	(void)unused;
 	external = SDL_GetAndroidExternalStoragePath();
@@ -316,12 +327,16 @@ static void *game_main(void *unused)
 		}
 	}
 
+	config_read(path, &settings);
+	if (settings.vk_probe[0])
 	{
-		char seconds[32];
-
-		if (config_sample_seconds(path, seconds, sizeof(seconds)))
-			host_debug_start_sampler(seconds);
+		/* the probe owns the window and ends the app; the game does not start */
+		host_logf(HOST_LOG_INFO, "running the Vulkan probe (%s) instead of the game", settings.vk_probe);
+		host_vk_probe_run(settings.vk_probe, data_root);
 	}
+	if (settings.sample_seconds[0])
+		host_debug_start_sampler(settings.sample_seconds);
+	host_debug_start_profiler(settings.profile_hz, data_root);
 	boot = make_boot(&environment);
 	host_logf(HOST_LOG_INFO, "data %s, saves %s", data_root, save_root);
 	host_run_guest_main(boot);

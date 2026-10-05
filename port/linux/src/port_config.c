@@ -516,6 +516,19 @@ static const struct config_setting config_settings[] =
 	{ "debug.profile_hz", _config_integer, "500", "HALO_PROFILE_HZ", _environment_value, _platform_android,
 		"The profiler's samples a second, when debug.profiler is true." },
 #endif
+#ifndef HALO_SWITCH
+	/* the Android app's Vulkan probe and profiler (port/android/host); the Switch's
+	profiler has its own debug.profile_hz above */
+	{ "debug.vk_probe", _config_string, "\"\"", "HALO_VK_PROBE", _environment_value, _platform_android,
+		"Run the Vulkan probe (port/android/host/host_vk_probe.c) instead of the\n"
+		"game: \"all\", or a list of caps, memory, compile, pipelines, present;\n"
+		"empty runs the game. It writes vk_probe.txt." },
+	{ "debug.vk_validation", _config_boolean, "false", "HALO_VK_VALIDATION", _environment_set_is_true, _platform_android,
+		"Turn on Vulkan's validation layer in the probe, when the app carries it." },
+	{ "debug.profile_hz", _config_integer, "0", "HALO_PROFILE_HZ", _environment_value, _platform_android,
+		"Sample every game thread this many times a second into profile.bin\n"
+		"(port/android/host/host_debug.c); 0 off." },
+#endif
 };
 
 #define NUMBER_OF_CONFIG_SETTINGS (sizeof(config_settings) / sizeof(config_settings[0]))
