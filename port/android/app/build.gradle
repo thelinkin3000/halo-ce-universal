@@ -22,7 +22,10 @@ android {
     compileSdk 35
 
     defaultConfig {
-        applicationId "com.halo.decomp"
+        // HALO_APPLICATION_ID_SUFFIX (for example ".vk") installs a build beside the one from
+        // GitHub Actions, which another signing key stops it from replacing, with data of its own
+        // (port/android/VULKAN.md); without it the id is com.halo.decomp, as always
+        applicationId "com.halo.decomp" + (System.getenv("HALO_APPLICATION_ID_SUFFIX") ?: "")
         minSdk 28
         targetSdk 35
         versionCode Math.max(1, buildNumber)
