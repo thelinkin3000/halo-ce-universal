@@ -161,6 +161,8 @@ not the stand-in window's swap (phase 2) */
 extern int host_vk_presenting;
 /* config.toml's debug.vk_present_marker (host_vk_present.c) */
 extern int host_vk_present_marker;
+/* debug.vk_self_test: the backend's self-tests, run once at the device's creation (host_vk_render.c) */
+extern int host_vk_self_test;
 /* the game's window, the last made under Vulkan: an SDL_Window (host_sdl.c) */
 extern void *host_vk_window;
 
