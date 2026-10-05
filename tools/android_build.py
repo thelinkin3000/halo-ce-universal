@@ -169,18 +169,6 @@ def _quote(path: Any) -> str:
     return f'"{text}"' if " " in text else text
 
 
-def _git_describe() -> str:
-    """The commit this is built from, with a mark if the tree has changes (configure time)."""
-    try:
-        head = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
-                              check=True).stdout.strip()
-        dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], capture_output=True,
-                               text=True, check=True).stdout.strip()
-    except (subprocess.CalledProcessError, OSError):
-        return "unknown"
-    return head + ("+changes" if dirty else "")
-
-
 def _find_ndk() -> Optional[Path]:
     for variable in ("ANDROID_NDK_HOME", "ANDROID_NDK_ROOT", "ANDROID_NDK"):
         if os.environ.get(variable) and Path(os.environ[variable]).is_dir():
@@ -222,12 +210,11 @@ def fetch_third_party(validation: bool = False) -> None:
             subprocess.run(["git", "clone", "-q", ADRENOTOOLS_URL, str(ADRENOTOOLS_DIR)], check=True)
             subprocess.run(["git", "-C", str(ADRENOTOOLS_DIR), "checkout", "-q", ADRENOTOOLS_COMMIT], check=True)
             subprocess.run(["git", "-C", str(ADRENOTOOLS_DIR), "submodule", "update", "--init", "-q"], check=True)
-            subprocess.run(["git", "-C", str(ADRENOTOOLS_DIR), "apply", str((PROBE_DIR / "adrenotools.patch").resolve())],
-                           check=True)
         except (subprocess.CalledProcessError, OSError):
             # a half-made folder would be taken for a finished one at the next configure
             shutil.rmtree(ADRENOTOOLS_DIR, ignore_errors=True)
             raise
+    _patch_adrenotools()
     if validation and not VALIDATION_DIR.is_dir():
         print(f"Downloading {VALIDATION_URL}")
         archive = THIRD_PARTY / "vulkan-validation.tar.gz"
@@ -235,6 +222,21 @@ def fetch_third_party(validation: bool = False) -> None:
         subprocess.run(["curl", "-sSfL", "-o", str(archive), VALIDATION_URL], check=True)
         subprocess.run(["tar", "xzf", str(archive.resolve()), "-C", str(VALIDATION_DIR)], check=True)
         archive.unlink()
+
+
+def _patch_adrenotools() -> None:
+    """Applies port/android/probe/adrenotools.patch to the fetched libadrenotools, again whenever the patch
+    changes: the sources are put back to the pinned commit first. The applied patch's text is kept beside
+    them to compare with."""
+    patch = PROBE_DIR / "adrenotools.patch"
+    applied = ADRENOTOOLS_DIR / ".halo_applied.patch"
+    wanted = patch.read_text()
+    if applied.is_file() and applied.read_text() == wanted:
+        return
+    print("Applying adrenotools.patch to libadrenotools")
+    subprocess.run(["git", "-C", str(ADRENOTOOLS_DIR), "checkout", "-q", "--", "."], check=True)
+    subprocess.run(["git", "-C", str(ADRENOTOOLS_DIR), "apply", str(patch.resolve())], check=True)
+    applied.write_text(wanted)
 
 
 def _musl_sources() -> List[Path]:
@@ -259,7 +261,7 @@ def _musl_sources() -> List[Path]:
 
 def android_configure_inputs() -> List[Path]:
     return [Path(__file__), PORT_DIR / "guest" / "runtime", PORT_DIR / "host", PORT_DIR / "probe",
-            LINUX_DIR / "src", *hud_configure_inputs()]
+            PORT_DIR / "probe" / "adrenotools.patch", LINUX_DIR / "src", *hud_configure_inputs()]
 
 
 def generate_android_build(n: Writer, sln: Any) -> None:
@@ -618,7 +620,9 @@ def generate_android_build(n: Writer, sln: Any) -> None:
                  f"-DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-{ANDROID_API} -DCMAKE_BUILD_TYPE=Release "
                  f"-DBUILD_SHARED_LIBS=ON -DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384 "
                  f"> {BUILD}/adrenotools-configure.log && ninja -C {adrenotools_build} "
-                 f"> {BUILD}/adrenotools-build.log"),
+                 # CMake leaves its outputs alone when nothing in them changed, so they are touched: otherwise a
+                 # touched input (the patch applied again) would leave them older than it at every build
+                 f"> {BUILD}/adrenotools-build.log && touch $out"),
         description="ANDROID ADRENOTOOLS",
         pool="console",
     )
@@ -640,10 +644,19 @@ def generate_android_build(n: Writer, sln: Any) -> None:
     host_cflags = " ".join([
         "-O2", "-g", "-fPIC", "-Wall", "-Wno-unused-function", "-D_GNU_SOURCE",
         f"-I{PORT_DIR}/include", f"-I{PORT_DIR}/host", f"-I{SDL_DIR}/include", f"-I{LINUX_DIR}/src",
-        f"-I{TOML_DIR}", f"-I{GLSLANG_DIR}",
-        # the probe's report names the build (host_vk_probe.c)
-        f'-DHALO_PROBE_BUILD=\\"{_git_describe()}\\"',
+        f"-I{TOML_DIR}", f"-I{GLSLANG_DIR}", f"-I{BUILD / 'host'}",
     ])
+    # the probe's report names the build it is from (host_vk_probe.c includes probe_build.h): written at every
+    # build, not at configure time, and restat so that an unchanged name recompiles nothing
+    build_stamp = BUILD / "host" / "probe_build.h"
+    n.rule(
+        name="android_build_stamp",
+        command=f"{python} tools/android_build_stamp.py $out",
+        description="ANDROID BUILD STAMP $out",
+        restat=True,
+    )
+    n.build(outputs="android_always", rule="phony")
+    n.build(outputs=build_stamp, rule="android_build_stamp", implicit=["android_always"])
     host_sources = sorted((PORT_DIR / "host").glob("*.c")) + [
         LINUX_DIR / "src" / "posix_files.c", LINUX_DIR / "src" / "posix_net.c",
         # the app reads debug.sample_seconds from config.toml (host_main.c)
@@ -651,7 +664,8 @@ def generate_android_build(n: Writer, sln: Any) -> None:
     ]
     for source in host_sources:
         obj = host_obj_dir / (source.name + ".o")
-        n.build(outputs=obj, rule="android_host_cc", inputs=source, variables={"cflags": host_cflags})
+        n.build(outputs=obj, rule="android_host_cc", inputs=source, variables={"cflags": host_cflags},
+                implicit=[build_stamp] if source.name == "host_vk_probe.c" else None)
         host_objects.append(obj)
     # internet play's UPnP (posix_upnp.c, with port/third_party/miniupnpc),
     # as the other posix_*.c in the host

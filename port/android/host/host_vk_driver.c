@@ -13,8 +13,10 @@ archive's size or modification time differs from what was unpacked), its
 meta.json names the library, and libadrenotools opens the system loader with
 that library in place of the phone's driver.
 
-Anything that goes wrong with an archive is logged and the phone's driver is
-opened instead; the description says so.
+Anything that goes wrong with an archive before libadrenotools accepts it is
+logged and the phone's driver is opened instead; the description says so. What
+can go wrong after that, at vkCreateInstance, cannot be undone here: see
+host_vk_driver.h, and host_vk_driver_verify().
 
 Not thread safe. One driver per process.
 */
@@ -52,6 +54,8 @@ static PFN_vkGetInstanceProcAddr opened_function;
 static char opened_description[512];
 /* the file name of the archive's library while a custom driver is open, else empty */
 static char custom_file[256];
+/* host_vk_driver_close() was called: no driver may be opened again in this process */
+static int closed;
 
 /* ---------- the zip reader: central directory, stored and deflated entries */
 
@@ -681,6 +685,12 @@ PFN_vkGetInstanceProcAddr host_vk_driver_open(const char *setting, char *descrip
 		snprintf(description, size, "%s", opened_description);
 		return opened_function;
 	}
+	if (closed)
+	{
+		snprintf(description, size, "the Vulkan driver was closed; it cannot be opened again in this process");
+		host_logf(HOST_LOG_ERROR, "vk driver: %s", description);
+		return NULL;
+	}
 	if (setting && setting[0])
 	{
 		if (open_archive(setting, &library, custom_description, sizeof(custom_description), error, sizeof(error)))
@@ -774,4 +784,5 @@ void host_vk_driver_close(void)
 	opened_function = NULL;
 	opened_description[0] = 0;
 	custom_file[0] = 0;
+	closed = 1;
 }

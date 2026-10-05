@@ -58,9 +58,8 @@ the phone's driver beside the chosen one.
 #include "glslang/Include/glslang_c_interface.h"
 #include "glslang/Public/resource_limits_c.h"
 
-#ifndef HALO_PROBE_BUILD
-#define HALO_PROBE_BUILD "unknown"
-#endif
+/* HALO_PROBE_BUILD: the commit the build is from, written by tools/android_build_stamp.py at every build */
+#include "probe_build.h"
 
 /* ---------- the report */
 
@@ -1974,9 +1973,12 @@ static void set_vertex_input(VkCommandBuffer command, const struct vertex_layout
 	vkCmdSetVertexInputEXT(command, 1, &binding, (uint32_t)layout->count, attributes);
 }
 
-/* sets every state of the set, with the values of the probe's own draws, before a draw */
+/* sets every state of the set, with the values of the probe's own draws, before a draw; blend is what the
+pipeline was made with, for a device where the blend enable is dynamic state too (extended dynamic state 3):
+a dynamic state is the command's, not the pipeline's, so it must say the same thing or the draw is not the
+one the pipeline describes */
 static void dynamic_record(VkCommandBuffer command, const struct dynamic_set *set, const struct vertex_layout *layout,
-	uint32_t width, uint32_t height)
+	uint32_t width, uint32_t height, int blend)
 {
 	VkViewport viewport = { 0.0f, 0.0f, (float)width, (float)height, 0.0f, 1.0f };
 	VkRect2D scissor = { { 0, 0 }, { width, height } };
@@ -1984,7 +1986,7 @@ static void dynamic_record(VkCommandBuffer command, const struct dynamic_set *se
 	float blend_constants[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 	VkColorComponentFlags write_mask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
 		VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-	VkBool32 enable = VK_TRUE;
+	VkBool32 enable = blend ? VK_TRUE : VK_FALSE;
 	VkColorBlendEquationEXT equation;
 	VkSampleMask sample_mask = 0xffffffffu;
 	int index;
@@ -2356,7 +2358,7 @@ static int draw_and_check(VkBuffer vb, VkBuffer ib, uint32_t expect, uint32_t *s
 
 	pass_begin(command, &D.target, black);
 	vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, S.pipeline);
-	dynamic_record(command, &S.dynamic, &layout_color, TARGET_SIZE, TARGET_SIZE);
+	dynamic_record(command, &S.dynamic, &layout_color, TARGET_SIZE, TARGET_SIZE, 0);
 	{
 		VkDeviceSize offset = 0;
 
@@ -2938,7 +2940,7 @@ static double timed_draw(struct gpu_timer *timer, struct target *target, VkBuffe
 	}
 	pass_begin(command, target, black);
 	vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, S.pipeline);
-	dynamic_record(command, &S.dynamic, &layout_color, target->color.width, target->color.height);
+	dynamic_record(command, &S.dynamic, &layout_color, target->color.width, target->color.height, 0);
 	vkCmdBindVertexBuffers(command, 0, 1, &vb, &offset);
 	vkCmdDraw(command, vertex_count, 1, 0, 0);
 	pass_end(command);
@@ -3714,7 +3716,7 @@ static void *frames_thread(void *argument)
 		vkBeginCommandBuffer(command, &begin);
 		pass_begin(command, &a->target, black);
 		vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, a->pipeline);
-		dynamic_record(command, &X.full, &pairs[0].layout, 256, 256);
+		dynamic_record(command, &X.full, &pairs[0].layout, 256, 256, 1);
 		bind_vertex_buffer(command, &X.full, &pairs[0].layout, a->vertices.buffer, offset);
 		for (draw = 0; draw < 100; draw++)
 			vkCmdDraw(command, 3, 1, 0, 0);
@@ -4537,7 +4539,7 @@ static void draw_descriptors(int pair, int vs_block, VkDescriptorBufferInfo buff
 
 /* one draw of a pair into the cleared target and its readback; push is the layout of a push-descriptor
 draw (the pair's descriptors are pushed instead of bound); set may be NULL (the pass-through pair uses none) */
-static int draw_submit(int pair, VkPipeline pipeline, const struct dynamic_set *dynamic, VkDescriptorSet set,
+static int draw_submit(int pair, VkPipeline pipeline, const struct dynamic_set *dynamic, int blend, VkDescriptorSet set,
 	VkPipelineLayout push_layout, struct draw_result *result, const char *picture)
 {
 	VkCommandBuffer command = command_begin();
@@ -4547,7 +4549,7 @@ static int draw_submit(int pair, VkPipeline pipeline, const struct dynamic_set *
 	memset(result, 0, sizeof(*result));
 	pass_begin(command, &W.target, draw_clear);
 	vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-	dynamic_record(command, dynamic, &pairs[pair].layout, DRAW_SIZE, DRAW_SIZE);
+	dynamic_record(command, dynamic, &pairs[pair].layout, DRAW_SIZE, DRAW_SIZE, blend);
 	bind_vertex_buffer(command, dynamic, &pairs[pair].layout, W.vertices[pair].buffer, offset);
 	if (push_layout)
 	{
@@ -4730,7 +4732,7 @@ static void step_draw(void)
 			rep("%s.finished: no (the pipeline was not made)", key);
 			continue;
 		}
-		ok = draw_submit(v->pair, pipeline, v->full ? &X.full : &X.plain, v->pair == _draw_pass ? VK_NULL_HANDLE : sets[v->pair],
+		ok = draw_submit(v->pair, pipeline, v->full ? &X.full : &X.plain, v->blend, v->pair == _draw_pass ? VK_NULL_HANDLE : sets[v->pair],
 			VK_NULL_HANDLE, &result, v->name);
 		vkDestroyPipeline(P.device, pipeline, NULL);
 		guard_end();
@@ -4766,10 +4768,10 @@ static void step_draw(void)
 		pipeline = draw_pipeline(pair, &X.plain, 0, X.layout);
 		draw_descriptors(pair, 1, buffers, images, writes, sets[pair]);
 		vkUpdateDescriptorSets(P.device, 6, writes, 0, NULL);
-		ok = pipeline && draw_submit(pair, pipeline, &X.plain, sets[pair], VK_NULL_HANDLE, &moved, NULL);
+		ok = pipeline && draw_submit(pair, pipeline, &X.plain, 0, sets[pair], VK_NULL_HANDLE, &moved, NULL);
 		draw_descriptors(pair, 0, buffers, images, writes, sets[pair]);
 		vkUpdateDescriptorSets(P.device, 6, writes, 0, NULL);
-		ok = ok && draw_submit(pair, pipeline, &X.plain, sets[pair], VK_NULL_HANDLE, &restored, NULL);
+		ok = ok && draw_submit(pair, pipeline, &X.plain, 0, sets[pair], VK_NULL_HANDLE, &restored, NULL);
 		if (pipeline)
 			vkDestroyPipeline(P.device, pipeline, NULL);
 		guard_end();
@@ -4814,7 +4816,7 @@ static void step_draw(void)
 			push_layout = make_pipeline_layout(push_set);
 		if (push_layout)
 			pipeline = draw_pipeline(_draw_typical, &X.plain, 0, push_layout);
-		if (pipeline && draw_submit(_draw_typical, pipeline, &X.plain, VK_NULL_HANDLE, push_layout, &result, "typical.push"))
+		if (pipeline && draw_submit(_draw_typical, pipeline, &X.plain, 0, VK_NULL_HANDLE, push_layout, &result, "typical.push"))
 		{
 			draw_report("draw.push.typical", &result);
 			rep("draw.push.typical.matches_bound_set: %s", yesno(first[_draw_typical].finished && result.hash == first[_draw_typical].hash));
