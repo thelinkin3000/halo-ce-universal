@@ -233,6 +233,8 @@ Commands are written here over a frame and handed to the host half
 void host_dk_submit(unsigned int commands, unsigned int size);
 /* the highest submission the GPU has finished (host_dk.c) */
 unsigned int host_dk_retired(void);
+/* a visibility test slot's latest count (host_dk.c) */
+unsigned int host_dk_visibility(unsigned int index);
 
 #define STREAM_SIZE (1024 * 1024)
 
@@ -471,6 +473,43 @@ static const struct rendered *rendered_find(DWORD data)
 			return &rendered[index];
 	}
 	return NULL;
+}
+
+/* the mip composites the host has been told of (DK_COMMAND_COMPOSITE) */
+#define COMPOSITE_LIMIT 32
+
+static struct dk_command_composite composites_told[COMPOSITE_LIMIT];
+static unsigned long composites_told_count;
+
+/* tells the host of a texture rendered a level at a time, unless it knows
+it as it is */
+static void composite_tell(const struct xgpu_texture_description *description, DWORD data)
+{
+	struct dk_command_composite composite;
+	unsigned long index, level;
+
+	memset(&composite, 0, sizeof(composite));
+	composite.data = data;
+	composite.width = (uint32_t)description->width;
+	composite.height = (uint32_t)description->height;
+	composite.levels = (uint32_t)description->levels;
+	for (level = 0; level < description->levels; level++)
+		composite.level_data[level] = (uint32_t)(data + xgpu_texture_level_offset(description, level));
+	for (index = 0; index < composites_told_count; index++)
+	{
+		if (!memcmp(composites_told[index].level_data, composite.level_data, sizeof(composite.level_data)) &&
+			composites_told[index].data == data && composites_told[index].width == composite.width &&
+			composites_told[index].height == composite.height && composites_told[index].levels == composite.levels)
+			return;
+	}
+	{
+		struct dk_command_composite *command = stream_command(DK_COMMAND_COMPOSITE, sizeof(*command));
+
+		memcpy((char *)command + sizeof(command->header), (char *)&composite + sizeof(composite.header),
+			sizeof(composite) - sizeof(composite.header));
+	}
+	if (composites_told_count < COMPOSITE_LIMIT)
+		composites_told[composites_told_count++] = composite;
 }
 
 /* the targets the host has bound, as last told it; cleared when a frame
@@ -907,28 +946,49 @@ void WINAPI D3DDevice_InsertCallback(D3DCALLBACKTYPE type, D3DCALLBACK callback,
 		callback(context);
 }
 
-/* ---------- visibility (occlusion) tests: none pass until the backend counts
-samples, so lens flares stay hidden */
+/* ---------- visibility (occlusion) tests: the GPU counts the pixels the
+draws between a begin and an end pass, and writes the count to the test's
+slot when it gets there (DK_COMMAND_VISIBILITY_*). A result is the slot's
+latest count - while the GPU is behind, an earlier test's - as d3d8_gl.c's
+query buffer gives: the game asks at the start of the next frame, and
+waiting there would stop the CPU until the GPU caught up. The screen is
+drawn at the game's own pixels, so the count is in them already. */
+
+static BOOL visibility_pending[DK_VISIBILITY_SLOTS];
 
 void WINAPI D3DDevice_BeginVisibilityTest(void)
 {
+	if (device.visibility_test_active)
+		return;
 	device.visibility_test_active = TRUE;
+	stream_command(DK_COMMAND_VISIBILITY_BEGIN, sizeof(struct dk_command_header));
 }
 
 HRESULT WINAPI D3DDevice_EndVisibilityTest(DWORD index)
 {
-	(void)index;
+	struct dk_command_visibility_end *command;
+
+	if (!device.visibility_test_active)
+		return S_OK;
 	device.visibility_test_active = FALSE;
+	index %= DK_VISIBILITY_SLOTS;
+	if (!index)
+		index = 1;
+	command = stream_command(DK_COMMAND_VISIBILITY_END, sizeof(*command));
+	command->index = (uint32_t)index;
+	visibility_pending[index] = TRUE;
 	return S_OK;
 }
 
 HRESULT WINAPI D3DDevice_GetVisibilityTestResult(DWORD index, UINT *result, ULONGLONG *time_stamp)
 {
-	(void)index;
 	if (time_stamp)
 		*time_stamp = 0;
+	index %= DK_VISIBILITY_SLOTS;
+	if (!index)
+		index = 1;
 	if (result)
-		*result = 0;
+		*result = visibility_pending[index] ? host_dk_visibility((unsigned int)index) : 0;
 	return S_OK;
 }
 
@@ -1926,12 +1986,20 @@ static void pixel_key_make(struct nv2a_pixel_shader_key *key, float texture_scal
 			memset(&description, 0, sizeof(description));
 			if (target)
 			{
-				/* a render target: the host's image of it, one level (the mip
-				composite d3d8_gl.c makes for a texture rendered a level at a
-				time is not here yet) */
+				/* a render target: the host's image of it */
 				xgpu_texture_describe(texture->Format, texture->Size, &description);
-				description.levels = 1;
 				textures->stages[stage].target = texture->Data;
+				/* (rendered a level at a time: the levels as one image, as
+				bind_textures in d3d8_gl.c makes them) */
+				if (!description.linear && !description.cube_map && description.levels > 1 &&
+					description.levels <= DK_COMPOSITE_LEVELS && target->width == description.width &&
+					target->height == description.height)
+				{
+					composite_tell(&description, texture->Data);
+					textures->stages[stage].composite = (uint32_t)description.levels;
+				}
+				else
+					description.levels = 1;
 				if (description.linear)
 				{
 					texture_scale[stage][0] = 1.0f / (float)target->width;
