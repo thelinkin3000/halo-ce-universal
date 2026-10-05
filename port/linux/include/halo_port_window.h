@@ -35,6 +35,16 @@ extern unsigned long platform_contiguous_base;
 #define PORT_WINDOW_BASE 0x80000000UL
 #endif
 
+/* how far the host moved the game's own image from where it was linked:
+the Android host loads it elsewhere where the Java runtime holds that
+address (port/android/host/host_loader.c), and the other ports never move it */
+#ifdef HALO_ANDROID
+extern unsigned long platform_image_shift;
+#define PORT_IMAGE_SHIFT (platform_image_shift)
+#else
+#define PORT_IMAGE_SHIFT 0UL
+#endif
+
 #define PORT_WINDOW_ADDRESS(xbox_address) \
 	((unsigned long)(xbox_address) - 0x80000000UL + PORT_WINDOW_BASE)
 

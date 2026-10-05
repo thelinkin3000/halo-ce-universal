@@ -6,6 +6,13 @@ from ILP32 code, see tools/android_build.py) whose segments are copied to
 the addresses it was linked at, below 4 GB. The image starts with a
 struct halo_guest_header naming its import table, which is filled with the
 host functions of the same names.
+
+Where the Java runtime already holds those addresses, the image is copied
+somewhere free instead, by a whole number of 64 KB. Its code needs nothing
+for that: branches and the ADRP pairs that form addresses are relative to the
+instruction. Its 32-bit pointers (data, the header) are listed in
+halo_guest.relocs (tools/guest_relocations.py), and each has the distance
+added before anything reads them.
 */
 
 #include "host.h"
@@ -90,12 +97,48 @@ static uint32_t host_image_find_symbol(
 	return found;
 }
 
+#define RELOCATIONS_MAGIC 0x434c5248u /* 'HRLC' */
+
+/* adds shift to each of the image's 32-bit pointers, at base; -1 if the
+table is not this image's */
+static int relocate(uint64_t base, uint64_t size, uint32_t shift, const void *relocations, size_t relocations_size)
+{
+	const uint32_t *table = relocations;
+	uint32_t count, index;
+
+	if (!table || relocations_size < 3 * sizeof(uint32_t) || table[0] != RELOCATIONS_MAGIC ||
+		table[1] != HALO_GUEST_IMAGE_BASE)
+	{
+		host_logf(HOST_LOG_ERROR, "the guest image's relocation table is missing or not for this image");
+		return -1;
+	}
+	count = table[2];
+	if (relocations_size < (3 + (uint64_t)count) * sizeof(uint32_t))
+	{
+		host_logf(HOST_LOG_ERROR, "the guest image's relocation table is cut short");
+		return -1;
+	}
+	for (index = 0; index < count; index++)
+	{
+		uint32_t offset = table[3 + index];
+
+		if ((uint64_t)offset + sizeof(uint32_t) > size)
+		{
+			host_logf(HOST_LOG_ERROR, "the guest image's relocation table names %08x, outside the image", offset);
+			return -1;
+		}
+		*(uint32_t *)(uintptr_t)(base + offset) += shift;
+	}
+	host_logf(HOST_LOG_INFO, "guest image moved by %08x: %u pointers", shift, count);
+	return 0;
+}
+
 static void missing_import(void)
 {
 	host_fatal("the guest called a host function that is not available");
 }
 
-int host_load_image(const void *file, size_t size)
+int host_load_image(const void *file, size_t size, const void *relocations, size_t relocations_size)
 {
 	const Elf64_Ehdr *elf = file;
 	const Elf64_Phdr *segments;
@@ -103,7 +146,8 @@ int host_load_image(const void *file, size_t size)
 	const struct halo_guest_header *header;
 	uint64_t *table;
 	const char *name;
-	uint32_t count, index;
+	uint32_t count, index, base;
+	uint64_t shift;
 	int missing = 0;
 
 	if (size < sizeof(*elf) || memcmp(elf->e_ident, ELFMAG, SELFMAG) || elf->e_ident[EI_CLASS] != ELFCLASS64 ||
@@ -129,8 +173,13 @@ int host_load_image(const void *file, size_t size)
 		host_logf(HOST_LOG_ERROR, "the guest image spans %llx-%llx", (unsigned long long)low, (unsigned long long)high);
 		return -1;
 	}
-	if (host_memory_initialize((uint32_t)low, (uint32_t)(high - low)) != 0)
+	if (host_memory_initialize((uint32_t)low, (uint32_t)(high - low), &base) != 0)
 		return -1;
+	/* (unsigned arithmetic: a move down wraps, and adding it back to a
+	32-bit pointer wraps the same way) */
+	shift = (uint32_t)(base - (uint32_t)low);
+	low = base;
+	high = base + (high - HALO_GUEST_IMAGE_BASE);
 	if (mmap((void *)low, high - low, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) != (void *)low)
 		return -1;
 	for (index = 0; index < elf->e_phnum; index++)
@@ -141,8 +190,11 @@ int host_load_image(const void *file, size_t size)
 			continue;
 		if (segment->p_offset + segment->p_filesz > size)
 			return -1;
-		memcpy((void *)segment->p_vaddr, (const char *)file + segment->p_offset, segment->p_filesz);
+		memcpy((void *)(uintptr_t)(uint32_t)(segment->p_vaddr + shift), (const char *)file + segment->p_offset,
+			segment->p_filesz);
 	}
+	if (shift && relocate(low, high - low, (uint32_t)shift, relocations, relocations_size) != 0)
+		return -1;
 
 	header = (const struct halo_guest_header *)low;
 	if (header->magic != HALO_GUEST_MAGIC || header->abi_version != HALO_GUEST_ABI_VERSION)
@@ -153,9 +205,13 @@ int host_load_image(const void *file, size_t size)
 	host_image.header = header;
 	host_image.base = (uint32_t)low;
 	host_image.end = (uint32_t)high;
+	host_image.shift = (uint32_t)shift;
 	for (index = 0; index < sizeof(host_image_symbols) / sizeof(*host_image_symbols); index++)
-		*(uint32_t *)((char *)&host_image + host_image_symbols[index].offset) =
-			host_image_find_symbol(file, size, host_image_symbols[index].name);
+	{
+		uint32_t address = host_image_find_symbol(file, size, host_image_symbols[index].name);
+
+		*(uint32_t *)((char *)&host_image + host_image_symbols[index].offset) = address ? address + (uint32_t)shift : 0;
+	}
 
 	table = (uint64_t *)(uintptr_t)header->import_table;
 	name = (const char *)(uintptr_t)header->import_names;
@@ -185,8 +241,8 @@ int host_load_image(const void *file, size_t size)
 	for (index = 0; index < elf->e_phnum; index++)
 	{
 		const Elf64_Phdr *segment = &segments[index];
-		uint64_t start = segment->p_vaddr & ~0xfffULL;
-		uint64_t end = (segment->p_vaddr + segment->p_memsz + 0xfff) & ~0xfffULL;
+		uint64_t start = (uint32_t)(segment->p_vaddr + shift) & ~0xfffULL;
+		uint64_t end = ((uint32_t)(segment->p_vaddr + shift) + segment->p_memsz + 0xfff) & ~0xfffULL;
 
 		if (segment->p_type == PT_LOAD && (segment->p_flags & PF_X))
 			mprotect((void *)start, end - start, PROT_READ | PROT_EXEC);

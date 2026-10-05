@@ -205,7 +205,8 @@ static void probe_tag_directory(void)
 
 	if (host_image.end == 0 || !host_image.cache_file_globals || !host_image.global_tag_instances)
 		return;
-	globals = (const uint32_t *)(image + (host_image.cache_file_globals - HALO_GUEST_IMAGE_BASE));
+	/* (the symbols' addresses are where the image was loaded, host_loader.c) */
+	globals = (const uint32_t *)(image + (host_image.cache_file_globals - host_image.base));
 	/* cache_file_globals is { boolean tags_loaded; byte pad[3];
 	struct cache_file_header header; struct cache_file_tag_header *tag_header;
 	struct cache_file_structure_bsp_header *structure_bsp_header; } and the
@@ -213,7 +214,7 @@ static void probe_tag_directory(void)
 	header = globals[0x804 / sizeof(uint32_t)];
 	host_logf(HOST_LOG_INFO, "tag directory: header %08x, loaded %d, instances %08x",
 		header, *(const int *)globals,
-		*(const uint32_t *)(image + (host_image.global_tag_instances - HALO_GUEST_IMAGE_BASE)));
+		*(const uint32_t *)(image + (host_image.global_tag_instances - host_image.base)));
 	/* the window is not necessarily at its preferred address, so the range it
 	can hold a pointer into starts where the host put it */
 	if (!header || header < host_memory_window_base())
