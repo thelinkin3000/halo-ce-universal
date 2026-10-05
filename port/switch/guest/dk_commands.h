@@ -34,6 +34,9 @@ enum
 	DK_COMMAND_PIXEL_PARAMETERS,
 	DK_COMMAND_VERTEX_FORMAT,
 	DK_COMMAND_DRAW,
+	DK_COMMAND_TEXTURE,
+	DK_COMMAND_TEXTURE_FREE,
+	DK_COMMAND_TEXTURES,
 };
 
 /* a surface's kind, as the host makes its image */
@@ -232,6 +235,104 @@ struct dk_command_pixel_parameters
 {
 	struct dk_command_header header;
 	struct dk_pixel_parameters parameters;
+};
+
+/* ---------- textures
+
+The guest keeps the texture cache (xbox_textures_dk.c) and numbers the images
+the host makes: 1 to DK_TEXTURE_LIMIT - 1, 0 meaning none. */
+
+#define DK_TEXTURE_LIMIT 4096
+
+/* DK_TEXTURE_*: what an image is */
+enum
+{
+	DK_TEXTURE_2D = 0,
+	DK_TEXTURE_3D,
+	DK_TEXTURE_CUBE,
+};
+
+/* DK_TEXTURE_*: its texels' format. The compressed ones are the GPU's own;
+BGRA is 32 bits a texel, the bytes of a Direct3D color (blue first). */
+enum
+{
+	DK_TEXTURE_BGRA = 0,
+	DK_TEXTURE_BC1,
+	DK_TEXTURE_BC2,
+	DK_TEXTURE_BC3,
+};
+
+/* makes image id (or, if it is one of the same shape, writes its texels
+again), from texels at a guest address: for each cube face (one, if it is
+not a cube), each level after the last with no padding between them - a
+level of a compressed format is its 4x4 blocks, of BGRA its texels, depth
+slices after one another - the next face face_bytes on from the last. The
+host reads source_bytes from source when it runs the command. */
+struct dk_command_texture
+{
+	struct dk_command_header header;
+	uint32_t id;
+	uint32_t kind;
+	uint32_t format;
+	uint32_t width;
+	uint32_t height;
+	uint32_t depth;
+	uint32_t levels;
+	uint32_t source;
+	uint32_t face_bytes;
+	uint32_t source_bytes;
+};
+
+/* the cache dropped image id: the host lets go of it once the GPU is done
+with the draws that read it, and the number may be made again at once */
+struct dk_command_texture_free
+{
+	struct dk_command_header header;
+	uint32_t id;
+};
+
+/* DK_WRAP_*: what a sampler does outside 0 to 1 */
+enum
+{
+	DK_WRAP_REPEAT = 0,
+	DK_WRAP_MIRROR,
+	DK_WRAP_CLAMP,
+	DK_WRAP_BORDER,
+};
+
+/* DK_MIP_*: how a sampler chooses among the levels */
+enum
+{
+	DK_MIP_NONE = 0,
+	DK_MIP_NEAREST,
+	DK_MIP_LINEAR,
+};
+
+/* how a stage samples: what configure_sampler in d3d8_gl.c decides, as values */
+struct dk_sampler
+{
+	uint32_t min_linear;
+	uint32_t mag_linear;
+	uint32_t mip_filter;
+	uint32_t wrap[3];
+	float lod_bias;
+	/* the first level it reads */
+	float lod_minimum;
+	float anisotropy;
+	float border[4];
+};
+
+struct dk_stage_texture
+{
+	uint32_t id;
+	struct dk_sampler sampler;
+};
+
+/* the four texture stages' images and samplers, for the draws that follow */
+struct dk_command_textures
+{
+	struct dk_command_header header;
+	struct dk_stage_texture stages[4];
 };
 
 /* how an input register of the vertex shader is fed */

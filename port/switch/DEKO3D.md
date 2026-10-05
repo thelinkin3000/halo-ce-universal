@@ -1008,6 +1008,34 @@ shaders from the cache, state, vertex data and uniforms with no fault - that
 is what step 1 could show. Whether the device flags give the right way up
 can only be judged when textured draws appear.
 
+**Step 2, textures: run on the console - the first picture.** The menus'
+background and the 3D Halo ring with its textures appear, and the user saw
+them render "at amazing speed". From the log, in the menus, every 60
+frames: 420 draws and 5,900-6,600 immediate-mode draws (about 7 and 105 a
+frame), nothing skipped, no GPU fault, no texture error; 60 frames a second;
+**the game thread at 1.2-1.3 ms a frame (7-8% of the time), against 5.8 ms
+(35%) for the OpenGL image in the menus** - about four and a half times less,
+before any of phase 7's work. The picture is the right way up with the
+device flags as they are (`DkDeviceFlags_OriginUpperLeft`, no
+`YAxisPointsDown`): step 1's open question is settled.
+
+Built: `guest/xbox_textures_dk.c` (a copy of `xbox_textures.c`, in the
+deko3d image only: its decoders and cache, the texels sent to the host -
+BC1 to BC3 as they are, read where the game keeps them, the rest decoded to
+BGRA), `guest/dk_textures.h`, the texture, texture-free and stage commands,
+and in the host a table of images, staging uploads, image and sampler
+descriptor sets, deferred release by submission, and an opaque-black dummy
+for an empty stage. Fixed on the console: the dummy's four bytes, which are
+the host's own, went through the command's 32-bit guest-address field, cut
+short, and the first textured draw faulted; `texture_write` takes host texels
+apart now.
+
+Still expected, for later steps: textures whose data is a render target's
+sample stale game memory (step 4); the high-res HUD, text and the menus' art
+draw nothing (step 6); a cached texture is refreshed only by announced writes
+(locks, file reads), as the OpenGL renderer's on the Switch. For phase 7: a
+texture written in place after draws puts a full barrier first.
+
 Found on the console, and fixed or worked around:
 - **A screenshot faulted the GPU.** With `debug.screenshot_every` set (the
   console's `config.toml` had 300 from this phase's testing, so frame 0 took

@@ -24,6 +24,7 @@ and presenting go there; a draw and a visibility test do nothing yet.
 #include "posix.h"
 #include "dk_commands.h"
 #include "dk_shaders.h"
+#include "dk_textures.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -241,6 +242,15 @@ static unsigned long stream_used;
 host numbers them: this is the number of the one being written. */
 static unsigned long submission = 1;
 
+/* buffers of the guest's that commands name (a decoded texture's texels): the
+host reads them when it runs the stream, so they are freed once it has */
+#define PENDING_FREE_LIMIT 256
+#define PENDING_FREE_BYTES (8 * 1024 * 1024)
+
+static void *pending_frees[PENDING_FREE_LIMIT];
+static unsigned long pending_free_count;
+static unsigned long pending_free_bytes;
+
 static void stream_flush(void)
 {
 	if (!stream_used)
@@ -248,6 +258,9 @@ static void stream_flush(void)
 	host_dk_submit((unsigned int)(uintptr_t)stream, (unsigned int)stream_used);
 	stream_used = 0;
 	submission++;
+	while (pending_free_count)
+		free(pending_frees[--pending_free_count]);
+	pending_free_bytes = 0;
 }
 
 /* room for a command of size bytes, its header filled in */
@@ -263,6 +276,19 @@ static void *stream_command(uint32_t type, unsigned long size)
 	header->size = (uint32_t)size;
 	stream_used += size;
 	return header;
+}
+
+void *dk_stream_command(uint32_t type, unsigned long size)
+{
+	return stream_command(type, size);
+}
+
+void dk_stream_free_after_handover(void *buffer, unsigned long size)
+{
+	pending_frees[pending_free_count++] = buffer;
+	pending_free_bytes += size;
+	if (pending_free_count == PENDING_FREE_LIMIT || pending_free_bytes >= PENDING_FREE_BYTES)
+		stream_flush();
 }
 
 static void color_to_vec4(D3DCOLOR color, float *out)
@@ -581,6 +607,9 @@ HRESULT WINAPI Direct3D_CreateDevice(UINT adapter, D3DDEVTYPE device_type, void 
 			D3D__TextureState[index][D3DTSS_MAXANISOTROPY] = 1;
 		}
 		viewport_update_constants();
+		/* what tells the texture cache a texture has been rewritten
+		(xbox_textures_dk.c) */
+		memory_watch_initialize();
 
 		/* The window is the host's stand-in (port/switch/host/host.h): the
 		platform layer's event loop runs only while it has one, and its swap
@@ -1448,8 +1477,7 @@ them writes one command, and a draw that changes nothing writes the draw. */
 
 static struct
 {
-	unsigned long draws, immediate_draws, skipped_no_program, skipped_no_target, skipped_shader, skipped_texture,
-		skipped_size;
+	unsigned long draws, immediate_draws, skipped_no_program, skipped_no_target, skipped_shader, skipped_size;
 } stats;
 
 /* what the host holds */
@@ -1462,6 +1490,8 @@ static struct dk_pixel_parameters pixel_parameters_told;
 static BOOL parameters_known;
 static struct dk_vertex_format format_told;
 static BOOL format_known;
+static struct dk_command_textures textures_told;
+static BOOL textures_known;
 static unsigned long constants_told;
 static BOOL constants_known;
 
@@ -1755,13 +1785,51 @@ static void draw_format_send(const struct dk_vertex_format *format)
 	format_known = TRUE;
 }
 
-/* The pixel shader's key as prepare_draw builds it. The textures the stages
-sample are not yet the host's to bind: a draw that needs one is not drawn. */
-static BOOL pixel_key_make(struct nv2a_pixel_shader_key *key, float texture_scale[4][4])
+static uint32_t address_mode(DWORD mode)
+{
+	switch (mode)
+	{
+	case D3DTADDRESS_MIRROR: return DK_WRAP_MIRROR;
+	case D3DTADDRESS_CLAMP:
+	case D3DTADDRESS_CLAMPTOEDGE: return DK_WRAP_CLAMP;
+	case D3DTADDRESS_BORDER: return DK_WRAP_BORDER;
+	default: return DK_WRAP_REPEAT;
+	}
+}
+
+/* what d3d8_gl.c's configure_sampler decides for a stage, as values for the
+host's sampler. mipmapped: the texture has more than one level. */
+static void sampler_make(int stage, BOOL mipmapped, struct dk_sampler *sampler)
+{
+	DWORD *state = D3D__TextureState[stage];
+	DWORD min_filter = state[D3DTSS_MINFILTER];
+	DWORD mip_filter = mipmapped ? state[D3DTSS_MIPFILTER] : D3DTEXF_NONE;
+
+	memset(sampler, 0, sizeof(*sampler));
+	sampler->min_linear = min_filter != D3DTEXF_POINT;
+	sampler->mag_linear = state[D3DTSS_MAGFILTER] != D3DTEXF_POINT;
+	sampler->mip_filter = mip_filter == D3DTEXF_NONE ? DK_MIP_NONE : mip_filter == D3DTEXF_POINT ? DK_MIP_NEAREST :
+		DK_MIP_LINEAR;
+	sampler->wrap[0] = address_mode(state[D3DTSS_ADDRESSU]);
+	sampler->wrap[1] = address_mode(state[D3DTSS_ADDRESSV]);
+	sampler->wrap[2] = address_mode(state[D3DTSS_ADDRESSW]);
+	sampler->lod_bias = dword_to_float(state[D3DTSS_MIPMAPLODBIAS]);
+	sampler->lod_minimum = (float)state[D3DTSS_MAXMIPLEVEL];
+	sampler->anisotropy = (min_filter == D3DTEXF_ANISOTROPIC && state[D3DTSS_MAXANISOTROPY] > 1) ?
+		(float)state[D3DTSS_MAXANISOTROPY] : 1.0f;
+	color_to_vec4(state[D3DTSS_BORDERCOLOR], sampler->border);
+}
+
+/* The pixel shader's key as prepare_draw builds it, and with it what the
+stages sample: every stage's texture is found here (finding one may send its
+texels to the host), as bind_textures does. */
+static void pixel_key_make(struct nv2a_pixel_shader_key *key, float texture_scale[4][4],
+	struct dk_command_textures *textures)
 {
 	int stage;
 
 	memset(key, 0, sizeof(*key));
+	memset(textures, 0, sizeof(*textures));
 	memcpy(key->combiner_state, D3D__RenderState, sizeof(key->combiner_state));
 	/* constants are uniforms, not part of the program */
 	memset(&key->combiner_state[D3DRS_PSCONSTANT0_0], 0, 16 * sizeof(DWORD));
@@ -1775,16 +1843,53 @@ static BOOL pixel_key_make(struct nv2a_pixel_shader_key *key, float texture_scal
 
 		texture_scale[stage][0] = texture_scale[stage][1] = 1.0f;
 		texture_scale[stage][2] = texture_scale[stage][3] = 1.0f;
-		if (mode == 0x11 || (texture && texture->Data && mode != 0 && mode != 0x04 && mode != 0x05))
-			return FALSE;
-		key->sampler_type[stage] = _xgpu_sampler_none;
 		key->alpha_kill[stage] = D3D__TextureState[stage][D3DTSS_ALPHAKILL] == D3DTALPHAKILL_ENABLE;
 		key->color_sign[stage] = (unsigned char)((D3D__TextureState[stage][D3DTSS_COLORSIGN] >> 28) & 0xf);
+		if (!texture || !texture->Data || mode == 0 || mode == 0x04 || mode == 0x05 || mode == 0x11)
+		{
+			key->sampler_type[stage] = mode == 0x11 ? _xgpu_sampler_2d : _xgpu_sampler_none;
+			continue;
+		}
+		{
+			const D3DCOLOR *palette = device.palettes[stage] && device.palettes[stage]->Data ?
+				(const D3DCOLOR *)PLATFORM_PHYSICAL_TO_VIRTUAL(device.palettes[stage]->Data) : NULL;
+			struct xgpu_texture_description description;
+			int kind = DK_TEXTURE_2D;
+
+			memset(&description, 0, sizeof(description));
+			textures->stages[stage].id = dk_texture_get((const DWORD *)texture, palette, &kind, &description);
+			if (description.linear)
+			{
+				texture_scale[stage][0] = 1.0f / (float)description.width;
+				texture_scale[stage][1] = 1.0f / (float)description.height;
+			}
+			if (stage == 0)
+				key->coverage_alpha = description.hires_coverage != FALSE;
+			key->sampler_type[stage] = kind == DK_TEXTURE_CUBE ? _xgpu_sampler_cube : kind == DK_TEXTURE_3D ?
+				_xgpu_sampler_3d : _xgpu_sampler_2d;
+			sampler_make(stage, description.levels > 1, &textures->stages[stage].sampler);
+		}
 	}
+	/* (only with the meter's blend: hud_hires.h, nv2a_pixel_shader_key) */
+	key->coverage_alpha = key->coverage_alpha && D3D__RenderState[D3DRS_ALPHABLENDENABLE] &&
+		D3D__RenderState[D3DRS_SRCBLEND] == D3DBLEND_CONSTANTCOLOR &&
+		D3D__RenderState[D3DRS_DESTBLEND] == D3DBLEND_SRCALPHA;
 	key->alpha_test_function = D3D__RenderState[D3DRS_ALPHATESTENABLE] ? D3D__RenderState[D3DRS_ALPHAFUNC] : 0;
 	key->fog_enable = D3D__RenderState[D3DRS_FOGENABLE] != 0;
 	key->fog_table_mode = (unsigned char)D3D__RenderState[D3DRS_FOGTABLEMODE];
-	return TRUE;
+}
+
+static void draw_textures_send(const struct dk_command_textures *textures)
+{
+	if (textures_known && !memcmp(&textures->stages, &textures_told.stages, sizeof(textures->stages)))
+		return;
+	{
+		struct dk_command_textures *command = stream_command(DK_COMMAND_TEXTURES, sizeof(*command));
+
+		memcpy(command->stages, textures->stages, sizeof(command->stages));
+	}
+	textures_told = *textures;
+	textures_known = TRUE;
 }
 
 /* d3d8_gl.c's prepare_draw: everything a draw needs but its vertices, written
@@ -1795,6 +1900,7 @@ static BOOL draw_prepare(BOOL immediate)
 	struct vertex_shader_object *program = current_program();
 	struct dk_vertex_key vertex_key;
 	struct nv2a_pixel_shader_key pixel_key;
+	struct dk_command_textures textures;
 	float texture_scale[4][4];
 	uint32_t vertex_shader, pixel_shader;
 	BOOL has_depth = FALSE;
@@ -1809,11 +1915,7 @@ static BOOL draw_prepare(BOOL immediate)
 		stats.skipped_no_target++;
 		return FALSE;
 	}
-	if (!pixel_key_make(&pixel_key, texture_scale))
-	{
-		stats.skipped_texture++;
-		return FALSE;
-	}
+	pixel_key_make(&pixel_key, texture_scale, &textures);
 	memset(&vertex_key, 0, sizeof(vertex_key));
 	vertex_key.program_hash = program->program_hash;
 	vertex_key.packed_mask = immediate ? 0 : (uint32_t)device.vertex_shader->packed_mask;
@@ -1833,6 +1935,7 @@ static BOOL draw_prepare(BOOL immediate)
 	draw_shaders_send(vertex_shader, pixel_shader);
 	draw_constants_send();
 	draw_parameters_send(texture_scale);
+	draw_textures_send(&textures);
 	return TRUE;
 }
 
@@ -2219,8 +2322,8 @@ static void screenshot_write(void)
 static void draw_statistics_log(void)
 {
 	platform_log("frame %lu: %lu draws, %lu immediate; skipped %lu no program, %lu no target, %lu shader not ready, "
-		"%lu textured, %lu too big", device.frame, stats.draws, stats.immediate_draws, stats.skipped_no_program,
-		stats.skipped_no_target, stats.skipped_shader, stats.skipped_texture, stats.skipped_size);
+		"%lu too big", device.frame, stats.draws, stats.immediate_draws, stats.skipped_no_program,
+		stats.skipped_no_target, stats.skipped_shader, stats.skipped_size);
 	memset(&stats, 0, sizeof(stats));
 }
 
@@ -2275,6 +2378,7 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 	/* the stand-in window's swap: holds the frame to the display's rate
 	until the host presents, after which its swapchain does */
 	platform_video_swap();
+	xgpu_texture_cache_begin_frame();
 	device.frame++;
 	platform_pump_events();
 
