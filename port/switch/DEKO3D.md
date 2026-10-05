@@ -4,7 +4,7 @@ A second renderer for the Switch build that drives the GPU through
 [deko3d](https://github.com/devkitPro/deko3d) instead of Mesa, with compiled
 shaders cached on the SD card.
 
-Status: phases 0 to 5 done, phase 6 under way (step 1 of 6); see "Progress" at the end.
+Status: phases 0 to 5 done, phase 6 under way (steps 1, 2, 3 and 6 done, step 4 in part); see "Progress" at the end.
 
 ---
 
@@ -775,8 +775,9 @@ the menus and a map, at the CPU cost phase 7 then measures.
    ripples), the screen's scale, split screen (viewports and the scissor
    following them).
 5. **Visibility tests** (lens flares).
-6. **The high-res HUD and text, and the menus' art**, whose GL calls do
-   nothing under deko3d now (`hud_hires.c`, `text_hires.c`, `menu_files.c`).
+6. **The high-res HUD and text, and the menus' art** (`hud_hires.c`,
+   `text_hires.c`, `menu_files.c`). Done ahead of steps 4 and 5: see
+   "Progress".
 
 ### Step 3 in detail: a map
 
@@ -1096,8 +1097,85 @@ Don't commit; the review does that.
 
 ### Phase 6 (under way)
 
-Rules kept: no edit to the OpenGL renderer or to anything under
-`port/linux/src`; nothing committed.
+Rules kept: no edit to the OpenGL renderer; under `port/linux/src`, only
+read-only accessors behind `#ifdef HALO_SWITCH` (step 6, below), which the
+OpenGL image links but does not call.
+
+**Step 4, render targets: render-to-texture done and seen on the console;
+the mip composite, the screen's scale and split screen still to do.** The
+sniper's zoom went black: it draws into a texture and draws that texture
+back, and the texture cache read the texture's address in the game's memory,
+where the GPU never writes. Now `d3d8_dk.c` notes every color surface it
+binds as a target (`rendered_note`, `rendered_find`: data and the size last
+drawn at), and a stage whose texture's data is one sends that address
+(`dk_stage_texture.target`, id 0) instead of an image, with one level and
+the linear-texture scale from the target's size, as `bind_textures` in
+`d3d8_gl.c` does. The host (`target_sampled` in `host_dk.c`) takes, of the
+color targets at that address, the one bound last (`target.bound`, from
+`dk.target_clock`) - `xgpu_render_target_find`'s choice - gives it an image
+descriptor the first time, and puts a fragment barrier with an image
+invalidate between the draws into a target and the first draw that samples
+it (`target.drawn`, set when it is bound); a target sampled since the last
+barrier gets one before the targets change again
+(`textures_targets_changing`). The zoom works. Still to do: the mip
+composite (a texture the game renders a level at a time, the water's ripple
+map - the water looks "a little weird but not super wrong": one level is
+sampled, the levels below it are not made), the screen's scale and split
+screen.
+
+**Step 3, a map: run on the console - the game plays.** The first level
+load stopped silently: no present, no fault. A two-second report on every
+wait (`fence_wait_said` on the host's frame and rollover waits; one in
+`halo_resource_wait`; a queue-error check after every submission) named it at
+once: "a lock of 0x203bd800 has waited two seconds for submission 153684298
+(409 retired, 410 being written)". A resource whose header comes from the
+map file keeps what the file has in `Lock` - the game zeroes it only for the
+headers it makes - and `halo_resource_busy` read that as a submission still
+to come. A `Lock` past the submission being written is now not this
+device's: not busy, and set to 0 (one at or below it waits, at most, until
+the GPU passes it). The reports stay in. With that the map plays: 58-60
+frames a second, the game thread at 5.6-5.9 ms a frame (34-35% of the time),
+the most command memory a frame used 1 MB (one piece) and no rollover, some
+draws skipped for shaders not ready on first sight (tens a second at most,
+compiled in the background), no GPU fault. The rollover is therefore still
+untried on the console; the 8 MB is ample for this map.
+
+**Step 6, the high-res HUD and text and the menus' art: run on the console -
+the PC menus work.** Pulled ahead of steps 4 and 5, since the PC menus
+(`display.menus = "pc"`) cannot be read without them. `xbox_textures_dk.c`
+makes the three replacements `texture_entry_result` in `xbox_textures.c`
+makes, as images of its own from the same id allocator: the text's atlas
+(2048 square, white with the coverage as alpha; after the first upload only
+the rows written since are sent), a menu's art (by file name, kept) and a
+high-res HUD bitmap (found by `hud_hires_override_find` when an entry is
+uploaded, as in GL; kept). PNGs are decoded by `hud_hires_png_pixels`, their
+mip levels made by halving (a 2x2 mean), red and blue swapped to BGRA. The
+texels go as a new command, `DK_COMMAND_TEXTURE_ROWS` (rows of one level of
+a 2D BGRA image), after a `DK_COMMAND_TEXTURE` with no source that only
+makes the image, in pieces of at most 1 MB so that one seldom straddles two
+window chunks (which sends it through the 8 MB staging slice). `sampler_make`
+takes `hires` as `configure_sampler` does: linear, from the mip levels, no
+bias. The accessors, behind `HALO_SWITCH`: `text_hires_atlas_rows`
+(`text_hires.c`), `hud_hires_png_pixels` (`hud_hires.c`), `menu_art_name`
+and `menu_art_png` (`menu_files.c`).
+
+**Step 3, a map: command memory made safe.**
+A frame that fills its 8 MB of command memory no longer ends the program
+(`host_dk.c`). The frame's region is given to the command buffer in 1 MB
+pieces (`command_piece_add`, so the host knows how much a frame has used);
+when the last piece is given, `host_dk_submit` - between two commands, where a
+command's few KB cannot overrun the megabyte left - submits what is recorded,
+waits for the GPU to finish it and records on from the start of the region
+(`command_memory_roll`: a stall, said once in the log as a warning, counted).
+Every 60 presented frames the log says the most a frame used (to the piece)
+and the rollovers so far: "deko3d: command memory, the most a frame used in
+the last 60: N KB of 8192 KB (R rollovers in all)" - the size is to be chosen
+from that. The callback still ends the program, but only if one command asks
+for more than a piece. A submission in the middle of a stream (the roll, and
+`staging_copy`'s, which had the same flaw) now fences with the serial *before*
+the stream's (`commands_submit_partial`): the guest's busy checks and locks
+read a fence as "every draw of that serial is finished", and the stream's
+later draws were not yet recorded.
 
 **Step 1, first triangle: run on the console - the draw path works; the
 picture's orientation is still to be seen (step 2).** In the menus, per 60

@@ -430,6 +430,49 @@ static void surface_describe(const D3DSurface *surface, BOOL depth_only, struct 
 	out->kind = depth ? DK_SURFACE_DEPTH : DK_SURFACE_COLOR;
 }
 
+/* the color surfaces drawn into, by their data, and the size each was last
+drawn at: a texture whose data is one samples the host's target
+(render-to-texture), as d3d8_gl.c's xgpu_render_target_find finds them */
+#define RENDERED_LIMIT 128
+
+static struct rendered
+{
+	DWORD data;
+	unsigned long width, height;
+} rendered[RENDERED_LIMIT];
+static unsigned long rendered_count;
+
+static void rendered_note(const struct dk_surface *surface)
+{
+	unsigned long index;
+
+	if (surface->kind != DK_SURFACE_COLOR)
+		return;
+	for (index = 0; index < rendered_count && rendered[index].data != surface->data; index++)
+		;
+	if (index == rendered_count)
+	{
+		if (rendered_count == RENDERED_LIMIT)
+			return;
+		rendered_count++;
+	}
+	rendered[index].data = surface->data;
+	rendered[index].width = surface->width;
+	rendered[index].height = surface->height;
+}
+
+static const struct rendered *rendered_find(DWORD data)
+{
+	unsigned long index;
+
+	for (index = 0; index < rendered_count; index++)
+	{
+		if (rendered[index].data == data)
+			return &rendered[index];
+	}
+	return NULL;
+}
+
 /* the targets the host has bound, as last told it; cleared when a frame
 starts there anew */
 static struct dk_command_targets targets_told;
@@ -456,6 +499,7 @@ static BOOL targets_bind(BOOL *has_depth)
 
 		command->color = targets.color;
 		command->depth = targets.depth;
+		rendered_note(&targets.color);
 		targets_told = targets;
 		targets_known = TRUE;
 	}
@@ -763,7 +807,8 @@ Draws read the game's memory where the game wrote it, after the draw, so a
 resource is busy until the GPU is past the last submission that read it. As
 the Xbox's runtime did, the resource's Lock field records that submission
 (resource_used); the game sets it to 0, not busy, whenever it makes a
-resource's header. d3d8_resources.c asks halo_resource_busy and
+resource's header - but not for the headers a map file holds, which come
+with what the file has there (halo_resource_busy). d3d8_resources.c asks halo_resource_busy and
 halo_resource_wait for IsBusy, BlockUntilNotBusy and its locks; their
 definitions there are empty for the OpenGL image, whose mirror copied a
 draw's data at the draw. */
@@ -811,18 +856,36 @@ BOOL halo_resource_busy(D3DResource *resource)
 
 	if (!last)
 		return FALSE;
+	/* past the submission being written: not a number this device wrote. A
+	resource whose header is in a map file comes with whatever the file has
+	there (a level's first lock waited for submission 153684298, 410 being
+	written, and never came back), so it is not busy, and is now 0 */
+	if (last > submission)
+	{
+		resource->Lock = 0;
+		return FALSE;
+	}
 	/* used in the submission still being written: handed over now, as the
 	Xbox's runtime kicks off its push buffer, or a caller spinning on IsBusy
 	would wait for a submission that never comes */
-	if (last >= submission)
+	if (last == submission)
 		stream_flush();
 	return host_dk_retired() < last;
 }
 
 void halo_resource_wait(D3DResource *resource)
 {
+	unsigned long waits = 0;
+
 	while (halo_resource_busy(resource))
+	{
+		/* (said once a wait, at two seconds: a lock that never comes back is
+		otherwise a silent stop) */
+		if (++waits == 4000)
+			platform_log("deko3d: a lock of %p has waited two seconds for submission %lu (%u retired, %lu being "
+				"written)", (void *)resource, (unsigned long)resource->Lock, host_dk_retired(), submission);
 		usleep(500);
+	}
 }
 
 BOOL WINAPI D3DDevice_IsBusy(void)
@@ -1798,23 +1861,25 @@ static uint32_t address_mode(DWORD mode)
 }
 
 /* what d3d8_gl.c's configure_sampler decides for a stage, as values for the
-host's sampler. mipmapped: the texture has more than one level. */
-static void sampler_make(int stage, BOOL mipmapped, struct dk_sampler *sampler)
+host's sampler. mipmapped: the texture has more than one level. hires: it is
+a high-res replacement (xbox_textures_dk.c), drawn smaller than it is, so
+filtered and from its mip levels whatever the game asks. */
+static void sampler_make(int stage, BOOL mipmapped, BOOL hires, struct dk_sampler *sampler)
 {
 	DWORD *state = D3D__TextureState[stage];
-	DWORD min_filter = state[D3DTSS_MINFILTER];
-	DWORD mip_filter = mipmapped ? state[D3DTSS_MIPFILTER] : D3DTEXF_NONE;
+	DWORD min_filter = hires ? D3DTEXF_LINEAR : state[D3DTSS_MINFILTER];
+	DWORD mip_filter = hires ? D3DTEXF_LINEAR : mipmapped ? state[D3DTSS_MIPFILTER] : D3DTEXF_NONE;
 
 	memset(sampler, 0, sizeof(*sampler));
 	sampler->min_linear = min_filter != D3DTEXF_POINT;
-	sampler->mag_linear = state[D3DTSS_MAGFILTER] != D3DTEXF_POINT;
+	sampler->mag_linear = hires || state[D3DTSS_MAGFILTER] != D3DTEXF_POINT;
 	sampler->mip_filter = mip_filter == D3DTEXF_NONE ? DK_MIP_NONE : mip_filter == D3DTEXF_POINT ? DK_MIP_NEAREST :
 		DK_MIP_LINEAR;
 	sampler->wrap[0] = address_mode(state[D3DTSS_ADDRESSU]);
 	sampler->wrap[1] = address_mode(state[D3DTSS_ADDRESSV]);
 	sampler->wrap[2] = address_mode(state[D3DTSS_ADDRESSW]);
-	sampler->lod_bias = dword_to_float(state[D3DTSS_MIPMAPLODBIAS]);
-	sampler->lod_minimum = (float)state[D3DTSS_MAXMIPLEVEL];
+	sampler->lod_bias = hires ? 0.0f : dword_to_float(state[D3DTSS_MIPMAPLODBIAS]);
+	sampler->lod_minimum = hires ? 0.0f : (float)state[D3DTSS_MAXMIPLEVEL];
 	sampler->anisotropy = (min_filter == D3DTEXF_ANISOTROPIC && state[D3DTSS_MAXANISOTROPY] > 1) ?
 		(float)state[D3DTSS_MAXANISOTROPY] : 1.0f;
 	color_to_vec4(state[D3DTSS_BORDERCOLOR], sampler->border);
@@ -1856,18 +1921,37 @@ static void pixel_key_make(struct nv2a_pixel_shader_key *key, float texture_scal
 			struct xgpu_texture_description description;
 			int kind = DK_TEXTURE_2D;
 
+			const struct rendered *target = rendered_find(texture->Data);
+
 			memset(&description, 0, sizeof(description));
-			textures->stages[stage].id = dk_texture_get((const DWORD *)texture, palette, &kind, &description);
-			if (description.linear)
+			if (target)
 			{
-				texture_scale[stage][0] = 1.0f / (float)description.width;
-				texture_scale[stage][1] = 1.0f / (float)description.height;
+				/* a render target: the host's image of it, one level (the mip
+				composite d3d8_gl.c makes for a texture rendered a level at a
+				time is not here yet) */
+				xgpu_texture_describe(texture->Format, texture->Size, &description);
+				description.levels = 1;
+				textures->stages[stage].target = texture->Data;
+				if (description.linear)
+				{
+					texture_scale[stage][0] = 1.0f / (float)target->width;
+					texture_scale[stage][1] = 1.0f / (float)target->height;
+				}
+			}
+			else
+			{
+				textures->stages[stage].id = dk_texture_get((const DWORD *)texture, palette, &kind, &description);
+				if (description.linear)
+				{
+					texture_scale[stage][0] = 1.0f / (float)description.width;
+					texture_scale[stage][1] = 1.0f / (float)description.height;
+				}
 			}
 			if (stage == 0)
 				key->coverage_alpha = description.hires_coverage != FALSE;
 			key->sampler_type[stage] = kind == DK_TEXTURE_CUBE ? _xgpu_sampler_cube : kind == DK_TEXTURE_3D ?
 				_xgpu_sampler_3d : _xgpu_sampler_2d;
-			sampler_make(stage, description.levels > 1, &textures->stages[stage].sampler);
+			sampler_make(stage, description.levels > 1, description.hires, &textures->stages[stage].sampler);
 		}
 	}
 	/* (only with the meter's blend: hud_hires.h, nv2a_pixel_shader_key) */
