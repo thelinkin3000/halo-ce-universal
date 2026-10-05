@@ -85,6 +85,11 @@ parser.add_argument(
     help="clang with the arm64_32 target for the Android guest (default: clang)",
 )
 parser.add_argument(
+    "--android-vulkan-validation",
+    action="store_true",
+    help="put the Vulkan validation layer in the Android APK (debug.vk_validation; adds about 30 MB)",
+)
+parser.add_argument(
     "--devkitpro",
     type=str,
     help="devkitPro for `ninja switch` (default: DEVKITPRO, or /opt/devkitpro)",
@@ -108,6 +113,7 @@ sln = SimpleNamespace(
     port_pgo_profile=args.pgo_profile,
     android_ndk=args.android_ndk,
     android_guest_cc=args.android_guest_cc,
+    android_vulkan_validation=args.android_vulkan_validation,
     devkitpro=args.devkitpro,
 )
 

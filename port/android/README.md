@@ -228,6 +228,9 @@ These settings are only for Android:
 | `display.screen_width` | The number of columns of the 480-line picture. `0` (the default): the shape of the display (1068 on a 20:9 phone). `640`: the 4:3 shape of the Xbox. |
 | `debug.sample_seconds` | Refer to "Find problems". |
 | `debug.memory_watch` | `true` (the default): the app notices the game's writes to textures and vertices by page protection. `false`: it compares page contents once a frame instead, which is slower. Refer to "Limits". |
+| `debug.profile_hz` | Refer to "Find problems". |
+| `debug.vk_probe` | Refer to "Find problems". |
+| `debug.vk_validation` | Refer to "Find problems". |
 
 ## Internet play
 
@@ -471,6 +474,32 @@ assembly of the port is necessary:
   the OpenGL ES errors.
 - The log says which write tracking the app uses: "page protection"
   (devices) or "page hashes" (the emulator, or `debug.memory_watch = false`).
+- Set `profile_hz = 1000` in `[debug]` of `config.toml` to profile. Every
+  game thread is interrupted 1000 times a second, and every ten seconds the
+  app appends the samples (the program counter, the link register and the
+  return addresses of the frame chain) to `profile.bin` in the data folder,
+  with the CPU time of each thread. Pull the file, and enter
+  `tools/android_profile_report.py profile.bin --logcat <log>`. It prints,
+  for each thread, the share of the samples in the game, the OpenGL ES
+  renderer, the boundary between the guest and the host, the OpenGL ES
+  driver and everything else, and the milliseconds of CPU for each frame.
+  `--from` and `--to` select seconds of the run. Set `gpu_stats = true` too,
+  for the frames per second.
+- Set `vk_probe = "all"` in `[debug]` of `config.toml` to run the Vulkan
+  probe (port/android/VULKAN.md, phase 0) instead of the game. The value
+  can be a list of `caps`, `memory`, `compile`, `pipelines` and `present`.
+  The probe writes `vk_probe.txt` in the data folder and ends the app. The
+  `present` step waits for a person: it shows a colour that changes, and it
+  accepts the buttons A (the picture is right), Y (it is upside down), X
+  (the way to clear) and B (end). A step that stops the app is left out of
+  the next run (`vk_probe_skip.txt`; delete the file to try it again).
+  `vk_validation = true` turns on the Vulkan validation layer, which is in
+  the app only if `python configure.py --android-vulkan-validation` made it.
+- To install a debug build beside the app from GitHub Actions (another
+  signing key stops it from replacing that app), set
+  `HALO_APPLICATION_ID_SUFFIX=.vk` when you run `ninja android_apk`. The
+  package is then `com.halo.decomp.vk`, with a data folder of its own, which
+  needs a copy of `maps/`.
 
 ## Limits
 
