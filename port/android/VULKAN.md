@@ -24,7 +24,7 @@ the phone's driver; the results are in "Progress". Not tried: a second GPU
 family (a Mali). **Phase 1 is done on the test device and committed** (the
 Vulkan image, the host's choice and its decision, the stand-ins: the game
 runs under `display.renderer = "vulkan"` on the phone's driver and on
-Turnip, with a black screen as the phase says). **Phase 2 is done on the test device and committed** (the command stream, the device, the swapchain, the targets, clears and present: the game's clears are on the screen through Vulkan on both drivers). **Phase 3 is done on the test device and committed** (data records, the 4 MB stream, the upload rings and the data table; the data self-test is `ok` on both drivers). **Phase 4 is next.** The
+Turnip, with a black screen as the phase says). **Phase 2 is done on the test device and committed** (the command stream, the device, the swapchain, the targets, clears and present: the game's clears are on the screen through Vulkan on both drivers). **Phase 3 is done on the test device and committed** (data records, the 4 MB stream, the upload rings and the data table; the data self-test is `ok` on both drivers). **Phase 4 is written out and next.** The
 work is on the `vulkan-backend` branch, which starts again from `main`. An
 earlier attempt, kept on the `vulkan-backend-old` branch, is not the base of
 this work and nothing here builds on it; see "Lessons from the earlier
@@ -1379,32 +1379,237 @@ On both drivers:
 
 ## Phase 4 — GLSL for Vulkan
 
-Copies of the generators that write GLSL 450 for glslang: the vertex
-shader's `std140` uniform block at set 0 binding 0 and the pixel shader's at
-binding 1 (phase 0 found two blocks cannot share a binding), **every
-member's offset written explicitly** and checked against the C structure the
-host fills (a build-time or start-up check that compares every offset);
-varyings with `location`s; each texture stage's sampler at its own binding.
-The keys are the GL generators' keys.
+The Vulkan renderer's two GLSL generators, and the proof that what they
+produce for the game's real shaders compiles, validates, lays its blocks out
+as the C structures say, and says the same as the GL ES generators. The
+deko3d plan's phase 4 is the model (`port/switch/DEKO3D.md`, "Phase 4 — GLSL
+for UAM", and `port/switch/guest/nv2a_vsh_dk.c`, `nv2a_psh_dk.c`,
+`dk_shaders.h`: read them first; most of this phase is that phase with
+glslang for UAM and Vulkan's binding model for deko3d's).
 
-**Proving it: the game's real shaders.** Off the device, as deko3d's phase 4
-did with UAM: take every program a GL build has recorded
-(`shader_programs.bin` from a session through the campaign's maps; only the
-Switch's GL build records it today, behind `HALO_SWITCH`, so phase 4 starts
-by recording it on Android or on Linux), generate both the GL and the Vulkan
-GLSL from the same keys, and:
+### What this phase is, and is not
 
-- compile every Vulkan one with `glslangValidator`, and validate the SPIR-V
-  (`spirv-val`);
-- reflect each one (`spirv-cross --reflect`) and check its block offsets and
-  bindings against the host's structure;
-- compare each pair: the same texture stages sampled, the same combiner
-  inputs, the same outputs. **A shader that compiles cleanly and draws black
-  is the failure this exists to catch**; it compiles, so only a comparison
-  finds it.
+- **It is** the generators (copies), the header that fixes the blocks'
+  layout and the bindings, the making of a draw's pixel shader key in the
+  Vulkan device (without drawing), a dump of every shader the game meets,
+  a probe step that compiles them on the device, and a check on the PC.
+- **It is not** drawing (phase 6), caching (phase 5) or compiling in the
+  backend (phase 5). Nothing on the screen changes.
+- **The GL ES image does not change**: `port/linux/src/nv2a_vsh.c` and
+  `nv2a_psh.c` are not edited (they are in both images; the copies' new
+  names do not collide).
 
-**Acceptance:** every recorded program generates, compiles and validates; the
-reflection and the comparison find nothing; the numbers in "Progress".
+### Files
+
+| File | What |
+|---|---|
+| `port/android/guest/nv2a_vsh_vk.c` | a copy of `nv2a_vsh.c`, the function renamed `nv2a_vk_vertex_shader_to_glsl` (same arguments) |
+| `port/android/guest/nv2a_psh_vk.c` | a copy of `nv2a_psh.c`, the function renamed `nv2a_vk_pixel_shader_to_glsl` (same argument: a `struct nv2a_pixel_shader_key`) |
+| `port/android/guest/vk_shaders.h` | the bindings, the interface locations, every block member's offset as a `#define`, the C structures of the blocks with each offset and size checked at compile time, the generators' prototypes. Fixed-width types and floats only, so the host can include it |
+| `port/android/guest/d3d8_vk.c` | the pixel shader key made at each draw, the vertex shaders kept by id, the dump |
+| `tools/android_build.py` | the two copies in the Vulkan image's objects only |
+| `port/android/host/host_vk_probe.c` | a step `shaders` (below) |
+| `tools/vk_shader_check.py` | the check on the PC (below) |
+
+The Android guest is compiled with `HALO_ANDROID`, so the originals take
+their GL ES branches; the copies drop every `#ifdef HALO_ANDROID` branch and
+keep what Vulkan needs, as below.
+
+### What changes from the GL ES generators
+
+**Version.** `#version 450` first; no `precision` statements; nothing from
+`xgpu_capabilities.shading_language`. glslang compiles with the Vulkan
+client, SPIR-V 1.0 (as phase 0 and phase 2's built-in shaders do).
+
+**No loose uniforms; one set, unique bindings.** Vulkan, unlike deko3d,
+numbers bindings per set, not per stage, so the two stages share one
+numbering. Set 0:
+
+| Binding | Stage | What | Contents |
+|---|---|---|---|
+| 0 | vertex | uniform block `vertex_constants` | `vec4 c[192];` - 3072 bytes |
+| 1 | vertex | uniform block `vertex_parameters` | `vec4 viewport_scale; vec4 viewport_offset; vec4 point_and_screen;` (x the point size, y the screen offset) - 48 bytes |
+| 2 | fragment | uniform block `pixel_parameters` | `vec4 ps_c0[8]; vec4 ps_c1[8]; vec4 ps_final_c0; vec4 ps_final_c1; vec4 fog_color; vec4 fog_parameters; vec4 alpha_reference;` (x) `vec4 bump_matrix[4]; vec4 bump_luminance[4]; vec4 texture_scale[4];` - 528 bytes |
+| 3 to 6 | fragment | `tex0` to `tex3` | `sampler2D`, `sampler3D` or `samplerCube`, the type from the key as now |
+
+Every block is `layout(std140, set = 0, binding = N) uniform name { ... };`,
+**every member a `vec4` or an array of them** (a lone `float` and an array of
+floats are aligned differently by std140, and mixing them is how the earlier
+attempt's block drifted from its C structure at byte 3108), and **every
+member has `layout(offset = N)`**, the N from `vk_shaders.h`'s `#define`s:
+the C structures' `offsetof` is checked against the same `#define`s at
+compile time, and glslang rejects an explicit offset that std140 forbids, so
+the shader, the header and the structure cannot disagree without a build
+failing. The GL ES generators' `uniform float point_size`, `screen_offset`
+and `alpha_reference` become components (`point_and_screen.x`,
+`point_and_screen.y`, `alpha_reference.x`) and every use changes to match.
+`texture_lod_bias` goes: under Vulkan the bias is the sampler's
+(`mipLodBias`, phase 6), so `SAMPLE_BIAS` is the desktop one, empty.
+
+**Locations between the stages**, as deko3d's (each stage is compiled and
+cached apart, phase 5, and a vertex output meets a pixel input only by
+location):
+
+| Location | Vertex output / pixel input |
+|---|---|
+| 0 | `xD0` |
+| 1 | `xD1` |
+| 2 | `xB0` |
+| 3 | `xB1` |
+| 4 to 7 | `xT0` to `xT3` |
+| 8 | `xFog` (float) |
+
+Every vertex shader writes all nine and every pixel shader declares all nine,
+read or not, so any vertex shader goes with any pixel shader. The pixel
+output is `layout(location = 0) out vec4 fragment_color;`. Vertex inputs keep
+their `layout(location = N)`, 0 to 15, all sixteen declared: phase 6 must
+then give every pipeline all sixteen attributes (Vulkan requires an
+attribute for every input a shader declares), feeding the ones the game's
+streams do not supply from a stride-0 binding holding their constant value,
+as deko3d does. A packed (`D3DVSDT_NORMPACKED3`) attribute stays `in uint`
+and is unpacked in the shader as now.
+
+**Clip space.** The ES branch emulates `glClipControl(GL_UPPER_LEFT,
+GL_ZERO_TO_ONE)` at the end of the vertex shader (`gl_Position.y =
+-gl_Position.y; gl_Position.z = 2.0 * gl_Position.z - gl_Position.w;`).
+Vulkan's depth is already 0 to 1, so the `z` line goes. Its y axis is the
+other way round from those conventions (deko3d, whose device used them, came
+out the right way up without a flip, DEKO3D.md phase 6 step 2), so the
+picture needs one flip; it is made **in the viewport, with a negative height
+(phase 6), not in the shaders**, and the `y` line goes too. The shaders are
+then the desktop branch's. Kept: the ES branch's `clip_captured` path (the
+precision of `oPos` near the camera plane, which is not about ES: deko3d
+kept it for the same reason), the half-pixel offset `+ 0.5`,
+`screen_offset`, and `invariant gl_Position;`. Phase 6 step 1 is where the
+picture's orientation and the front face's winding are seen and, if wrong,
+fixed in the viewport and the front face, not here.
+
+**Occlusion.** No `count_samples` branch and no atomic counter: under Vulkan
+the visibility tests are occlusion queries (phase 6). The Vulkan device
+makes keys with `count_samples` 0, and the generator ignores it.
+
+**Everything else is kept as it is**, line for line: the instruction
+decoding, the operations and their helper functions, the texture stage
+modes, the combiner stages, the final combiner, fog, the alpha test (in the
+shader, against `alpha_reference.x`), alpha kill, colour sign,
+`coverage_alpha`, and the `debug.gpu_debug_*` settings. This phase is about
+the GLSL dialect, not the translation.
+
+### The key, made at each draw
+
+The corpus is the game's own, met in play, and the Vulkan image makes the
+keys itself (the Android GL ES image records none: `shader_programs.bin` is
+the Switch's, behind `HALO_SWITCH` in `d3d8_gl.c`, which is not edited).
+
+- **`pixel_key_make`** in `d3d8_vk.c`: what `prepare_draw` in `d3d8_gl.c`
+  does to make `struct nv2a_pixel_shader_key`, without GL: the combiner
+  state with the constants zeroed, the texture modes, alpha kill, colour
+  sign, the alpha test, fog, and from `bind_textures` only its decisions:
+  a stage with no texture (or modes 0, 0x04, 0x05) has no sampler, mode
+  0x11 a 2D one; otherwise the sampler type from the texture's description
+  (`xgpu_texture_describe`: a cube map is a cube, a volume texture 3D,
+  anything else 2D), and `coverage_alpha` as `bind_textures` and the line
+  after it decide it. Where a decision needs what only `d3d8_gl.c`'s texture
+  cache knows (the high-res substitutes' coverage, `hires_coverage`), find
+  where that is set and reproduce it without GL, or record the gap in
+  "Progress". `count_samples` is 0.
+- **At every draw** (`DrawVertices`, `DrawIndexedVertices`, their `UP`
+  forms, and `End` for immediate mode: the entry points that stay stubs
+  until phase 6), the device makes the key, as `prepare_draw` would at that
+  point, and notes it and the vertex shader with its packed mask (or 0 for
+  immediate mode) for the dump. Nothing is drawn.
+- **The vertex shaders by id**, as `d3d8_gl.c`'s Switch code keeps them
+  (`vertex_shaders_by_id`), so the dump can name them.
+
+### The dump
+
+With `debug.gpu_dump_shaders` naming a folder (an existing setting; under
+GL ES the GL renderer writes its GLSL there), the Vulkan device writes,
+the first time it meets each:
+
+- `vs_<id>_<packed mask, hex>.vert`: the Vulkan GLSL, and
+  `vs_<id>_<mask>.gl.vert`: the GL ES generator's GLSL for the same program
+  and mask (`nv2a_vertex_shader_to_glsl`: the original is in the Vulkan
+  image too);
+- `ps_<key hash, hex>.frag` and `ps_<hash>.gl.frag` likewise
+  (`hash_words` of `d3d8_gl.c` is the hash to copy), and `ps_<hash>.key`:
+  the key's bytes;
+- `manifest.txt`: one line a file, what it was made from.
+
+Each vertex shader is also written with mask 0 at the first `Present`, so
+that every program has at least its immediate-mode form. The log says how
+many of each were written.
+
+**The corpus to collect**: the main menu and its screens, a new game's
+first campaign map from its opening through the first fight, and, if the
+time allows, a second map. The screen is black under the Vulkan image (the
+game runs: phase 1), so the corpus is collected by keys and the log, as in
+phases 1 to 3.
+
+### Proving it
+
+**1. On the device, every shader compiled and validated.** A probe step,
+`shaders`: for every `.vert` and `.frag` (not `.gl.*`) in the dump folder
+(`debug.gpu_dump_shaders`), compile with glslang (the probe's loader),
+`vkCreateShaderModule`, and log each failure with glslang's message or the
+result code; then the count, the total time, the average and the slowest
+ten per stage. Run with the validation layer, which validates each module's
+SPIR-V (the layer runs `spirv-val` on every `vkCreateShaderModule`): a
+validation message on a module is a failure. On the phone's driver and on
+Turnip. (`debug.vk_probe = "shaders"`; the probe's other steps are as they
+were.)
+
+**2. On the PC, `tools/vk_shader_check.py <folder>`**, runnable from a clean
+checkout once `configure.py` has fetched glslang:
+
+- builds `glslangValidator` for the PC from the fetched glslang
+  (`build/android/third_party/glslang`, CMake, into `build/host-glslang`)
+  the first time;
+- compiles every Vulkan shader (`-V --target-env vulkan1.0`) and reports
+  failures with glslang's message and the file;
+- reflects each (`glslangValidator -q`): every block's binding, size and
+  members' offsets must be what `vk_shaders.h` says (the script reads the
+  `#define`s), and every sampler's binding 3 + its stage;
+- runs `spirv-val` on each module where it is available (on `PATH`, or
+  built from the SPIRV-Tools glslang pins, if the script can fetch it), and
+  says when it is not (the device's step 1 then stands for it);
+- **compares each Vulkan shader with its GL ES twin**: applies to the GL
+  ES text the changes this phase makes (the version line, the precision
+  lines, the loose uniforms to blocks, the renamed components, the removed
+  lines, the locations, `texture_lod_bias` and `count_samples` gone),
+  normalises whitespace, and diffs. Any other difference is a failure, with
+  the diff. **A shader that compiles cleanly and draws black is the failure
+  this exists to catch**: it compiles, so only a comparison finds it.
+- counts and prints: files, failures by kind, distinct pixel keys, and how
+  many of them differ in each key field (a field that never varies across
+  hundreds of keys - the texture modes, say - is a key that was not filled
+  in, which is the earlier attempt's black-shader bug; say so).
+
+### Testing on the device
+
+1. The `.vk` build with `display.renderer = "vulkan"` and
+   `debug.gpu_dump_shaders` set to a folder in the data folder: the corpus
+   (above), pulled with `adb pull`.
+2. `debug.vk_probe = "shaders"` with validation on, on both drivers.
+3. `tools/vk_shader_check.py` on the pulled folder.
+4. `renderer = "gl"`: unchanged.
+
+### Acceptance
+
+1. `ninja android_apk` builds with no new warnings; `git diff` shows
+   `port/linux/src` untouched (apart from settings rows, if any).
+2. The generated GLSL has no uniform outside a block, every block member a
+   vec4 or an array of them with an explicit offset, every block and sampler
+   in set 0 at the bindings above, both stages declaring all nine interface
+   variables at the locations above, and no y flip, depth remap, precision
+   statement or atomic counter.
+3. `vk_shaders.h`'s structures match the blocks (offsets and sizes checked
+   at compile time; 3072, 48 and 528 bytes).
+4. Every dumped shader compiles and validates on the device, on both
+   drivers, and on the PC; the reflection and the comparison find nothing;
+   the key fields vary as a real corpus's would. The numbers - files,
+   distinct keys, times per stage, the slowest shaders - in "Progress".
+5. The check script is in `tools/` and runs from a clean checkout.
 
 ## Phase 5 — shader and pipeline cache
 
