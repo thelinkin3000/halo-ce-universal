@@ -657,12 +657,16 @@ static void command_targets(const struct vk_command_targets *command)
 		color = host_vk_target_get(&command->color);
 	if (command->depth.kind == VK_SURFACE_DEPTH)
 		depth = host_vk_target_get(&command->depth);
+	/* a change is a pair that differs from the one last named (the guest names its targets again after each present) */
+	if (color != B.last_color || depth != B.last_depth)
+		B.counts.target_changes++;
+	B.last_color = color;
+	B.last_depth = depth;
 	if (color != B.color || depth != B.depth)
 	{
 		host_vk_rendering_end();
 		B.color = color;
 		B.depth = depth;
-		B.counts.target_changes++;
 	}
 	B.counts.targets++;
 }

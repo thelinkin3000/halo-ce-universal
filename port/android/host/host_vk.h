@@ -148,6 +148,7 @@ struct host_vk_backend
 	struct host_vk_target *buckets[HOST_VK_TARGET_BUCKETS];
 	unsigned images;
 	struct host_vk_target *color, *depth; /* bound now (NULL: none) */
+	struct host_vk_target *last_color, *last_depth; /* the pair a command last named, for the statistics */
 	int rendering; /* a rendering is open on them */
 	uint32_t area_width, area_height; /* its render area */
 
