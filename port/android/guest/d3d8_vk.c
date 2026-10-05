@@ -29,6 +29,8 @@ host's Vulkan backend (port/android/host/host_vk.c).
 #include "halo_ui_pointer.h"
 #include "port_config.h"
 #include "vk_commands.h"
+#include "vk_shaders.h"
+#include "hud_hires.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -1135,6 +1137,26 @@ static void parse_declaration(struct vertex_shader_object *object, const DWORD *
 		}
 	}
 }
+/* the vertex shaders by id, as d3d8_gl.c's Switch code keeps them, so that the dump can name them */
+static struct vertex_shader_object **vertex_shaders_by_id;
+static unsigned long vertex_shaders_by_id_count;
+
+static void vertex_shader_note(struct vertex_shader_object *object)
+{
+	if (object->id >= vertex_shaders_by_id_count)
+	{
+		unsigned long count = object->id + 64;
+		struct vertex_shader_object **grown = realloc(vertex_shaders_by_id, count * sizeof(*grown));
+
+		if (!grown)
+			return;
+		memset(grown + vertex_shaders_by_id_count, 0, (count - vertex_shaders_by_id_count) * sizeof(*grown));
+		vertex_shaders_by_id = grown;
+		vertex_shaders_by_id_count = count;
+	}
+	vertex_shaders_by_id[object->id] = object;
+}
+
 HRESULT WINAPI D3DDevice_CreateVertexShader(CONST DWORD *declaration, CONST DWORD *function, DWORD *handle, DWORD usage)
 {
 	struct vertex_shader_object *object = calloc(1, sizeof(*object));
@@ -1152,6 +1174,7 @@ HRESULT WINAPI D3DDevice_CreateVertexShader(CONST DWORD *declaration, CONST DWOR
 		memcpy(object->instructions, function + 1, object->instruction_count * 4 * sizeof(DWORD));
 	}
 	parse_declaration(object, declaration);
+	vertex_shader_note(object);
 	/* odd values are FVF codes; programmable shader handles are even */
 	*handle = (DWORD)object;
 	return S_OK;
@@ -1226,6 +1249,302 @@ static struct vertex_shader_object *current_program(void)
 
 	return program ? program : device.vertex_shader;
 }
+/* ---------- the shaders a draw would use (phase 4)
+
+Nothing is drawn yet (phase 6), but at each draw the device makes the pixel shader key as d3d8_gl.c's prepare_draw
+does, without binding anything, and notes it and the vertex shader for the dump (debug.gpu_dump_shaders), which
+tools/vk_shader_check.py and the probe's `shaders` step take as their corpus. */
+
+/* size is a multiple of 4 (d3d8_gl.c's hash_words) */
+static unsigned long hash_words(const void *data, unsigned long size)
+{
+	const DWORD *words = data;
+	unsigned long hash = 2166136261UL;
+
+	for (size /= 4; size; size--)
+		hash = (hash ^ *words++) * 16777619UL;
+	return hash;
+}
+
+typedef char pixel_shader_key_size_assert[sizeof(struct nv2a_pixel_shader_key) % 4 == 0 ? 1 : -1];
+
+static unsigned long stage_texture_mode(int stage)
+{
+	return (D3D__RenderState[D3DRS_PSTEXTUREMODES] >> (5 * stage)) & 0x1f;
+}
+
+/* what bind_textures in d3d8_gl.c decides for the key: a stage with no texture, or in modes 0, 0x04 and 0x05, has no
+sampler (mode 0x11 a 2D one); otherwise the sampler is the texture's own type, and stage 0's coverage_alpha is whether
+its bitmap has a high-res meter (hud_hires.h) whose green is its coverage. The cache there finds the override when it
+uploads the pixels; here it is asked the same way, without the GL texture (the texture's own decoding failing, which
+d3d8_gl.c would see, is not seen) */
+static void key_textures(struct nv2a_pixel_shader_key *key)
+{
+	int stage;
+
+	for (stage = 0; stage < D3DTSS_MAXSTAGES; stage++)
+	{
+		D3DBaseTexture *texture = device.textures[stage];
+		unsigned long mode = stage_texture_mode(stage);
+		struct xgpu_texture_description description;
+		BOOL palettized;
+
+		if (!texture || !texture->Data || mode == 0 || mode == 0x04 || mode == 0x05 || mode == 0x11)
+		{
+			key->sampler_type[stage] = mode == 0x11 ? _xgpu_sampler_2d : _xgpu_sampler_none;
+			continue;
+		}
+		xgpu_texture_describe(texture->Format, texture->Size, &description);
+		if (stage == 0)
+		{
+			palettized = ((texture->Format & D3DFORMAT_FORMAT_MASK) >> D3DFORMAT_FORMAT_SHIFT) == 0x0b;
+			if (!palettized && !description.cube_map && description.depth == 1)
+			{
+				long override = hud_hires_override_find((unsigned long)PLATFORM_PHYSICAL_TO_VIRTUAL(texture->Data),
+					description.width, description.height, description.levels > 1 ?
+					xgpu_texture_level_offset(&description, 1) : xgpu_texture_face_size(&description));
+
+				key->coverage_alpha = override >= 0 && hud_hires_override_coverage(override) != 0;
+			}
+		}
+		key->sampler_type[stage] = description.cube_map ? _xgpu_sampler_cube :
+			description.depth > 1 ? _xgpu_sampler_3d : _xgpu_sampler_2d;
+	}
+}
+
+/* the key as prepare_draw makes it (count_samples stays 0: the visibility tests are occlusion queries) */
+static void pixel_key_make(struct nv2a_pixel_shader_key *key)
+{
+	int stage;
+
+	memset(key, 0, sizeof(*key));
+	memcpy(key->combiner_state, D3D__RenderState, sizeof(key->combiner_state));
+	/* constants are uniforms, not part of the program */
+	memset(&key->combiner_state[D3DRS_PSCONSTANT0_0], 0, 16 * sizeof(DWORD));
+	key->combiner_state[D3DRS_PSFINALCOMBINERCONSTANT0] = 0;
+	key->combiner_state[D3DRS_PSFINALCOMBINERCONSTANT1] = 0;
+	key->texture_modes = D3D__RenderState[D3DRS_PSTEXTUREMODES];
+	key_textures(key);
+	for (stage = 0; stage < D3DTSS_MAXSTAGES; stage++)
+	{
+		key->alpha_kill[stage] = D3D__TextureState[stage][D3DTSS_ALPHAKILL] == D3DTALPHAKILL_ENABLE;
+		key->color_sign[stage] = (unsigned char)((D3D__TextureState[stage][D3DTSS_COLORSIGN] >> 28) & 0xf);
+	}
+	/* (only with the meter's blend: hud_hires.h, nv2a_pixel_shader_key) */
+	key->coverage_alpha = key->coverage_alpha && D3D__RenderState[D3DRS_ALPHABLENDENABLE] &&
+		D3D__RenderState[D3DRS_SRCBLEND] == D3DBLEND_CONSTANTCOLOR &&
+		D3D__RenderState[D3DRS_DESTBLEND] == D3DBLEND_SRCALPHA;
+	key->alpha_test_function = D3D__RenderState[D3DRS_ALPHATESTENABLE] ? D3D__RenderState[D3DRS_ALPHAFUNC] : 0;
+	key->fog_enable = D3D__RenderState[D3DRS_FOGENABLE] != 0;
+	key->fog_table_mode = (unsigned char)D3D__RenderState[D3DRS_FOGTABLEMODE];
+}
+
+/* ---------- the dump */
+
+struct dump_pixel
+{
+	struct nv2a_pixel_shader_key key;
+	unsigned long hash;
+	struct dump_pixel *next;
+};
+
+struct dump_vertex
+{
+	unsigned long id, mask;
+	struct dump_vertex *next;
+};
+
+#define DUMP_BUCKETS 1024
+
+static struct dump_pixel *dump_pixels[DUMP_BUCKETS];
+static struct dump_vertex *dump_vertices[DUMP_BUCKETS];
+static unsigned long dump_pixel_count, dump_vertex_count, dump_collisions;
+static FILE *dump_manifest;
+static BOOL dump_present_done;
+
+static const char *dump_folder(void)
+{
+	const char *folder = config_string("debug.gpu_dump_shaders");
+
+	return folder && *folder ? folder : NULL;
+}
+
+static void dump_file(const char *folder, const char *name, const void *data, unsigned long size, const char *what)
+{
+	char path[512];
+	FILE *file;
+
+	snprintf(path, sizeof(path), "%s/%s", folder, name);
+	if ((file = fopen(path, "wb")) == NULL)
+	{
+		platform_log("shader dump: cannot write %s", path);
+		return;
+	}
+	fwrite(data, 1, size, file);
+	fclose(file);
+	if (!dump_manifest)
+	{
+		snprintf(path, sizeof(path), "%s/manifest.txt", folder);
+		dump_manifest = fopen(path, "a");
+	}
+	if (dump_manifest)
+	{
+		fprintf(dump_manifest, "%s %s\n", name, what);
+		fflush(dump_manifest);
+	}
+}
+
+static void dump_text(const char *folder, const char *name, const char *text, const char *what)
+{
+	dump_file(folder, name, text, strlen(text), what);
+}
+
+/* the GL ES generators' text, for the comparison: they write the context's #version, which this image has none of */
+static char *gl_vertex_shader(const struct vertex_shader_object *program, unsigned long mask)
+{
+	const char *saved = xgpu_capabilities.shading_language;
+	char *text;
+
+	xgpu_capabilities.shading_language = "310 es";
+	text = nv2a_vertex_shader_to_glsl(program->instructions, program->instruction_count, mask);
+	xgpu_capabilities.shading_language = saved;
+	return text;
+}
+
+static char *gl_pixel_shader(const struct nv2a_pixel_shader_key *key)
+{
+	const char *saved = xgpu_capabilities.shading_language;
+	char *text;
+
+	xgpu_capabilities.shading_language = "310 es";
+	text = nv2a_pixel_shader_to_glsl(key);
+	xgpu_capabilities.shading_language = saved;
+	return text;
+}
+
+/* the first time a vertex shader is met with a packed-attribute mask: its Vulkan GLSL and the GL ES one */
+static void dump_vertex_shader(const char *folder, const struct vertex_shader_object *program, unsigned long mask)
+{
+	struct dump_vertex **bucket = &dump_vertices[(program->id * 31 + mask) % DUMP_BUCKETS];
+	struct dump_vertex *entry;
+	char name[64], what[96];
+	char *text;
+
+	for (entry = *bucket; entry; entry = entry->next)
+	{
+		if (entry->id == program->id && entry->mask == mask)
+			return;
+	}
+	entry = calloc(1, sizeof(*entry));
+	if (!entry)
+		return;
+	entry->id = program->id;
+	entry->mask = mask;
+	entry->next = *bucket;
+	*bucket = entry;
+	dump_vertex_count++;
+	snprintf(what, sizeof(what), "vertex shader %lu, %lu instructions, packed mask %lx", program->id,
+		program->instruction_count, mask);
+	text = nv2a_vk_vertex_shader_to_glsl(program->instructions, program->instruction_count, mask);
+	snprintf(name, sizeof(name), "vs_%lu_%lx.vert", program->id, mask);
+	dump_text(folder, name, text, what);
+	free(text);
+	text = gl_vertex_shader(program, mask);
+	snprintf(name, sizeof(name), "vs_%lu_%lx.gl.vert", program->id, mask);
+	dump_text(folder, name, text, what);
+	free(text);
+}
+
+static void dump_pixel_shader(const char *folder, const struct nv2a_pixel_shader_key *key)
+{
+	unsigned long hash = hash_words(key, sizeof(*key)), same = 0;
+	struct dump_pixel **bucket = &dump_pixels[hash % DUMP_BUCKETS];
+	struct dump_pixel *entry;
+	char name[64], what[96];
+	char *text;
+
+	for (entry = *bucket; entry; entry = entry->next)
+	{
+		if (entry->hash != hash)
+			continue;
+		if (!memcmp(&entry->key, key, sizeof(*key)))
+			return;
+		same++;
+	}
+	entry = calloc(1, sizeof(*entry));
+	if (!entry)
+		return;
+	entry->key = *key;
+	entry->hash = hash;
+	entry->next = *bucket;
+	*bucket = entry;
+	dump_pixel_count++;
+	/* two keys with one 32-bit hash get different names (d3d8_gl.c would have shared one program) */
+	if (same)
+		dump_collisions++;
+	snprintf(what, sizeof(what), "pixel shader, key hash %08lx%s", hash, same ? " (a collision)" : "");
+	if (same)
+		snprintf(name, sizeof(name), "ps_%08lx_%lu", hash, same);
+	else
+		snprintf(name, sizeof(name), "ps_%08lx", hash);
+	{
+		char file[80];
+
+		snprintf(file, sizeof(file), "%s.key", name);
+		dump_file(folder, file, key, sizeof(*key), what);
+		text = nv2a_vk_pixel_shader_to_glsl(key);
+		snprintf(file, sizeof(file), "%s.frag", name);
+		dump_text(folder, file, text, what);
+		free(text);
+		text = gl_pixel_shader(key);
+		snprintf(file, sizeof(file), "%s.gl.frag", name);
+		dump_text(folder, file, text, what);
+		free(text);
+	}
+}
+
+/* called at each draw that would be made: the key is made as prepare_draw makes it, and with the vertex shader noted */
+static void draw_note(BOOL immediate)
+{
+	struct vertex_shader_object *program = current_program();
+	struct nv2a_pixel_shader_key key;
+	const char *folder = dump_folder();
+
+	if (!folder || !program || !device.vertex_shader || !program->instructions)
+		return;
+	pixel_key_make(&key);
+	dump_vertex_shader(folder, program, immediate ? 0 : device.vertex_shader->packed_mask);
+	dump_pixel_shader(folder, &key);
+}
+
+/* at each Present: the first one writes every vertex shader with mask 0 as well, so that each has its immediate-mode
+form; the log says how many were written, again when more have come */
+static void dump_present(void)
+{
+	static unsigned long logged_vertices, logged_pixels;
+	const char *folder = dump_folder();
+	unsigned long id;
+
+	if (!folder)
+		return;
+	if (!dump_present_done && device.frame >= 60)
+	{
+		dump_present_done = TRUE;
+		for (id = 0; id < vertex_shaders_by_id_count; id++)
+		{
+			if (vertex_shaders_by_id[id] && vertex_shaders_by_id[id]->instructions)
+				dump_vertex_shader(folder, vertex_shaders_by_id[id], 0);
+		}
+	}
+	if (dump_present_done && device.frame % 600 == 0 && (dump_vertex_count != logged_vertices || dump_pixel_count != logged_pixels))
+	{
+		logged_vertices = dump_vertex_count;
+		logged_pixels = dump_pixel_count;
+		platform_log("shader dump: %lu vertex shaders and %lu pixel shaders written to %s (%lu key hash collisions)",
+			dump_vertex_count, dump_pixel_count, folder, dump_collisions);
+	}
+}
+
 /* ---------- vertex data and drawing */
 
 void WINAPI D3DDevice_SetStreamSource(UINT stream_number, D3DVertexBuffer *stream_data, UINT stride)
@@ -1248,14 +1567,15 @@ void WINAPI D3DDevice_DrawVertices(D3DPRIMITIVETYPE primitive_type, UINT start_v
 {
 	(void)primitive_type;
 	(void)start_vertex;
-	(void)vertex_count;
+	if (vertex_count)
+		draw_note(FALSE);
 }
 
 void WINAPI D3DDevice_DrawIndexedVertices(D3DPRIMITIVETYPE primitive_type, UINT vertex_count, CONST WORD *index_data)
 {
 	(void)primitive_type;
-	(void)vertex_count;
-	(void)index_data;
+	if (vertex_count && index_data)
+		draw_note(FALSE);
 }
 
 /* ---------- immediate mode */
@@ -1283,6 +1603,8 @@ static void immediate_emit(void)
 void WINAPI D3DDevice_End(void)
 {
 	device.immediate_active = FALSE;
+	if (device.immediate_count)
+		draw_note(TRUE);
 	device.immediate_count = 0;
 }
 
@@ -1419,6 +1741,7 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 		targets_known = FALSE;
 		data_id = 0;
 	}
+	dump_present();
 	/* the stand-in window's swap: holds the frame to the display's rate until the
 	host's swapchain presents (host_vk_presenting), after which it does */
 	platform_video_swap();
