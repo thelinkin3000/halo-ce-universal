@@ -37,6 +37,7 @@ enum
 	DK_COMMAND_TEXTURE,
 	DK_COMMAND_TEXTURE_FREE,
 	DK_COMMAND_TEXTURES,
+	DK_COMMAND_TEXTURE_ROWS,
 };
 
 /* a surface's kind, as the host makes its image */
@@ -267,7 +268,9 @@ again), from texels at a guest address: for each cube face (one, if it is
 not a cube), each level after the last with no padding between them - a
 level of a compressed format is its 4x4 blocks, of BGRA its texels, depth
 slices after one another - the next face face_bytes on from the last. The
-host reads source_bytes from source when it runs the command. */
+host reads source_bytes from source when it runs the command. With
+source_bytes 0 the image is only made (its texels undefined), for
+DK_COMMAND_TEXTURE_ROWS to fill. */
 struct dk_command_texture
 {
 	struct dk_command_header header;
@@ -280,6 +283,21 @@ struct dk_command_texture
 	uint32_t levels;
 	uint32_t source;
 	uint32_t face_bytes;
+	uint32_t source_bytes;
+};
+
+/* writes rows [top, top + rows) of one level of 2D BGRA image id (made by
+DK_COMMAND_TEXTURE), from the level's whole rows one after another at a
+guest address; the host reads source_bytes from source when it runs the
+command */
+struct dk_command_texture_rows
+{
+	struct dk_command_header header;
+	uint32_t id;
+	uint32_t level;
+	uint32_t top;
+	uint32_t rows;
+	uint32_t source;
 	uint32_t source_bytes;
 };
 
@@ -322,9 +340,13 @@ struct dk_sampler
 	float border[4];
 };
 
+/* a stage samples image id, or (id 0) the color render target whose
+surface's data is target - the one drawn into last, if several sizes share
+the address - or nothing if both are 0 */
 struct dk_stage_texture
 {
 	uint32_t id;
+	uint32_t target;
 	struct dk_sampler sampler;
 };
 

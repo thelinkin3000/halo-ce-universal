@@ -54,4 +54,10 @@ unsigned int hud_hires_png_texture(const void *png, unsigned long size, unsigned
 /* whether its green is its coverage (d3d8_gl.c, nv2a_psh.c: coverage_alpha) */
 int hud_hires_override_coverage(long asset);
 
+#ifdef HALO_SWITCH
+/* the deko3d renderer's: an 8-bit RGBA PNG's pixels (malloc'd, red first,
+rows top down) and size; NULL if it could not be decoded */
+unsigned char *hud_hires_png_pixels(const void *png, unsigned long size, unsigned long *width, unsigned long *height);
+#endif
+
 #endif
