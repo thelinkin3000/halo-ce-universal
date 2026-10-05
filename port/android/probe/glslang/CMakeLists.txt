@@ -1,11 +1,12 @@
-# libglslang_probe.so: glslang (the front end, the SPIR-V generator and the
+# libhalo_glslang.so: glslang (the front end, the SPIR-V generator and the
 # C interface, glslang/Include/glslang_c_interface.h) in one shared library
 # with the C++ runtime inside it, so that libmain.so stays C and loads it
-# with dlopen only when the Vulkan probe asks (tools/android_build.py).
+# with dlopen, for the Vulkan backend's shader compiler (host_vk_shaders.c) and
+# the Vulkan probe (tools/android_build.py).
 #
 # cmake -S port/android/probe/glslang -B <build> -DGLSLANG_SOURCE=<glslang>
 cmake_minimum_required(VERSION 3.20)
-project(glslang_probe C CXX)
+project(halo_glslang C CXX)
 
 set(ENABLE_OPT OFF CACHE BOOL "" FORCE)
 set(ENABLE_HLSL OFF CACHE BOOL "" FORCE)
@@ -19,8 +20,8 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 add_subdirectory(${GLSLANG_SOURCE} glslang EXCLUDE_FROM_ALL)
 
-add_library(glslang_probe SHARED empty.cpp)
-target_link_libraries(glslang_probe PRIVATE
+add_library(halo_glslang SHARED empty.cpp)
+target_link_libraries(halo_glslang PRIVATE
     -Wl,--whole-archive glslang glslang-default-resource-limits -Wl,--no-whole-archive)
 # 16 KB pages, as the host library
-target_link_options(glslang_probe PRIVATE -Wl,-z,max-page-size=16384 -Wl,--gc-sections -Wl,--strip-all)
+target_link_options(halo_glslang PRIVATE -Wl,-z,max-page-size=16384 -Wl,--gc-sections -Wl,--strip-all)

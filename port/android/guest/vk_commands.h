@@ -22,6 +22,8 @@ header included; sizes are multiples of 4.
 
 #include <stdint.h>
 
+#include "vk_shaders.h"
+
 enum
 {
 	VK_COMMAND_TARGETS = 1,
@@ -29,6 +31,7 @@ enum
 	VK_COMMAND_PRESENT,
 	VK_COMMAND_DATA,
 	VK_COMMAND_TEST_DRAW,
+	VK_COMMAND_PIPELINE,
 };
 
 /* a surface's kind, as the host makes its image */
@@ -146,6 +149,17 @@ struct vk_command_test_draw
 	struct vk_data_ref data;
 	uint32_t expected[3];
 	uint32_t last;
+};
+
+/* the pipeline a draw asks for (phase 5): the handles host_vk_shader_find gave (0: not ready yet, which the host counts
+as a draw skipped for a shader) and the state it is made with. A pipeline not made yet is queued for the compile
+thread and the draw would be skipped; phase 6's draw binds the pipeline when it is ready */
+struct vk_command_pipeline
+{
+	struct vk_command_header header;
+	uint32_t vertex_shader;
+	uint32_t pixel_shader;
+	struct vk_pipeline_state state;
 };
 
 #endif

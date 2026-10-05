@@ -142,6 +142,72 @@ VK_SHADERS_CHECK(pixel_parameters_bump_luminance,
 VK_SHADERS_CHECK(pixel_parameters_texture_scale,
 	offsetof(struct vk_pixel_parameters, texture_scale) == VK_PIXEL_PARAMETERS_TEXTURE_SCALE);
 
+/* ---------- identity (phase 5)
+
+A shader is known by a 64-bit FNV-1a hash that the guest makes; the host never sees keys, only hashes and GLSL. A
+vertex shader's is of VK_SHADER_GENERATOR_VERSION, its program's hash and its packed mask (0 for immediate mode); a
+pixel shader's of the version and the key's bytes (count_samples 0). */
+
+static inline uint64_t vk_hash_init(void)
+{
+	return 14695981039346656037ull;
+}
+
+static inline uint64_t vk_hash_mix(uint64_t hash, const void *data, unsigned long size)
+{
+	const unsigned char *bytes = data;
+
+	while (size--)
+		hash = (hash ^ *bytes++) * 1099511628211ull;
+	return hash;
+}
+
+/* the stages, as the host's imports take them */
+#define VK_SHADER_STAGE_VERTEX 0
+#define VK_SHADER_STAGE_PIXEL 1
+
+/* what host_vk_shader_find says when it returns 0 */
+#define VK_SHADER_STATUS_UNKNOWN 0 /* neither made nor queued: send its GLSL */
+#define VK_SHADER_STATUS_QUEUED 1
+#define VK_SHADER_STATUS_COMPILING 2
+#define VK_SHADER_STATUS_FAILED 3 /* for the rest of the run */
+#define VK_SHADER_STATUS_NOT_READY 4 /* the backend's device is not made yet: ask again */
+
+/* ---------- the pipeline's state (phase 5)
+
+Everything in a pipeline that is not one of Vulkan 1.0's core dynamic states (viewport, scissor, depth bias, blend
+constants, stencil masks and reference): Decisions in port/android/VULKAN.md. Fixed-width fields; every enumeration is
+the Vulkan enumerant's number (VkPrimitiveTopology, VkCompareOp and so on), which the guest writes without Vulkan's
+headers. Unused fields are zero, so that equal states hash equal. The attachments' formats are 0 (none) or 1 (the
+backend's colour format, or its depth-stencil format, which only the host knows). */
+
+#define VK_PIPELINE_VERTEX_ATTRIBUTES 16
+#define VK_PIPELINE_VERTEX_BINDINGS 16
+
+struct vk_stencil_face_state
+{
+	uint32_t fail_op, pass_op, depth_fail_op, compare_op;
+};
+
+struct vk_pipeline_state
+{
+	uint32_t topology, polygon_mode, cull_mode, front_face;
+	uint32_t depth_test, depth_write, depth_compare_op, depth_bias;
+	uint32_t stencil_test;
+	struct vk_stencil_face_state stencil_front, stencil_back;
+	uint32_t blend_enable, source_color_factor, destination_color_factor, color_op;
+	uint32_t source_alpha_factor, destination_alpha_factor, alpha_op, color_write_mask;
+	uint32_t color_format, depth_format;
+	uint32_t binding_count;
+	struct { uint32_t stride, rate; } bindings[VK_PIPELINE_VERTEX_BINDINGS];
+	struct { uint32_t format, binding, offset; } attributes[VK_PIPELINE_VERTEX_ATTRIBUTES];
+};
+
+/* the placeholder phase 5 sends (phase 6 fills the state from the game's): the numbers are Vulkan's */
+#define VK_PLACEHOLDER_TOPOLOGY_TRIANGLE_LIST 3
+#define VK_PLACEHOLDER_FORMAT_R32G32B32A32_SFLOAT 109
+#define VK_PLACEHOLDER_FORMAT_R32_UINT 98
+
 /* ---------- the generators */
 
 /* GLSL 450 for glslang for an NV2A vertex program (the instruction words after the program header). Attributes whose
