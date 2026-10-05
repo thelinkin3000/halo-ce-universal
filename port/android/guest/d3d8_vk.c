@@ -37,6 +37,7 @@ host's Vulkan backend (port/android/host/host_vk.c).
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 void d3d8_surface_initialize(D3DSurface *surface, D3DFORMAT format, unsigned long width, unsigned long height);
 void d3d8_surface_resize(D3DSurface *surface, D3DFORMAT format, unsigned long width, unsigned long height);
@@ -354,6 +355,9 @@ Commands are written here over a frame and handed to the host half
 host reads them during the call and nothing later. */
 
 void host_vk_submit(unsigned int commands, unsigned int size);
+/* the shader service (host_vk_shaders.c; the imports pass a 64-bit hash in one register) */
+void host_vk_shader_compile(uint32_t stage, uint64_t hash, uint32_t glsl, uint32_t glsl_size);
+uint32_t host_vk_shader_find(uint32_t stage, uint64_t hash, uint32_t status_out);
 
 #define STREAM_SIZE (4 * 1024 * 1024)
 
@@ -595,6 +599,36 @@ static void data_self_test(void)
 	data_id = 0;
 }
 
+/* the shader service: a trivial pair of shaders that compile, and one that does not (the host says so once and keeps its GLSL
+in vk_cache/failed/): each is sent, then asked for until it is made or has failed */
+static void shader_self_test_one(const char *name, uint32_t stage, uint64_t hash, const char *glsl, BOOL expect_made)
+{
+	uint32_t status = VK_SHADER_STATUS_UNKNOWN, handle = 0;
+	int attempt;
+
+	host_vk_shader_compile(stage, hash, (uint32_t)(uintptr_t)glsl, (uint32_t)strlen(glsl));
+	for (attempt = 0; attempt < 500; attempt++)
+	{
+		handle = host_vk_shader_find(stage, hash, (uint32_t)(uintptr_t)&status);
+		if (handle || status == VK_SHADER_STATUS_FAILED)
+			break;
+		usleep(10000);
+	}
+	platform_log("shader service self-test: %s %s (handle %u, status %u, after %d tries)",
+		name, (handle != 0) == expect_made && (handle != 0 || status == VK_SHADER_STATUS_FAILED) ? "ok" : "FAILED",
+		(unsigned)handle, (unsigned)status, attempt + 1);
+}
+
+static void shader_self_test(void)
+{
+	shader_self_test_one("a vertex shader that compiles", VK_SHADER_STAGE_VERTEX, 0x5e1f7e57deadbeefull,
+		"#version 450\nvoid main()\n{\n\tgl_Position = vec4(0.0);\n}\n", TRUE);
+	shader_self_test_one("a pixel shader that compiles", VK_SHADER_STAGE_PIXEL, 0x5e1f7e57deadbef0ull,
+		"#version 450\nlayout(location = 0) out vec4 c;\nvoid main()\n{\n\tc = vec4(1.0);\n}\n", TRUE);
+	shader_self_test_one("a pixel shader that does not", VK_SHADER_STAGE_PIXEL, 0x5e1f7e57deadbef1ull,
+		"#version 450\nvoid main()\n{\n\tthis is not glsl;\n}\n", FALSE);
+}
+
 /* ---------- device creation */
 
 Direct3D *WINAPI Direct3DCreate8(UINT sdk_version)
@@ -741,7 +775,10 @@ HRESULT WINAPI Direct3D_CreateDevice(UINT adapter, D3DDEVTYPE device_type, void 
 			platform_log("Direct3D: running without a window (nothing is displayed)");
 		device.created = TRUE;
 		if (device.video_ready && config_boolean("debug.vk_self_test"))
+		{
 			data_self_test();
+			shader_self_test();
+		}
 	}
 	*returned_device = device_pointer();
 	return S_OK;
@@ -1517,9 +1554,6 @@ static void dump_pixel_shader(const char *folder, const struct nv2a_pixel_shader
 The host never sees a key: a shader is asked for by its hash (vk_shaders.h's identity), and for one the host does not
 have, the GLSL is generated here and sent, to be compiled on the host's thread and kept on the device. A draw's shader
 is the handle the host gave, or 0 while it is queued or compiling (the draw would be skipped). */
-
-void host_vk_shader_compile(uint32_t stage, uint64_t hash, uint32_t glsl, uint32_t glsl_size);
-uint32_t host_vk_shader_find(uint32_t stage, uint64_t hash, uint32_t status_out);
 
 struct shader_entry
 {
