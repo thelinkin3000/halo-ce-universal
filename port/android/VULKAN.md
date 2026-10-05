@@ -1336,6 +1336,17 @@ What changed after it:
   changes what the game sees; `d3d8_gl.c`'s Android branch is the same
   function (the menu pointer is the desktop's).
 
+**On the device after the rebase** (build `c2069599`, 45 s each from a cold
+start): GL ES as before (`renderer: GL ES`, the image at `40000000`, the GL
+renderer's frame lines); Vulkan on the phone's driver and on Turnip, each with
+its one `renderer:` line, 1,651 frames in 10 s (165 Hz), `vk gl stubs:
+self-test ok`, 0 of the 102 GL imports called, no error. The `.vk` install's
+`config.toml` had to be made again from the defaults first: the test scripts of
+part B's tip runs and of this audit pulled it with `adb shell cat`, which from
+Windows' adb turns each line ending into `\r\n`, and every push and rewrite
+added more, until the host's TOML reader gave up and used the defaults (GL ES).
+Scripts must move the file with `adb pull` and `adb push`, or `adb exec-out`.
+
 Not tried on the device: the image loaded away from `0x40000000` (nothing on
 the test device holds that address; `main`'s commit tested the GL image's
 move on a Nokia 8). The Vulkan image's table is made by the same tool, which
