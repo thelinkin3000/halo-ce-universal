@@ -55,6 +55,8 @@ Sphaira the new build stopped as soon as it had started.
 #define UPDATE_IMAGE "halo_guest.elf"
 /* the deko3d renderer's image (display.renderer): in the releases that have it */
 #define UPDATE_DK_IMAGE "halo_guest_dk.elf"
+/* internet play's brokers (network.brokers_file), beside config.toml */
+#define UPDATE_BROKERS "brokers.txt"
 
 enum
 {
@@ -62,8 +64,8 @@ enum
 	ZIP_LOCAL_SIGNATURE = 0x04034b50,
 	ZIP_CENTRAL_SIGNATURE = 0x02014b50,
 	/* the files taken from the archive: the program and the game image,
-	which it must hold, then the deko3d image, which it may */
-	WANTED_FILES = 3,
+	which it must hold, then the deko3d image and the brokers, which it may */
+	WANTED_FILES = 4,
 	REQUIRED_FILES = 2,
 	PROGRESS_EVERY = 512 * 1024,
 };
@@ -119,7 +121,8 @@ static void wanted_path(int which, char *path, size_t size)
 	if (which == 0)
 		program_path(path, size);
 	else
-		snprintf(path, size, "%s/%s", host_executable_root(), which == 1 ? UPDATE_IMAGE : UPDATE_DK_IMAGE);
+		snprintf(path, size, "%s/%s", host_executable_root(),
+			which == 1 ? UPDATE_IMAGE : which == 2 ? UPDATE_DK_IMAGE : UPDATE_BROKERS);
 }
 
 /* ---------- the check */
@@ -254,7 +257,7 @@ static int unpack_entry(struct unpack *unpack)
 
 	unpack->name[unpack->name_length < sizeof(unpack->name) ? unpack->name_length : sizeof(unpack->name) - 1] = 0;
 	which = !strcmp(unpack->name, UPDATE_PROGRAM) ? 0 : !strcmp(unpack->name, UPDATE_IMAGE) ? 1 :
-		!strcmp(unpack->name, UPDATE_DK_IMAGE) ? 2 : -1;
+		!strcmp(unpack->name, UPDATE_DK_IMAGE) ? 2 : !strcmp(unpack->name, UPDATE_BROKERS) ? 3 : -1;
 	unpack->remaining = compressed;
 	unpack->expected_crc = little(header + 14, 4);
 	unpack->crc = 0;
@@ -428,7 +431,8 @@ place before anything loads it (host_update_finish). The program itself can be
 replaced now: the loader read it whole when it started. The deko3d image goes
 the same way; a release without one takes the old one away, which was built
 for the old program, so that the game falls back to OpenGL rather than load
-it. */
+it. The brokers' list goes the same way too (the game reads it when internet
+play starts), and a release without one leaves the old one. */
 static int install(int dk_image, char *error, size_t error_size)
 {
 	char target[512], temporary[520];
