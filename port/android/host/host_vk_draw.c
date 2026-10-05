@@ -213,6 +213,7 @@ void host_vk_draw_frame_reset(struct host_vk_frame *frame)
 
 	for (index = 0; index < frame->pool_count; index++)
 		HOST_VK_CHECK(vkResetDescriptorPool(B.device, frame->pools[index], 0));
+	host_vk_texture_frame_reset((unsigned)(frame - B.frames));
 	frame->pool_current = 0;
 }
 
@@ -351,6 +352,8 @@ void host_vk_command_draw(const struct vk_command_draw *draw, uint32_t size)
 		B.counts.draws_skipped_data++;
 		return;
 	}
+	/* the textures written since are made readable first: outside a rendering */
+	host_vk_textures_flush();
 	if (!dummies_ensure())
 	{
 		B.counts.draws_skipped_other++;
@@ -389,10 +392,18 @@ void host_vk_command_draw(const struct vk_command_draw *draw, uint32_t size)
 		int type = texture->sampler_type >= 1 && texture->sampler_type <= 3 ? (int)texture->sampler_type - 1 : 0;
 		struct vk_sampler_state none;
 
-		/* (textures come with the second step: every stage is a dummy now) */
+		const struct host_vk_image *image = texture->kind == VK_TEXTURE_IMAGE ? host_vk_image_get(texture->id) : NULL;
+
+		/* a stage with no texture, or one whose image is not there or is not the type the shader samples, is a dummy of
+		the shader's type */
 		memset(&none, 0, sizeof(none));
-		image_infos[index].sampler = sampler_get(texture->kind == VK_TEXTURE_NONE ? &none : &texture->sampler);
-		image_infos[index].imageView = dummies.view[type];
+		if (texture->kind != VK_TEXTURE_NONE && (!image || image->kind != texture->sampler_type))
+		{
+			B.counts.draws_texture_missing++;
+			image = NULL;
+		}
+		image_infos[index].sampler = sampler_get(image ? &texture->sampler : &none);
+		image_infos[index].imageView = image ? image->view : dummies.view[type];
 		image_infos[index].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		writes[3 + index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		writes[3 + index].dstSet = set;

@@ -2325,6 +2325,26 @@ Newest first.
 
 ### Phase 6 — progress (under way; each step's result, newest first)
 
+**Step 2, textures: done on the device, both drivers.** `xbox_textures_vk.c` (a copy of the deko3d copy, which is a copy of
+`xbox_textures.c`; it replaces the original in the Vulkan image's objects, `tools/android_build.py`) keeps the decoders and the
+cache; a texture is `VK_COMMAND_TEXTURE` (the image's description, numbers from 1 handed back when the cache drops one) and one
+`VK_COMMAND_TEXTURE_DATA` for each level of each face, the texels put with `vk_data_put` when the cache uploads (so they are the
+game's as they were then). BC1 to BC3 go as they are where the device samples them (`host_vk_bc_supported`; both drivers do, the
+log says `BC1 to BC3 textures are sampled as they are`), else decoded to BGRA by the Mali path's decoder copied in. The host
+(`host_vk_texture.c`) makes the images from suballocated 64 MB blocks (a map has more textures than the 4,096 allocations
+Adreno allows), copies from the ring outside any rendering after a barrier from the image's last use, and makes the written images
+readable before the next draw; a dropped image is destroyed when the frame slot's fence has next passed. The stages' samplers are
+`configure_sampler`'s state (`vk_sampler_state`, one `VkSampler` for each distinct state on the host). The stage's dummy is the
+image of the type the shader declares. `memory_watch_initialize` was started in step 1.
+
+Xbox menus (`display.menus = "xbox"`), 60-frame windows: 6 draws + 92 to 94 immediate a frame under both (GL ES: 7 + 94 to 118 over the
+animation); Vulkan makes all of them (6,060 in 60 frames), skipped 0 for a shader, a pipeline, data or a target, **0 with a texture
+missing**; 22 images, 64 MB of texture memory, 2.7 MB copied in the first window and 0 after. Validation: 0 errors on both drivers
+(nothing but the layer's cache-file note and the expected pre-transform note). Screenshots: the Halo logo, "CAMPAIGN / MULTIPLAYER /
+SETTINGS", the planet, the stars and the ring are as under GL ES and **the right way up**, identically on the phone's driver and on
+Turnip; the ring is at another point of its animation (the two runs are not frame-locked) and the orange version number at the
+lower right, which is the high-res text (the atlas), is missing until step 3, as the plan says.
+
 **Step 1, first draws: done on the device, both drivers.** `VK_COMMAND_DRAW` (`vk_commands.h`) is one self-contained record
 (shader handles, `vk_pipeline_state`, viewport, scissor, depth bias, blend constants, stencil masks, the three uniform blocks and the
 vertex and index data as data references, four texture slots); the guest makes it in `draw_make` (`d3d8_vk.c`: `prepare_draw`'s
