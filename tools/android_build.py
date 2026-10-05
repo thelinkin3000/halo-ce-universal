@@ -496,12 +496,15 @@ def generate_android_build(n: Writer, sln: Any) -> None:
     ])
     guest_host_only = {"memory_watch.c"}  # replaced by guest_memory_watch.c
     gl_renderer_object = None
+    gl_textures_object = None
     for source in sorted((LINUX_DIR / "src").glob("*.c")):
         if source.name.startswith("posix_") or source.name in guest_host_only:
             continue
         objects.append(guest_object(source, platform_cflags))
         if source.name == "d3d8_gl.c":
             gl_renderer_object = objects[-1]
+        if source.name == "xbox_textures.c":
+            gl_textures_object = objects[-1]
     # the high-res HUD's textures (port/assets/hud; port/linux/src/hud_hires.c)
     for source in hud_assets_build(n, "android", gen_dir / "hud_hires_assets.c"):
         objects.append(guest_object(source, platform_cflags))
@@ -583,7 +586,9 @@ def generate_android_build(n: Writer, sln: Any) -> None:
     # port/android/guest/d3d8_vk.c, takes the place of d3d8_gl.c and every other
     # object is shared. The host runs one image or the other, as config.toml's
     # display.renderer says (port/android/host/host_main.c).
-    vk_objects = [obj for obj in objects if obj != gl_renderer_object]
+    # (its texture cache, xbox_textures_vk.c, takes the place of xbox_textures.c the same way)
+    vk_objects = [obj for obj in objects if obj != gl_renderer_object and obj != gl_textures_object]
+    vk_objects.append(guest_object(PORT_DIR / "guest" / "xbox_textures_vk.c", platform_cflags))
     vk_objects.append(guest_object(PORT_DIR / "guest" / "d3d8_vk.c", platform_cflags))
     # the generators for glslang (port/android/VULKAN.md, phase 4): the originals stay in both images
     vk_objects.append(guest_object(PORT_DIR / "guest" / "nv2a_vsh_vk.c", platform_cflags))

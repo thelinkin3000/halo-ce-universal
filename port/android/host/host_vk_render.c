@@ -1070,8 +1070,10 @@ static void log_statistics(void)
 		(unsigned long long)B.submission, retired_locked(), c->recreations, host_vk_validation_errors(), c->data_records,
 		c->data_bytes / 1024 / (c->frames ? c->frames : 1), host_vk_data_buffers());
 	host_logf(HOST_LOG_INFO, "vk: draws in %u frames: %u made; skipped %u for a shader, %u for a pipeline, %u no target, %u data "
-		"missing, %u other", c->frames, c->draws_made, c->draws_skipped_shader, c->draws_skipped_pipeline,
-		c->draws_skipped_target, c->draws_skipped_data, c->draws_skipped_other);
+		"missing, %u other; %u with a texture missing; textures: %u images, %u MB of memory, %u KB copied, %u copies skipped",
+		c->frames, c->draws_made, c->draws_skipped_shader, c->draws_skipped_pipeline, c->draws_skipped_target,
+		c->draws_skipped_data, c->draws_skipped_other, c->draws_texture_missing, host_vk_texture_images(),
+		host_vk_texture_megabytes(), c->texture_bytes / 1024, c->textures_skipped);
 	{
 		char services[400];
 
@@ -1083,7 +1085,8 @@ static void log_statistics(void)
 			host_logf(HOST_LOG_INFO, "vk: services: %s", services);
 	}
 	c->draws_ready = c->draws_skipped_shader = c->draws_skipped_pipeline = 0;
-	c->draws_made = c->draws_skipped_target = c->draws_skipped_data = c->draws_skipped_other = 0;
+	c->draws_made = c->draws_skipped_target = c->draws_skipped_data = c->draws_skipped_other = c->draws_texture_missing = 0;
+	c->textures_skipped = c->texture_bytes = 0;
 	c->frames = c->hand_overs = c->targets = c->clears = c->presents = c->clears_drawn = c->clears_attachments = 0;
 	c->target_changes = 0;
 	c->data_records = c->data_bytes = 0;
@@ -1443,6 +1446,24 @@ uint32_t host_vk_format_supported(uint32_t format)
 	return (properties.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT) != 0;
 }
 
+uint32_t host_vk_bc_supported(void)
+{
+	static const VkFormat formats[] = { VK_FORMAT_BC1_RGBA_UNORM_BLOCK, VK_FORMAT_BC2_UNORM_BLOCK, VK_FORMAT_BC3_UNORM_BLOCK };
+	/* (the transfer bits are Vulkan 1.1's: before it, every format that can be sampled can be copied to) */
+	const VkFormatFeatureFlags wanted = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
+		(host_vk.api >= VK_API_VERSION_1_1 ? VK_FORMAT_FEATURE_TRANSFER_DST_BIT : 0);
+	unsigned index;
+
+	if (!host_vk_backend_ensure() || !B.texture_compression_bc)
+		return 0;
+	for (index = 0; index < 3; index++)
+	{
+		if ((features_of(formats[index]) & wanted) != wanted)
+			return 0;
+	}
+	return 1;
+}
+
 /* runs size bytes of commands at commands (a guest address), during the call */
 void host_vk_submit(uint32_t commands, uint32_t size)
 {
@@ -1500,6 +1521,18 @@ void host_vk_submit(uint32_t commands, uint32_t size)
 		case VK_COMMAND_DRAW:
 			if (header->size >= sizeof(struct vk_command_draw))
 				host_vk_command_draw((const struct vk_command_draw *)header, header->size);
+			break;
+		case VK_COMMAND_TEXTURE:
+			if (header->size >= sizeof(struct vk_command_texture))
+				host_vk_texture_command((const struct vk_command_texture *)header);
+			break;
+		case VK_COMMAND_TEXTURE_DATA:
+			if (header->size >= sizeof(struct vk_command_texture_data))
+				host_vk_texture_data_command((const struct vk_command_texture_data *)header);
+			break;
+		case VK_COMMAND_TEXTURE_FREE:
+			if (header->size >= sizeof(struct vk_command_texture_free))
+				host_vk_texture_free_command((const struct vk_command_texture_free *)header);
 			break;
 		case VK_COMMAND_TEST_DRAW:
 			if (header->size >= sizeof(struct vk_command_test_draw))
