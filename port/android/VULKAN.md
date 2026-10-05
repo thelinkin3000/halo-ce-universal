@@ -20,8 +20,8 @@ it is ready), it is kept.
 Status: phase 0 is done on the test device (Adreno 750) and committed, parts A
 and B: the probe runs on the phone's own driver and on Turnip, loaded by the
 app, and Turnip draws the game's shaders with descriptor sets, identically to
-the phone's driver; the results are in "Progress". Not done: a second GPU
-family (a Mali), and the user's decisions marked (to confirm). Phase 1 is next. The work is
+the phone's driver; the results are in "Progress". Not tried: a second GPU
+family (a Mali). **Phase 1 is written out and next.** The work is
 on the `vulkan-backend` branch, which starts again from `main`. An earlier
 attempt, kept on the `vulkan-backend-old` branch, is not the base of this
 work and nothing here builds on it; see "Lessons from the earlier attempt".
@@ -803,25 +803,192 @@ the user decides to go on without it.
 
 ## Phase 1 — the Vulkan image
 
-`halo_guest_vk.elf`: the guest's objects with `d3d8_vk.c` (a copy of
-`d3d8_gl.c` whose drawing is stubbed - every entry point keeps its state,
-nothing draws) in place of `d3d8_gl.c`. The APK carries both images; the host
-reads `display.renderer` and loads one, falling back to GL ES (logged) if the
-Vulkan image is missing or Vulkan does not come up with what phase 0
-requires. No GL context is made under Vulkan.
+A second game image whose Direct3D device draws nothing yet, chosen by
+`display.renderer`, and the host's decision of whether Vulkan comes up at all.
+The deko3d plan's phase 1 is the model (`port/switch/DEKO3D.md`, and its commit
+`25c02a0a`, "Add a deko3d renderer to the Switch build, chosen in
+config.toml": read its diff first; most of this phase is that commit on
+Android).
 
-"Comes up" is decided by the host before it loads either image, because a
-custom driver's failures show only after `vkCreateInstance` and cannot be
-undone in the process (`host_vk_driver.h`, and phase 0 B's deviation 3): open
-the driver (`host_vk_driver_open`), make an instance, call
-`host_vk_driver_verify`, and look for a physical device with what phase 0
-requires. A failed check (the hook fell back to the phone's driver) or no
-device (the library is no driver) means the GL ES image, with the reason in
-the log; the instance found here is kept for the backend, not made twice.
+### What this phase is, and is not
 
-**Acceptance:** with `renderer = "vulkan"` the game runs to the menus and
-plays (sound, input) with a black screen; with `"gl"` it is as before; a
-device without Vulkan falls back with a line in the log.
+- **It is** the Vulkan image (`halo_guest_vk.elf`), the host choosing between
+  the two images, the host bringing Vulkan up as far as an instance and a
+  physical device and deciding from that, and the stand-ins that let the
+  game's platform layer run with no GL context.
+- **It is not** drawing or presenting: the screen stays black under Vulkan.
+  No logical device, no swapchain, no command stream (phase 2).
+- **The GL ES image does not change**, nor do the files it is built from,
+  except the settings table.
+
+### Files
+
+| File | What |
+|---|---|
+| `port/android/guest/d3d8_vk.c` | the Vulkan image's Direct3D device: a copy of `d3d8_gl.c` with every OpenGL call taken out (below) |
+| `port/android/host/host_vk.c`, `host_vk.h` | the backend's first part: Vulkan brought up to a physical device, and the decision (below); phase 2 grows it |
+| `port/android/host/host_main.c` | reads `display.renderer`, reserves the image's range, runs the decision, loads one image |
+| `port/android/host/host_loader.c`, `host_memory.c` | the image's range reserved before it is loaded (below) |
+| `port/android/host/host_sdl.c`, `host_gl.c` | the stand-in GL context, the real window without `SDL_WINDOW_OPENGL`, frame pacing (below) |
+| `port/android/host/host.h` | `host_renderer_vulkan`, as the Switch's `host_renderer_deko3d` |
+| `tools/android_build.py` | links `halo_guest_vk.elf`, stages it in the APK beside `halo_guest.elf` |
+| `port/linux/src/port_config.c` | `display.renderer` for Android; `debug.vk_validation`'s text says it applies to the renderer too |
+| `port/android/README.md` | `display.renderer`, marked in development |
+
+### The Vulkan image
+
+`halo_guest_vk.elf` is linked from the same objects as `halo_guest.elf`, with
+`d3d8_gl.o` replaced by `port/android/guest/d3d8_vk.o` (as `switch_build.py`
+makes `halo_guest_dk.elf`: the object list without the GL renderer's, plus the
+copy). Everything else is shared in this phase, `xbox_textures.c`,
+`nv2a_vsh.c`, `nv2a_psh.c`, `hud_hires.c`, `text_hires.c` and `menu_files.c`
+included: their own GL calls (listed below) reach no context and do nothing
+(Android's GL ES library answers a call made without a current context with a
+no-op), which is acceptable until phase 6 replaces them. The APK carries both
+images as assets.
+
+**`d3d8_vk.c` is a copy of `d3d8_gl.c`**, then cut down. It keeps, as they
+are: the screen's width and scale and everything `halo_screen_*` exports, the
+XDK's device and state, the vertical blank and its thread and callbacks, the
+reserved viewport constants, render and texture stage state, transforms,
+vertex shaders and declarations, streams and immediate mode, the surfaces and
+render targets as the game sees them, and every function another object
+calls. It drops every `gl*` call and every `host_gl_*` import; what drew,
+cleared or uploaded becomes a function that keeps its state and returns.
+Answers the game reads back are the GL build's where they do not depend on
+the GPU, and otherwise: `IsBusy` false, `BlockUntilNotBusy` and locks return at
+once, visibility tests report 0 samples. `d3d8_dk.c` at `25c02a0a` is the
+reference for what such a device keeps; it was written from the same
+`d3d8_gl.c` for the same reason. **The link is the check**: every symbol
+`d3d8_gl.o` defines that another object uses must be defined by
+`d3d8_vk.o`, and none may be a stub that changes what the game sees.
+
+A comment at the top of `d3d8_vk.c` says what it is, which `d3d8_gl.c` it was
+copied from (the commit), and that changes to `d3d8_gl.c` are not followed
+automatically.
+
+### The image's range, reserved first
+
+`host_load_image` reserves the image's range (`host_memory_initialize`) and
+places the memory window as it loads, and the existing comment in
+`host_main.c` says why that comes before the display: a driver's own
+mappings can land on the image's fixed address. Bringing Vulkan up maps
+memory the same way, and must happen before the host knows which image to
+load. So the reservation is split from the load:
+
+1. Read both images' program headers from the APK (`SDL_LoadFile` on each,
+   as now for one), and reserve, at `HALO_GUEST_IMAGE_BASE`, the larger of the
+   two spans, then place the window, as `host_memory_initialize` does now.
+2. Bring Vulkan up and decide (below), if `display.renderer` asks for it.
+3. Map the chosen image into the reservation; the other image's data is
+   freed.
+
+`host_load_image` gains the form that loads into a reservation made before;
+the reservation and the window placement keep their order and their log
+lines. A device where the reservation fails fails as it does now.
+
+### Bringing Vulkan up, and the decision
+
+`host_vk.c`, `host_vk_startup(const char *vk_driver)`, run by `host_main.c`
+after the reservation and SDL's video, when `display.renderer = "vulkan"`:
+
+1. `host_vk_driver_open(display.vk_driver)`.
+2. An instance: Vulkan 1.3 if the loader offers it, otherwise 1.1; extensions
+   `VK_KHR_surface` and `VK_KHR_android_surface` (required),
+   `VK_KHR_get_physical_device_properties2` where the instance is 1.0-level;
+   `VK_LAYER_KHRONOS_validation` and `VK_EXT_debug_utils` when
+   `debug.vk_validation` is true and the layer is there, its messages logged
+   (tag `halo`, prefix `vk:`), with a count of errors kept for phase 2's
+   diagnostics.
+3. `host_vk_driver_verify()`. A failure ends here (below).
+4. A physical device with: a graphics queue family; `VK_KHR_swapchain`;
+   dynamic rendering (Vulkan 1.3's feature, or `VK_KHR_dynamic_rendering`
+   with what it depends on before 1.2). The first that has all of these;
+   none is a failure.
+5. Kept, for phase 2: the instance, its function table, the physical
+   device, the queue family, the API version to use. Nothing is made twice.
+
+The entry points are loaded into a table as the probe does (an X-macro list,
+`VK_NO_PROTOTYPES`, a missing one logged by name and treated as a failure),
+written afresh in `host_vk.c` for the backend: phase 2 adds the device's.
+
+**The log line**, one, either way: `renderer: Vulkan on <driver description>,
+<deviceName>, Vulkan <api>, <driverName> <driverInfo>` or `renderer: GL ES
+(Vulkan was asked for: <reason>)`.
+
+**A failure** (no driver, no instance, the check failed, no device with what
+is required, a missing entry point) destroys what was made, logs the reason
+and loads the GL ES image. After a custom driver failed this way the process
+keeps it loaded (`host_vk_driver.h`); the GL ES renderer does not use Vulkan,
+so that is harmless.
+
+**`display.renderer`**: `"gl"` (the default) or `"vulkan"`; anything else is
+`"gl"` with a warning. A row in `port_config.c` for Android (`#ifndef
+HALO_SWITCH`, the Switch has its own with `"deko3d"`). `debug.vk_probe` still
+runs the probe first, as now, whatever the renderer is.
+
+### The stand-ins
+
+Under Vulkan the game's platform layer (`sdl_platform.c`, shared) still
+creates an SDL window with `SDL_WINDOW_OPENGL`, a GL context, a swap interval,
+and swaps at each present. In `host_sdl.c`, under `host_renderer_vulkan`:
+
+- **The window is real**, made without `SDL_WINDOW_OPENGL` (the flag is
+  taken out), so SDL makes no EGL surface on it: phase 2 makes its Vulkan
+  surface on it, and the probe has shown such a window takes one. Its size,
+  input and lifecycle are SDL's as now.
+- **The GL context is a stand-in**: a handle to nothing that
+  `make_current`, `set_attribute` and `set_swap_interval` accept (the interval
+  is kept for pacing).
+- **The swap paces the frames**, as the stand-in swap does on the Switch:
+  with a swap interval above 0, frames are held to the display's refresh rate
+  (`SDL_GetCurrentDisplayMode`), so the game runs at the rate it runs at
+  under GL ES, until phase 2's swapchain paces them instead
+  (`host_vk_presenting`, set by phase 2). Every 10 seconds the log says how
+  many frames were swapped.
+- `host_gl.c`'s `host_gl_get_string` answers `"Vulkan"` for the renderer and
+  version strings and nothing for extensions, so the platform layer's
+  `OpenGL %s on %s` line prints sense instead of what a GL library answers
+  with no context.
+
+The GL calls the shared files still make under Vulkan are listed by the
+agent in "Progress" (file, function, how many calls a frame in the menus,
+from a count kept in `host_gl.c` behind the stand-in), so that phase 6 knows
+what to replace.
+
+### Testing on the device
+
+On the test device, the `.vk` build:
+
+1. `renderer = "gl"`: the game as before: the menus, a new game, the first
+   map.
+2. `renderer = "vulkan"`, `vk_driver = ""`: the log says Vulkan on the
+   phone's driver; the screen is black; the menus run (the sound plays, keys
+   move through them: adb's `KEYCODE_DPAD_DOWN` and `KEYCODE_ENTER` drive the
+   main menu), a new game starts and the map's sound and the game's log go
+   on; the frame count every 10 s is the display's rate. Backgrounding and
+   coming back ten times does not stop the game.
+3. The same with Turnip (`vk_driver = "Turnip_v26.0.0_R8.zip"`).
+4. With validation on, for 2 and 3: no messages beyond the layer's cache
+   file.
+5. The failures: `vk_driver = "missing.zip"` (Vulkan on the phone's driver,
+   the reason logged); an archive whose library is an ELF file but no driver
+   (for example one of the hooks, renamed, with a `meta.json`): the GL ES
+   image, the reason logged, the game drawn by GL ES; `renderer = "vlukan"`:
+   GL ES with a warning.
+6. A build where the APK has no `halo_guest_vk.elf` is not made for the test;
+   the code path (GL ES, logged) is read in the audit instead.
+
+### Acceptance
+
+- Each of the cases above as described, on the test device, with the log
+  lines in "Progress".
+- The GL calls left in the Vulkan image listed in "Progress".
+- `ninja android_apk` with and without `--android-vulkan-validation` builds
+  both images; of the GL ES image's objects only `port_config.o` changes (the
+  settings rows).
+- The code audited against the source and the Vulkan specification, then
+  committed.
 
 ## Phase 2 — the backend's skeleton
 
