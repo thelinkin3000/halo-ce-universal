@@ -82,7 +82,11 @@ as a Vulkan function */
 	X(vkCreateBuffer) X(vkDestroyBuffer) X(vkGetBufferMemoryRequirements) X(vkBindBufferMemory) X(vkMapMemory) \
 	X(vkUnmapMemory) X(vkCmdCopyImageToBuffer) X(vkCmdBindVertexBuffers) \
 	X(vkCreateDescriptorSetLayout) X(vkDestroyDescriptorSetLayout) X(vkCreatePipelineCache) X(vkDestroyPipelineCache) \
-	X(vkGetPipelineCacheData)
+	X(vkGetPipelineCacheData) \
+	X(vkCreateDescriptorPool) X(vkDestroyDescriptorPool) X(vkResetDescriptorPool) X(vkAllocateDescriptorSets) \
+	X(vkUpdateDescriptorSets) X(vkCmdBindDescriptorSets) X(vkCmdBindIndexBuffer) X(vkCmdDrawIndexed) X(vkCmdSetDepthBias) \
+	X(vkCmdSetBlendConstants) X(vkCmdSetStencilCompareMask) X(vkCmdSetStencilWriteMask) X(vkCmdSetStencilReference) \
+	X(vkCreateSampler) X(vkDestroySampler)
 
 #define X(name) extern PFN_##name name __attribute__((visibility("hidden")));
 HOST_VK_DEVICE_FUNCTIONS(X)
@@ -116,6 +120,9 @@ struct host_vk_frame
 	int recording; /* the command buffer is open */
 	int ring_valid; /* its upload ring has been reset for this use of the frame (host_vk_data.c) */
 	struct host_vk_ring *ring;
+	/* the descriptor pools a draw's sets come from (host_vk_draw.c): reset when the frame's fence has passed */
+	VkDescriptorPool *pools;
+	unsigned pool_count, pool_capacity, pool_current;
 	int submitted; /* the fence is (to be) signalled by submission number */
 	uint64_t number;
 };
@@ -143,6 +150,8 @@ struct host_vk_backend
 	VkPhysicalDeviceMemoryProperties memory;
 	VkFormat color_format, depth_format;
 	VkFilter blit_filter;
+	/* the optional device features that were enabled */
+	int sampler_anisotropy, fill_mode_non_solid, occlusion_query_precise, texture_compression_bc;
 	VkFormatFeatureFlags swapchain_features;
 
 	struct host_vk_frame frames[HOST_VK_FRAMES];
@@ -181,10 +190,19 @@ struct host_vk_backend
 		unsigned recreations;
 		unsigned data_records, data_bytes;
 		unsigned draws_ready, draws_skipped_shader, draws_skipped_pipeline;
+		unsigned draws_made, draws_skipped_target, draws_skipped_data, draws_skipped_other;
 	} counts;
 };
 
 extern struct host_vk_backend host_vkb;
+
+/* host_vk_draw.c (phase 6): the draws */
+void host_vk_command_draw(const struct vk_command_draw *draw, uint32_t size);
+/* the frame's descriptor pools are reset, its fence having passed (host_vk_frame_command) */
+void host_vk_draw_frame_reset(struct host_vk_frame *frame);
+/* the draw's pools and samplers are let go when the backend is */
+/* opens a rendering on the bound targets if there is none open; 0 if there are no targets */
+int host_vk_rendering_begin(void);
 
 /* host_vk_render.c: records a command buffer and logs; check() reports a failed call and
 stops the backend if the device was lost */
@@ -226,6 +244,9 @@ and the pipeline cache made by the caller */
 void host_vk_services_start(void);
 /* the pipeline a draw asks for (VK_COMMAND_PIPELINE); B.lock is held */
 void host_vk_pipeline_command(const struct vk_command_pipeline *command);
+/* the pipeline for a draw's two shader handles and state, queued if new: the VkPipeline once it is ready, else VK_NULL_HANDLE
+(counted as skipped); B.lock is held */
+VkPipeline host_vk_pipeline_find(uint32_t vertex_handle, uint32_t pixel_handle, const struct vk_pipeline_state *state);
 /* the statistics line's part, and the services' tick (a frame): the cache is saved every five minutes if pipelines
 were made since */
 void host_vk_services_statistics(char *text, size_t size);

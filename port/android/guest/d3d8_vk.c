@@ -769,7 +769,10 @@ HRESULT WINAPI Direct3D_CreateDevice(UINT adapter, D3DDEVTYPE device_type, void 
 		if (!config_boolean("debug.null_renderer") && platform_video_initialize(width, height))
 		{
 			device.video_ready = TRUE;
-			platform_log("Direct3D: the Vulkan renderer (clears and presenting only: nothing else is drawn yet)");
+			/* the texture cache tells a texture was rewritten by the memory watch's generations (d3d8_gl.c starts it in
+			gl_initialize): without it a texture the game rewrites would be drawn stale */
+			memory_watch_initialize();
+			platform_log("Direct3D: the Vulkan renderer (phase 6: draws)");
 		}
 		else
 			platform_log("Direct3D: running without a window (nothing is displayed)");
@@ -1627,48 +1630,31 @@ static uint32_t shader_handle(uint32_t stage, uint64_t hash, const struct vertex
 	return 0;
 }
 
-/* the state a pipeline is asked for with until phase 6 makes it from the game's: triangle list, fill, no culling, depth
-and stencil off, no blend, all four channels written, the colour and depth targets, and sixteen four-float attributes
-(a 32-bit integer for each packed one) from one binding of stride 0 */
-static void pipeline_state_placeholder(struct vk_pipeline_state *state, unsigned long packed_mask)
-{
-	unsigned index;
-
-	memset(state, 0, sizeof(*state));
-	state->topology = VK_PLACEHOLDER_TOPOLOGY_TRIANGLE_LIST;
-	state->color_write_mask = 0xf;
-	state->color_format = 1;
-	state->depth_format = 1;
-	state->binding_count = 1;
-	for (index = 0; index < VK_PIPELINE_VERTEX_ATTRIBUTES; index++)
-		/* a packed attribute is `in uint` in the shader (phase 4): a pipeline's format for it must be an integer one */
-		state->attributes[index].format = packed_mask & (1UL << index) ? VK_PLACEHOLDER_FORMAT_R32_UINT :
-			VK_PLACEHOLDER_FORMAT_R32G32B32A32_SFLOAT;
-}
-
-/* called at each draw that would be made (phase 6 draws): the shaders it needs are asked for, the pipeline with them is
-asked for in the stream, and the dump (debug.gpu_dump_shaders) notes the shaders. The key is made as prepare_draw in
-d3d8_gl.c makes it, without binding anything. */
-static void draw_note(BOOL immediate)
+/* the shaders a draw needs, as d3d8_gl.c's prepare_draw chooses them, asked for from the host (and sent when the host lacks
+them), and noted for the dump (debug.gpu_dump_shaders). FALSE if there is no program to draw with. The handles are 0 while a
+shader is queued or compiling (the draw is skipped). The key is made without binding anything. */
+static BOOL draw_shaders(BOOL immediate, struct nv2a_pixel_shader_key *key, unsigned long *mask_out, uint32_t *vertex,
+	uint32_t *pixel)
 {
 	struct vertex_shader_object *program = current_program();
-	struct nv2a_pixel_shader_key key;
 	const char *folder = dump_folder();
 	unsigned long mask;
-	uint32_t generator = VK_SHADER_GENERATOR_VERSION, vertex, pixel;
+	uint32_t generator = VK_SHADER_GENERATOR_VERSION;
 	uint64_t hash;
 
+	*vertex = *pixel = 0;
 	if (!program || !device.vertex_shader || !program->instructions)
-		return;
-	pixel_key_make(&key);
+		return FALSE;
+	pixel_key_make(key);
 	mask = immediate ? 0 : device.vertex_shader->packed_mask;
+	*mask_out = mask;
 	if (folder)
 	{
 		dump_vertex_shader(folder, program, mask);
-		dump_pixel_shader(folder, &key);
+		dump_pixel_shader(folder, key);
 	}
 	if (!device.video_ready)
-		return;
+		return TRUE;
 	{
 		uint32_t mask32 = (uint32_t)mask;
 
@@ -1676,17 +1662,11 @@ static void draw_note(BOOL immediate)
 		hash = vk_hash_mix(hash, &program->program_hash, sizeof(program->program_hash));
 		hash = vk_hash_mix(hash, &mask32, sizeof(mask32));
 	}
-	vertex = shader_handle(VK_SHADER_STAGE_VERTEX, hash, program, mask, NULL);
+	*vertex = shader_handle(VK_SHADER_STAGE_VERTEX, hash, program, mask, NULL);
 	hash = vk_hash_mix(vk_hash_init(), &generator, sizeof(generator));
-	hash = vk_hash_mix(hash, &key, sizeof(key));
-	pixel = shader_handle(VK_SHADER_STAGE_PIXEL, hash, NULL, 0, &key);
-	{
-		struct vk_command_pipeline *command = stream_command(VK_COMMAND_PIPELINE, sizeof(*command));
-
-		command->vertex_shader = vertex;
-		command->pixel_shader = pixel;
-		pipeline_state_placeholder(&command->state, mask);
-	}
+	hash = vk_hash_mix(hash, key, sizeof(*key));
+	*pixel = shader_handle(VK_SHADER_STAGE_PIXEL, hash, NULL, 0, key);
+	return TRUE;
 }
 
 /* at each Present: the first one writes every vertex shader with mask 0 as well, so that each has its immediate-mode
@@ -1717,7 +1697,7 @@ static void dump_present(void)
 	}
 }
 
-/* ---------- vertex data and drawing */
+/* ---------- vertex data and drawing (phase 6) */
 
 void WINAPI D3DDevice_SetStreamSource(UINT stream_number, D3DVertexBuffer *stream_data, UINT stride)
 {
@@ -1735,19 +1715,714 @@ void WINAPI D3DDevice_SetIndices(D3DIndexBuffer *index_data, UINT base_vertex_in
 	CreateIndexBuffer ordinary memory, which the move leaves alone */
 	D3D__IndexData = index_data ? (WORD *)PORT_WINDOW_REBASE(index_data->Data) : NULL;
 }
+
+/* debug.gpu_stats: the draws of the last 60 frames, and what skipped the rest */
+static struct
+{
+	unsigned long draws, immediate_draws, presents;
+	unsigned long skipped_no_program, skipped_no_target, skipped_shader, skipped_texture, skipped_other;
+} stats;
+static BOOL statistics_on, statistics_read;
+
+/* The Xbox's enumerants are OpenGL's (D3DBLEND_*, D3DCMP_*, the stencil operations, D3DBLENDOP_*): Vulkan's numbers for them */
+
+static uint32_t compare_op(DWORD value)
+{
+	/* GL_NEVER to GL_ALWAYS are 0x200 to 0x207, in Vulkan's order; 0 is never (d3d8_gl.c) */
+	return value >= 0x200 && value <= 0x207 ? value - 0x200 : 0;
+}
+
+static uint32_t stencil_op(DWORD value)
+{
+	switch (value)
+	{
+	case 0: return 1; /* ZERO */
+	case D3DSTENCILOP_REPLACE: return 2;
+	case D3DSTENCILOP_INCRSAT: return 3;
+	case D3DSTENCILOP_DECRSAT: return 4;
+	case D3DSTENCILOP_INVERT: return 5;
+	case D3DSTENCILOP_INCR: return 6;
+	case D3DSTENCILOP_DECR: return 7;
+	default: return 0; /* KEEP */
+	}
+}
+
+static uint32_t blend_factor(DWORD value)
+{
+	switch (value)
+	{
+	case D3DBLEND_ZERO: return 0;
+	case D3DBLEND_ONE: return 1;
+	case D3DBLEND_SRCCOLOR: return 2;
+	case D3DBLEND_INVSRCCOLOR: return 3;
+	case D3DBLEND_DESTCOLOR: return 4;
+	case D3DBLEND_INVDESTCOLOR: return 5;
+	case D3DBLEND_SRCALPHA: return 6;
+	case D3DBLEND_INVSRCALPHA: return 7;
+	case D3DBLEND_DESTALPHA: return 8;
+	case D3DBLEND_INVDESTALPHA: return 9;
+	case D3DBLEND_CONSTANTCOLOR: return 10;
+	case D3DBLEND_INVCONSTANTCOLOR: return 11;
+	case D3DBLEND_CONSTANTALPHA: return 12;
+	case D3DBLEND_INVCONSTANTALPHA: return 13;
+	case D3DBLEND_SRCALPHASAT: return 14;
+	default: return 1;
+	}
+}
+
+static uint32_t blend_operation(DWORD value)
+{
+	switch (value)
+	{
+	case D3DBLENDOP_SUBTRACT: return 1;
+	case D3DBLENDOP_REVSUBTRACT:
+	case D3DBLENDOP_REVSUBTRACTSIGNED: return 2;
+	case D3DBLENDOP_MIN: return 3;
+	case D3DBLENDOP_MAX: return 4;
+	default: return 0;
+	}
+}
+
+/* primitive_mode in d3d8_gl.c, as Vulkan's topology: quads and line loops are drawn as indices (draw_make) */
+static uint32_t topology_of(D3DPRIMITIVETYPE type)
+{
+	switch (type)
+	{
+	case D3DPT_POINTLIST: return 0;
+	case D3DPT_LINELIST: return 1;
+	case D3DPT_LINELOOP:
+	case D3DPT_LINESTRIP: return 2;
+	case D3DPT_TRIANGLESTRIP:
+	case D3DPT_QUADSTRIP: return 4;
+	case D3DPT_TRIANGLEFAN:
+	case D3DPT_POLYGON: return 5;
+	default: return 3;
+	}
+}
+
+/* apply_raster_state in d3d8_gl.c, as the pipeline's state and the draw's dynamic state */
+static void raster_state_make(struct vk_command_draw *draw, BOOL has_color, BOOL has_depth)
+{
+	struct vk_pipeline_state *state = &draw->state;
+	DWORD *rs = D3D__RenderState;
+	DWORD write = rs[D3DRS_COLORWRITEENABLE];
+	BOOL depth_test = has_depth && rs[D3DRS_ZENABLE];
+	long x0 = target_pixel((float)device.viewport.X, 0), y0 = target_pixel((float)device.viewport.Y, 1);
+	long x1 = target_pixel((float)(device.viewport.X + device.viewport.Width), 0);
+	long y1 = target_pixel((float)(device.viewport.Y + device.viewport.Height), 1);
+
+	draw->viewport[0] = (float)x0;
+	draw->viewport[1] = (float)y0;
+	draw->viewport[2] = (float)(x1 - x0);
+	draw->viewport[3] = (float)(y1 - y0);
+	draw->viewport[4] = device.viewport.MinZ;
+	draw->viewport[5] = device.viewport.MaxZ;
+	/* the game never issues a scissor rectangle, and the NV2A scissor register defaults to the viewport, so fragment
+	clipping follows the viewport: this is what keeps a split-screen window's geometry from bleeding across the divider */
+	draw->scissor[0] = (int32_t)x0;
+	draw->scissor[1] = (int32_t)y0;
+	draw->scissor[2] = (int32_t)(x1 - x0);
+	draw->scissor[3] = (int32_t)(y1 - y0);
+
+	state->color_format = has_color ? 1 : 0;
+	state->depth_format = has_depth ? 1 : 0;
+	state->color_write_mask = ((write & D3DCOLORWRITEENABLE_RED) ? 1 : 0) | ((write & D3DCOLORWRITEENABLE_GREEN) ? 2 : 0) |
+		((write & D3DCOLORWRITEENABLE_BLUE) ? 4 : 0) | ((write & D3DCOLORWRITEENABLE_ALPHA) ? 8 : 0);
+	state->polygon_mode = rs[D3DRS_FILLMODE] == D3DFILL_WIREFRAME ? 1 : rs[D3DRS_FILLMODE] == D3DFILL_POINT ? 2 : 0;
+	state->depth_test = depth_test;
+	if (depth_test)
+	{
+		state->depth_write = rs[D3DRS_ZWRITEENABLE] != 0;
+		state->depth_compare_op = compare_op(rs[D3DRS_ZFUNC]);
+	}
+	if (has_depth && rs[D3DRS_STENCILENABLE])
+	{
+		struct vk_stencil_face_state face;
+
+		face.compare_op = compare_op(rs[D3DRS_STENCILFUNC]);
+		face.fail_op = stencil_op(rs[D3DRS_STENCILFAIL]);
+		face.depth_fail_op = stencil_op(rs[D3DRS_STENCILZFAIL]);
+		face.pass_op = stencil_op(rs[D3DRS_STENCILPASS]);
+		state->stencil_test = 1;
+		state->stencil_front = face;
+		state->stencil_back = face;
+		draw->stencil_compare_mask = rs[D3DRS_STENCILMASK] & 0xff;
+		draw->stencil_write_mask = rs[D3DRS_STENCILWRITEMASK] & 0xff;
+		draw->stencil_reference = rs[D3DRS_STENCILREF] & 0xff;
+	}
+	if (rs[D3DRS_ALPHABLENDENABLE])
+	{
+		state->blend_enable = 1;
+		state->source_color_factor = state->source_alpha_factor = blend_factor(rs[D3DRS_SRCBLEND]);
+		state->destination_color_factor = state->destination_alpha_factor = blend_factor(rs[D3DRS_DESTBLEND]);
+		state->color_op = state->alpha_op = blend_operation(rs[D3DRS_BLENDOP]);
+		color_to_vec4(rs[D3DRS_BLENDCOLOR], draw->blend_constants);
+	}
+	/* the cull mode names the winding to discard, FRONTFACE the front winding: d3d8_gl.c's desktop branch (the Android one
+	answers its y flip in the shaders, which these do not make: the flip is the viewport's) */
+	if (rs[D3DRS_CULLMODE] != D3DCULL_NONE)
+	{
+		state->cull_mode = rs[D3DRS_CULLMODE] == rs[D3DRS_FRONTFACE] ? 1 : 2; /* front : back */
+		state->front_face = rs[D3DRS_FRONTFACE] == D3DFRONT_CCW ? 0 : 1; /* counter-clockwise : clockwise */
+	}
+	/* D3DRS_ZBIAS is expressed in these states (D3DDevice_SetRenderState_ZBias): a polygon offset's units and slope factor */
+	if (rs[D3DRS_SOLIDOFFSETENABLE])
+	{
+		state->depth_bias = 1;
+		draw->depth_bias_slope = dword_to_float(rs[D3DRS_POLYGONOFFSETZSLOPESCALE]);
+		draw->depth_bias_constant = dword_to_float(rs[D3DRS_POLYGONOFFSETZOFFSET]);
+	}
+}
+
+/* ---------- uniforms: the three blocks, put when they differ from what this frame last put */
+
+static struct
+{
+	BOOL constants_valid, parameters_valid;
+	unsigned long constants_serial;
+	struct vk_data_ref constants_ref, parameters_ref;
+	struct vk_vertex_parameters parameters;
+	/* the pixel parameters (a few distinct ones a frame at most) */
+	BOOL pixel_valid;
+	struct vk_pixel_parameters pixel;
+	struct vk_data_ref pixel_ref;
+	/* the attributes' current values (SetVertexData), as the unfed binding holds them */
+	BOOL attributes_valid;
+	float attributes[XGPU_VERTEX_ATTRIBUTE_COUNT][4];
+	struct vk_data_ref attributes_ref;
+} puts_this_frame;
+
+/* the data ids are good for a frame (Present resets them): so is what was put */
+static void puts_reset(void)
+{
+	memset(&puts_this_frame, 0, sizeof(puts_this_frame));
+}
+
+static struct vk_data_ref data_ref(uint32_t id)
+{
+	struct vk_data_ref ref;
+
+	ref.id = id;
+	ref.offset = 0;
+	return ref;
+}
+
+static void pixel_parameters_make(struct vk_pixel_parameters *p, const float texture_scale[4][4])
+{
+	int stage;
+
+	memset(p, 0, sizeof(*p));
+	for (stage = 0; stage < 8; stage++)
+	{
+		color_to_vec4(D3D__RenderState[D3DRS_PSCONSTANT0_0 + stage], p->ps_c0[stage]);
+		color_to_vec4(D3D__RenderState[D3DRS_PSCONSTANT1_0 + stage], p->ps_c1[stage]);
+	}
+	color_to_vec4(D3D__RenderState[D3DRS_PSFINALCOMBINERCONSTANT0], p->ps_final_c0);
+	color_to_vec4(D3D__RenderState[D3DRS_PSFINALCOMBINERCONSTANT1], p->ps_final_c1);
+	color_to_vec4(D3D__RenderState[D3DRS_FOGCOLOR], p->fog_color);
+	p->fog_parameters[0] = dword_to_float(D3D__RenderState[D3DRS_FOGSTART]);
+	p->fog_parameters[1] = dword_to_float(D3D__RenderState[D3DRS_FOGEND]);
+	p->fog_parameters[2] = dword_to_float(D3D__RenderState[D3DRS_FOGDENSITY]);
+	p->alpha_reference[0] = (float)(D3D__RenderState[D3DRS_ALPHAREF] & 0xff);
+	for (stage = 0; stage < D3DTSS_MAXSTAGES; stage++)
+	{
+		DWORD *state = D3D__TextureState[stage];
+
+		p->bump_matrix[stage][0] = dword_to_float(state[D3DTSS_BUMPENVMAT00]);
+		p->bump_matrix[stage][1] = dword_to_float(state[D3DTSS_BUMPENVMAT01]);
+		p->bump_matrix[stage][2] = dword_to_float(state[D3DTSS_BUMPENVMAT10]);
+		p->bump_matrix[stage][3] = dword_to_float(state[D3DTSS_BUMPENVMAT11]);
+		p->bump_luminance[stage][0] = dword_to_float(state[D3DTSS_BUMPENVLSCALE]);
+		p->bump_luminance[stage][1] = dword_to_float(state[D3DTSS_BUMPENVLOFFSET]);
+	}
+	memcpy(p->texture_scale, texture_scale, sizeof(p->texture_scale));
+}
+
+static void uniforms_make(struct vk_command_draw *draw, const float texture_scale[4][4])
+{
+	struct vk_vertex_parameters parameters;
+	struct vk_pixel_parameters pixel;
+
+	if (!puts_this_frame.constants_valid || puts_this_frame.constants_serial != constants_serial)
+	{
+		puts_this_frame.constants_ref = data_ref(vk_data_put(device.constants, sizeof(device.constants)));
+		puts_this_frame.constants_serial = constants_serial;
+		puts_this_frame.constants_valid = TRUE;
+	}
+	draw->vertex_constants = puts_this_frame.constants_ref;
+
+	memcpy(parameters.viewport_scale, device.viewport_scale, sizeof(parameters.viewport_scale));
+	memcpy(parameters.viewport_offset, device.viewport_offset, sizeof(parameters.viewport_offset));
+	parameters.point_and_screen[0] = D3D__RenderState[D3DRS_POINTSIZE] ? dword_to_float(D3D__RenderState[D3DRS_POINTSIZE]) : 1.0f;
+	parameters.point_and_screen[1] = (float)UI_OFFSET;
+	parameters.point_and_screen[2] = parameters.point_and_screen[3] = 0.0f;
+	if (!puts_this_frame.parameters_valid || memcmp(&puts_this_frame.parameters, &parameters, sizeof(parameters)))
+	{
+		puts_this_frame.parameters = parameters;
+		puts_this_frame.parameters_ref = data_ref(vk_data_put(&parameters, sizeof(parameters)));
+		puts_this_frame.parameters_valid = TRUE;
+	}
+	draw->vertex_parameters = puts_this_frame.parameters_ref;
+
+	pixel_parameters_make(&pixel, texture_scale);
+	if (!puts_this_frame.pixel_valid || memcmp(&puts_this_frame.pixel, &pixel, sizeof(pixel)))
+	{
+		puts_this_frame.pixel = pixel;
+		puts_this_frame.pixel_ref = data_ref(vk_data_put(&pixel, sizeof(pixel)));
+		puts_this_frame.pixel_valid = TRUE;
+	}
+	draw->pixel_parameters = puts_this_frame.pixel_ref;
+}
+
+/* ---------- vertex input */
+
+/* Vulkan's format for a vertex element, as attribute_format in d3d8_gl.c maps it to GL (its desktop branch: D3DCOLOR is
+B8G8R8A8_UNORM, which reads the Xbox's byte order as it is) */
+static uint32_t element_format(unsigned long type)
+{
+	switch (type)
+	{
+	case D3DVSDT_FLOAT1: return VK_VERTEX_FORMAT_R32_SFLOAT;
+	case D3DVSDT_FLOAT2: return VK_VERTEX_FORMAT_R32G32_SFLOAT;
+	case D3DVSDT_FLOAT3:
+	case D3DVSDT_FLOAT2H: return VK_VERTEX_FORMAT_R32G32B32_SFLOAT;
+	case D3DVSDT_FLOAT4: return VK_VERTEX_FORMAT_R32G32B32A32_SFLOAT;
+	case D3DVSDT_D3DCOLOR: return VK_VERTEX_FORMAT_B8G8R8A8_UNORM;
+	case D3DVSDT_SHORT1: return VK_VERTEX_FORMAT_R16_SSCALED;
+	case D3DVSDT_SHORT2: return VK_VERTEX_FORMAT_R16G16_SSCALED;
+	case D3DVSDT_SHORT3: return VK_VERTEX_FORMAT_R16G16B16_SSCALED;
+	case D3DVSDT_SHORT4: return VK_VERTEX_FORMAT_R16G16B16A16_SSCALED;
+	case D3DVSDT_NORMSHORT1: return VK_VERTEX_FORMAT_R16_SNORM;
+	case D3DVSDT_NORMSHORT2: return VK_VERTEX_FORMAT_R16G16_SNORM;
+	case D3DVSDT_NORMSHORT3: return VK_VERTEX_FORMAT_R16G16B16_SNORM;
+	case D3DVSDT_NORMSHORT4: return VK_VERTEX_FORMAT_R16G16B16A16_SNORM;
+	case D3DVSDT_NORMPACKED3: return VK_VERTEX_FORMAT_R32_UINT;
+	case D3DVSDT_PBYTE1: return VK_VERTEX_FORMAT_R8_UNORM;
+	case D3DVSDT_PBYTE2: return VK_VERTEX_FORMAT_R8G8_UNORM;
+	case D3DVSDT_PBYTE3: return VK_VERTEX_FORMAT_R8G8B8_UNORM;
+	case D3DVSDT_PBYTE4: return VK_VERTEX_FORMAT_R8G8B8A8_UNORM;
+	default: return VK_VERTEX_FORMAT_R32G32B32A32_SFLOAT;
+	}
+}
+
+uint32_t host_vk_format_supported(uint32_t format);
+
+/* Vulkan requires few formats as vertex attributes (the 32-bit ones; the rest are optional): the host says, once for each
+format, and the guest expands what is missing into four floats. Said once in the log. */
+static BOOL format_supported(uint32_t format)
+{
+	static unsigned char known[100]; /* 0 not asked, 1 yes, 2 no */
+
+	if (format >= 98)
+		return TRUE;
+	if (!known[format])
+	{
+		known[format] = host_vk_format_supported(format) ? 1 : 2;
+		if (known[format] == 2)
+			platform_log("vk: vertex format %u is not readable by the device as a vertex attribute; those attributes are "
+				"expanded to four floats", (unsigned)format);
+	}
+	return known[format] == 1;
+}
+
+/* an element's value as up to four floats (the rest 0, 0, 0, 1 as a vertex input fills them) */
+static void element_decode(unsigned long type, const unsigned char *source, float out[4])
+{
+	const float *f = (const float *)source;
+	const short *s = (const short *)source;
+	unsigned long index, count = 0;
+
+	out[0] = out[1] = out[2] = 0.0f;
+	out[3] = 1.0f;
+	switch (type)
+	{
+	case D3DVSDT_FLOAT1: count = 1; break;
+	case D3DVSDT_FLOAT2: count = 2; break;
+	case D3DVSDT_FLOAT3:
+	case D3DVSDT_FLOAT2H: count = 3; break;
+	case D3DVSDT_FLOAT4: count = 4; break;
+	default: break;
+	}
+	if (count)
+	{
+		for (index = 0; index < count; index++)
+			out[index] = f[index];
+		return;
+	}
+	switch (type)
+	{
+	case D3DVSDT_D3DCOLOR:
+		out[0] = source[2] / 255.0f;
+		out[1] = source[1] / 255.0f;
+		out[2] = source[0] / 255.0f;
+		out[3] = source[3] / 255.0f;
+		return;
+	case D3DVSDT_SHORT1: case D3DVSDT_SHORT2: case D3DVSDT_SHORT3: case D3DVSDT_SHORT4:
+		count = type - D3DVSDT_SHORT1 + 1;
+		for (index = 0; index < count; index++)
+			out[index] = (float)s[index];
+		return;
+	case D3DVSDT_NORMSHORT1: case D3DVSDT_NORMSHORT2: case D3DVSDT_NORMSHORT3: case D3DVSDT_NORMSHORT4:
+		count = type - D3DVSDT_NORMSHORT1 + 1;
+		for (index = 0; index < count; index++)
+		{
+			float value = s[index] / 32767.0f;
+
+			out[index] = value < -1.0f ? -1.0f : value;
+		}
+		return;
+	case D3DVSDT_PBYTE1: case D3DVSDT_PBYTE2: case D3DVSDT_PBYTE3: case D3DVSDT_PBYTE4:
+		count = type - D3DVSDT_PBYTE1 + 1;
+		for (index = 0; index < count; index++)
+			out[index] = source[index] / 255.0f;
+		return;
+	default:
+		return;
+	}
+}
+
+/* the stream's elements, with the formats the device cannot read as attributes put expanded to four floats: a buffer of its
+own, made at the draw from the game's bytes, every element of the stream in it (a NORMPACKED3 one keeps its 32 bits) */
+static uint32_t stream_expanded_put(const struct vertex_shader_object *declaration, unsigned long stream,
+	const unsigned char *base, unsigned long stride, unsigned long vertices, struct vk_pipeline_state *state,
+	unsigned long binding)
+{
+	unsigned long indexes[XGPU_VERTEX_ATTRIBUTE_COUNT], elements = 0, index, vertex;
+	unsigned long out_stride, rows = stride ? vertices : 1;
+	unsigned char *buffer;
+	uint32_t id;
+
+	for (index = 0; index < declaration->element_count; index++)
+	{
+		const struct vertex_element *element = &declaration->elements[index];
+
+		if (element->stream == stream && element->type != D3DVSDT_NONE)
+			indexes[elements++] = index;
+	}
+	out_stride = elements * 16;
+	buffer = calloc(rows, out_stride);
+	if (!buffer)
+		return 0;
+	for (vertex = 0; vertex < rows; vertex++)
+	{
+		for (index = 0; index < elements; index++)
+		{
+			const struct vertex_element *element = &declaration->elements[indexes[index]];
+			unsigned char *at = buffer + vertex * out_stride + index * 16;
+			const unsigned char *source = base + vertex * stride + element->offset;
+
+			if (element->type == D3DVSDT_NORMPACKED3)
+				memcpy(at, source, 4);
+			else
+				element_decode(element->type, source, (float *)at);
+		}
+	}
+	for (index = 0; index < elements; index++)
+	{
+		const struct vertex_element *element = &declaration->elements[indexes[index]];
+
+		state->attributes[element->reg].format = element->type == D3DVSDT_NORMPACKED3 ? VK_VERTEX_FORMAT_R32_UINT :
+			VK_VERTEX_FORMAT_R32G32B32A32_SFLOAT;
+		state->attributes[element->reg].binding = (uint32_t)binding;
+		state->attributes[element->reg].offset = (uint32_t)(index * 16);
+	}
+	state->bindings[binding].stride = stride ? (uint32_t)out_stride : 0;
+	id = vk_data_put(buffer, rows * out_stride);
+	free(buffer);
+	return id;
+}
+
+/* the vertices [first, first + count) of every stream the declaration reads, put, and the pipeline's bindings and attributes
+for them (setup_streams in d3d8_gl.c); the attributes the declaration does not feed read the current values SetVertexData
+set, from one more binding of stride 0, put again whenever they change. FALSE if the draw cannot be made. */
+static BOOL vertex_input_make(struct vk_command_draw *draw, unsigned long first, unsigned long count)
+{
+	const struct vertex_shader_object *declaration = device.vertex_shader;
+	struct vk_pipeline_state *state = &draw->state;
+	int binding_of[16];
+	BOOL fed[XGPU_VERTEX_ATTRIBUTE_COUNT] = { FALSE };
+	unsigned long index, bindings = 0, stream;
+
+	for (index = 0; index < 16; index++)
+		binding_of[index] = -1;
+	for (index = 0; index < declaration->element_count; index++)
+	{
+		const struct vertex_element *element = &declaration->elements[index];
+
+		if (!device.streams[element->stream].data || element->type == D3DVSDT_NONE || binding_of[element->stream] >= 0)
+			continue;
+		if (bindings >= VK_PIPELINE_VERTEX_BINDINGS - 1)
+			return FALSE;
+		binding_of[element->stream] = (int)bindings++;
+	}
+	for (stream = 0; stream < 16; stream++)
+	{
+		unsigned long stride = device.streams[stream].stride, bytes;
+		const unsigned char *base;
+		BOOL expand = FALSE;
+		unsigned long binding;
+
+		if (binding_of[stream] < 0)
+			continue;
+		binding = (unsigned long)binding_of[stream];
+		bytes = stride ? stride * count : 64;
+		base = (const unsigned char *)PLATFORM_PHYSICAL_TO_VIRTUAL(device.streams[stream].data) + first * stride;
+		for (index = 0; index < declaration->element_count; index++)
+		{
+			const struct vertex_element *element = &declaration->elements[index];
+
+			if (element->stream == stream && element->type != D3DVSDT_NONE &&
+				!format_supported(element_format(element->type)))
+				expand = TRUE;
+		}
+		if (expand)
+		{
+			uint32_t id = stream_expanded_put(declaration, stream, base, stride, count, state, binding);
+
+			if (!id)
+				return FALSE;
+			draw->vertex_buffers[binding] = data_ref(id);
+		}
+		else
+		{
+			draw->vertex_buffers[binding] = data_ref(vk_data_put(base, bytes));
+			state->bindings[binding].stride = (uint32_t)stride;
+			for (index = 0; index < declaration->element_count; index++)
+			{
+				const struct vertex_element *element = &declaration->elements[index];
+
+				if (element->stream != stream || element->type == D3DVSDT_NONE)
+					continue;
+				state->attributes[element->reg].format = element_format(element->type);
+				state->attributes[element->reg].binding = (uint32_t)binding;
+				state->attributes[element->reg].offset = element->offset;
+			}
+		}
+		for (index = 0; index < declaration->element_count; index++)
+		{
+			const struct vertex_element *element = &declaration->elements[index];
+
+			if (element->stream == stream && element->type != D3DVSDT_NONE)
+				fed[element->reg] = TRUE;
+		}
+	}
+	/* the unfed attributes' current values: all sixteen in one binding of stride 0 (a packed attribute reads zero) */
+	{
+		float values[XGPU_VERTEX_ATTRIBUTE_COUNT][4];
+
+		memcpy(values, device.attributes, sizeof(values));
+		for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
+		{
+			if (declaration->packed_mask & (1UL << index))
+				memset(values[index], 0, sizeof(values[index]));
+		}
+		if (!puts_this_frame.attributes_valid || memcmp(puts_this_frame.attributes, values, sizeof(values)))
+		{
+			memcpy(puts_this_frame.attributes, values, sizeof(values));
+			puts_this_frame.attributes_ref = data_ref(vk_data_put(values, sizeof(values)));
+			puts_this_frame.attributes_valid = TRUE;
+		}
+		draw->vertex_buffers[bindings] = puts_this_frame.attributes_ref;
+		state->bindings[bindings].stride = 0;
+		for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
+		{
+			if (fed[index])
+				continue;
+			state->attributes[index].format = declaration->packed_mask & (1UL << index) ? VK_VERTEX_FORMAT_R32_UINT :
+				VK_VERTEX_FORMAT_R32G32B32A32_SFLOAT;
+			state->attributes[index].binding = (uint32_t)bindings;
+			state->attributes[index].offset = (uint32_t)(index * 16);
+		}
+		bindings++;
+	}
+	state->binding_count = (uint32_t)bindings;
+	return TRUE;
+}
+
+/* the largest and smallest index of an index list */
+static void index_extent(const WORD *indices, unsigned long count, unsigned long *minimum, unsigned long *maximum)
+{
+	unsigned long index, low = 0xffff, high = 0;
+
+	for (index = 0; index < count; index++)
+	{
+		if (indices[index] < low)
+			low = indices[index];
+		if (indices[index] > high)
+			high = indices[index];
+	}
+	*minimum = low;
+	*maximum = high;
+}
+
+/* quads become two triangles each */
+static WORD *quad_indices(const WORD *indices, unsigned long count, unsigned long *out_count)
+{
+	unsigned long quads = count / 4;
+	WORD *result = malloc(quads * 6 * sizeof(WORD) + 2);
+	unsigned long quad;
+
+	for (quad = 0; quad < quads; quad++)
+	{
+		WORD v0 = indices ? indices[quad * 4] : (WORD)(quad * 4);
+		WORD v1 = indices ? indices[quad * 4 + 1] : (WORD)(quad * 4 + 1);
+		WORD v2 = indices ? indices[quad * 4 + 2] : (WORD)(quad * 4 + 2);
+		WORD v3 = indices ? indices[quad * 4 + 3] : (WORD)(quad * 4 + 3);
+
+		result[quad * 6 + 0] = v0;
+		result[quad * 6 + 1] = v1;
+		result[quad * 6 + 2] = v2;
+		result[quad * 6 + 3] = v0;
+		result[quad * 6 + 4] = v2;
+		result[quad * 6 + 5] = v3;
+	}
+	*out_count = quads * 6;
+	return result;
+}
+
+/* a line loop is a line strip with its first vertex again at its end: Vulkan has no loop */
+static WORD *loop_indices(const WORD *indices, unsigned long count, unsigned long *out_count)
+{
+	WORD *result = malloc((count + 1) * sizeof(WORD) + 2);
+	unsigned long index;
+
+	for (index = 0; index < count; index++)
+		result[index] = indices ? indices[index] : (WORD)index;
+	result[count] = result[0];
+	*out_count = count + 1;
+	return result;
+}
+
+/* a draw: prepare_draw and the draw calls of d3d8_gl.c, as one VK_COMMAND_DRAW. index_data is the game's indices (NULL for
+a draw of consecutive vertices from start); immediate is End's draw of the vertices of Begin. */
+static void draw_make(D3DPRIMITIVETYPE type, unsigned long count, BOOL immediate, const WORD *index_data, unsigned long start)
+{
+	struct vk_command_draw record;
+	struct nv2a_pixel_shader_key key;
+	float texture_scale[4][4];
+	unsigned long mask, minimum = 0, maximum = 0, first, vertices, index_count = 0;
+	uint32_t vertex, pixel;
+	BOOL has_depth = FALSE;
+	WORD *made = NULL;
+	const WORD *indices = NULL;
+	int stage;
+
+	if (!device.video_ready)
+		return;
+	if (!draw_shaders(immediate, &key, &mask, &vertex, &pixel))
+	{
+		stats.skipped_no_program++;
+		return;
+	}
+	if (!targets_bind(&has_depth))
+	{
+		stats.skipped_no_target++;
+		return;
+	}
+	if (!vertex || !pixel)
+	{
+		stats.skipped_shader++;
+		return;
+	}
+	/* (textures come with phase 6's second step: a draw that samples one is not made yet) */
+	for (stage = 0; stage < D3DTSS_MAXSTAGES; stage++)
+	{
+		texture_scale[stage][0] = texture_scale[stage][1] = texture_scale[stage][2] = texture_scale[stage][3] = 1.0f;
+		if (key.sampler_type[stage] != _xgpu_sampler_none)
+		{
+			stats.skipped_texture++;
+			return;
+		}
+	}
+	memset(&record, 0, sizeof(record));
+	record.vertex_shader = vertex;
+	record.pixel_shader = pixel;
+	raster_state_make(&record, targets_told.color.kind != VK_SURFACE_NONE, has_depth);
+	record.state.topology = topology_of(type);
+
+	/* the indices: the game's (an indexed draw), or made (a quad list, a line loop) */
+	if (index_data)
+	{
+		index_extent(index_data, count, &minimum, &maximum);
+		first = device.base_vertex_index + minimum;
+		vertices = maximum - minimum + 1;
+		indices = index_data;
+		index_count = count;
+	}
+	else
+	{
+		first = start;
+		vertices = count;
+	}
+	if (type == D3DPT_QUADLIST)
+	{
+		made = quad_indices(index_data, count, &index_count);
+		indices = made;
+	}
+	else if (type == D3DPT_LINELOOP)
+	{
+		made = loop_indices(index_data, count, &index_count);
+		indices = made;
+	}
+	if (immediate)
+	{
+		record.vertex_buffers[0] = data_ref(vk_data_put(device.immediate_vertices,
+			count * XGPU_VERTEX_ATTRIBUTE_COUNT * 4 * sizeof(float)));
+		record.state.binding_count = 1;
+		record.state.bindings[0].stride = XGPU_VERTEX_ATTRIBUTE_COUNT * 4 * sizeof(float);
+		for (stage = 0; stage < XGPU_VERTEX_ATTRIBUTE_COUNT; stage++)
+		{
+			record.state.attributes[stage].format = VK_VERTEX_FORMAT_R32G32B32A32_SFLOAT;
+			record.state.attributes[stage].binding = 0;
+			record.state.attributes[stage].offset = (uint32_t)stage * 16;
+		}
+	}
+	else if (!vertex_input_make(&record, first, vertices))
+	{
+		stats.skipped_other++;
+		free(made);
+		return;
+	}
+	if (indices)
+	{
+		if (!index_count)
+		{
+			free(made);
+			return;
+		}
+		record.indexed = 1;
+		record.index_data = data_ref(vk_data_put(indices, index_count * sizeof(WORD)));
+		record.vertex_offset = index_data ? -(int32_t)minimum : 0;
+		record.count = (uint32_t)index_count;
+	}
+	else
+	{
+		record.count = (uint32_t)count;
+	}
+	free(made);
+	uniforms_make(&record, texture_scale);
+	{
+		struct vk_command_draw *command = stream_command(VK_COMMAND_DRAW, sizeof(*command));
+
+		record.header = command->header;
+		*command = record;
+	}
+	if (immediate)
+		stats.immediate_draws++;
+	else
+		stats.draws++;
+}
+
 void WINAPI D3DDevice_DrawVertices(D3DPRIMITIVETYPE primitive_type, UINT start_vertex, UINT vertex_count)
 {
-	(void)primitive_type;
-	(void)start_vertex;
 	if (vertex_count)
-		draw_note(FALSE);
+		draw_make(primitive_type, vertex_count, FALSE, NULL, start_vertex);
 }
 
 void WINAPI D3DDevice_DrawIndexedVertices(D3DPRIMITIVETYPE primitive_type, UINT vertex_count, CONST WORD *index_data)
 {
-	(void)primitive_type;
 	if (vertex_count && index_data)
-		draw_note(FALSE);
+		draw_make(primitive_type, vertex_count, FALSE, index_data, 0);
 }
 
 /* ---------- immediate mode */
@@ -1774,9 +2449,11 @@ static void immediate_emit(void)
 }
 void WINAPI D3DDevice_End(void)
 {
+	unsigned long count = device.immediate_count;
+
 	device.immediate_active = FALSE;
-	if (device.immediate_count)
-		draw_note(TRUE);
+	if (count)
+		draw_make(device.immediate_type, count, TRUE, NULL, 0);
 	device.immediate_count = 0;
 }
 
@@ -1912,6 +2589,21 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 		/* the host starts the next frame with nothing bound, and with no data */
 		targets_known = FALSE;
 		data_id = 0;
+		puts_reset();
+		stats.presents++;
+		if (!statistics_read)
+		{
+			statistics_read = TRUE;
+			statistics_on = config_boolean("debug.gpu_stats");
+		}
+		if (statistics_on && stats.presents >= 60)
+		{
+			platform_log("frame %lu: %lu draws, %lu immediate; skipped %lu no program, %lu no target, %lu shader not ready, "
+				"%lu textured, %lu other", device.frame, stats.draws / stats.presents, stats.immediate_draws / stats.presents,
+				stats.skipped_no_program, stats.skipped_no_target, stats.skipped_shader, stats.skipped_texture,
+				stats.skipped_other);
+			memset(&stats, 0, sizeof(stats));
+		}
 	}
 	dump_present();
 	/* the stand-in window's swap: holds the frame to the display's rate until the
