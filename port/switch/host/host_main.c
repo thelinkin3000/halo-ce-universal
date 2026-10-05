@@ -811,6 +811,8 @@ static uint32_t make_boot(const struct environment *environment)
 	boot->environment = (uint32_t)(uintptr_t)environ_list;
 	boot->page_size = (uint32_t)getpagesize();
 	boot->contiguous_base = host_memory_window_base();
+	/* (the Switch's image is always where it was linked) */
+	boot->image_shift = 0;
 	return (uint32_t)(uintptr_t)boot;
 }
 

@@ -9,7 +9,9 @@ references and so also live there. The host therefore claims only what the
 guest needs, when it needs it:
 
 - the Xbox contiguous window at 0x80000000 and the image's own range, at
-  start-up (both at fixed addresses the guest was built for);
+  start-up (both at the addresses the guest was built for, else wherever
+  there is room: the guest is told where the window is, and the image's
+  pointers are moved with it, host_loader.c);
 - pools of address space for the guest's other mappings (malloc arenas,
   thread stacks), reserved in free gaps below 4 GB as they fill up.
 
@@ -226,22 +228,31 @@ uint32_t host_memory_window_base(void)
 	return (uint32_t)window_base;
 }
 
-int host_memory_initialize(uint32_t base, uint32_t size)
+/* the image is moved by whole numbers of this: more than a page, so its
+sections keep the alignment they were linked with (guest.ld) */
+#define IMAGE_ALIGNMENT 0x10000ULL
+
+int host_memory_initialize(uint32_t preferred_base, uint32_t size, uint32_t *base)
 {
 	uint64_t minimum = LOW_START;
 	int attempt;
+	int image_placed;
 
-	/* the image first: it is at a fixed address, and the search below reads
-	the mappings, so it has to be claimed before the window is placed or the
+	/* the image first, where it was linked: the search below reads the
+	mappings, so it has to be claimed before the window is placed or the
 	search hands back the image's own address */
-	image_base = base;
-	image_end = base + round_up(size);
-	if (reserve(image_base, image_end - image_base) != 0)
+	image_base = preferred_base;
+	image_end = preferred_base + round_up(size);
+	image_placed = reserve(image_base, image_end - image_base) == 0;
+	if (!image_placed)
 	{
-		host_logf(HOST_LOG_ERROR, "cannot reserve the guest image range at %08llx (%s)",
+		/* the Java runtime got there first (its heap can start as low as
+		32 MB and run past 1 GB): the image goes wherever there is room once
+		the window has its place, and its pointers are moved with it */
+		host_logf(HOST_LOG_INFO, "the guest image's address %08llx is taken (%s); putting it somewhere free",
 			(unsigned long long)image_base, strerror(errno));
 		log_conflicts(image_base, image_end - image_base);
-		return -1;
+		image_base = image_end = 0;
 	}
 
 	/* the window where the game and its data expect it, if it is free */
@@ -281,6 +292,28 @@ int host_memory_initialize(uint32_t base, uint32_t size)
 		}
 	}
 	window_end = window_base + HALO_GUEST_WINDOW_SIZE;
+	for (attempt = 0, minimum = LOW_START; attempt < 128 && !image_placed; attempt++)
+	{
+		uint64_t candidate = find_gap(round_up(size), minimum, IMAGE_ALIGNMENT);
+
+		if (!candidate)
+			break;
+		if (reserve(candidate, round_up(size)) != 0)
+		{
+			minimum = candidate + PAGE;
+			continue;
+		}
+		image_base = candidate;
+		image_end = candidate + round_up(size);
+		image_placed = 1;
+	}
+	if (!image_placed)
+	{
+		host_logf(HOST_LOG_ERROR, "no free range of %u MB for the guest image",
+			(unsigned int)(round_up(size) / (1024 * 1024)));
+		return -1;
+	}
+	*base = (uint32_t)image_base;
 	host_logf(HOST_LOG_INFO, "Xbox memory window at %08llx-%08llx, guest image at %08llx-%08llx",
 		(unsigned long long)window_base, (unsigned long long)window_end,
 		(unsigned long long)image_base, (unsigned long long)image_end);
@@ -522,9 +555,11 @@ static void report_crash(int signal_number, siginfo_t *information, void *contex
 	host_logf(HOST_LOG_ERROR, "signal %d at address %p: pc %016llx lr %016llx sp %016llx",
 		signal_number, information->si_addr, (unsigned long long)pc, (unsigned long long)lr,
 		(unsigned long long)registers->sp);
+	/* (addr2line wants the addresses the image was linked at, which is not
+	where it ran if the host had to move it) */
 	if (pc >= host_image.base && pc < host_image.end)
 		host_logf(HOST_LOG_ERROR, "  in the guest image: addr2line -e halo_guest.elf 0x%llx 0x%llx",
-			(unsigned long long)pc, (unsigned long long)lr);
+			(unsigned long long)(uint32_t)(pc - host_image.shift), (unsigned long long)(uint32_t)(lr - host_image.shift));
 	for (index = 0; index < 31; index += 4)
 	{
 		host_logf(HOST_LOG_ERROR, "  x%-2d %016llx %016llx %016llx %016llx", index,

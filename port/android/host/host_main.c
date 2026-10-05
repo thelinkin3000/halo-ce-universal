@@ -259,6 +259,7 @@ static uint32_t make_boot(const struct environment *environment)
 	boot->environment = (uint32_t)(uintptr_t)environ_list;
 	boot->page_size = (uint32_t)getpagesize();
 	boot->contiguous_base = host_memory_window_base();
+	boot->image_shift = host_image.shift;
 	return (uint32_t)(uintptr_t)boot;
 }
 
@@ -317,8 +318,15 @@ static void *game_main(void *unused)
 	image = SDL_LoadFile("halo_guest.elf", &image_size);
 	if (!image)
 		host_fatal("cannot read the game image from the APK: %s", SDL_GetError());
-	if (host_load_image(image, image_size) != 0)
-		host_fatal("cannot load the game image; see logcat (tag \"halo\") for details");
+	{
+		/* where its pointers are, in case its address is taken (host_loader.c) */
+		size_t relocations_size = 0;
+		void *relocations = SDL_LoadFile("halo_guest.relocs", &relocations_size);
+
+		if (host_load_image(image, image_size, relocations, relocations_size) != 0)
+			host_fatal("cannot load the game image; see logcat (tag \"halo\") for details");
+		SDL_free(relocations);
+	}
 	SDL_free(image);
 
 	/* only now that the image holds its address: bringing the display up
