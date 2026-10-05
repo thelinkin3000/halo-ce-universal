@@ -17,10 +17,6 @@ image is transitioned from the layout it is tracked in, with a full barrier
 #include "host.h"
 #include "host_vk.h"
 
-#include "glslang/Include/glslang_c_interface.h"
-#include "glslang/Public/resource_limits_c.h"
-
-#include <dlfcn.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -88,128 +84,29 @@ void host_vk_wait_fence(VkFence fence, const char *what, uint64_t number)
 	HOST_VK_CHECK(result);
 }
 
-/* ---------- glslang: loaded as the probe loads it (libglslang_probe.so), for the built-in pipeline of clears of
-some channels only. Phase 5 makes it the backend's own. */
-
-static struct
+/* GLSL to a shader module (Vulkan 1.0, SPIR-V 1.0), compiled by the backend's glslang (host_vk_shaders.c); VK_NULL_HANDLE after
+logging why */
+static VkShaderModule shader_module(const char *source, int fragment, const char *what)
 {
-	void *library;
-	int initialized;
-	int (*initialize_process)(void);
-	glslang_shader_t *(*shader_create)(const glslang_input_t *);
-	void (*shader_delete)(glslang_shader_t *);
-	int (*shader_preprocess)(glslang_shader_t *, const glslang_input_t *);
-	int (*shader_parse)(glslang_shader_t *, const glslang_input_t *);
-	const char *(*shader_info_log)(glslang_shader_t *);
-	glslang_program_t *(*program_create)(void);
-	void (*program_delete)(glslang_program_t *);
-	void (*program_add_shader)(glslang_program_t *, glslang_shader_t *);
-	int (*program_link)(glslang_program_t *, int);
-	void (*program_spirv_generate)(glslang_program_t *, glslang_stage_t);
-	size_t (*program_spirv_size)(glslang_program_t *);
-	unsigned int *(*program_spirv_ptr)(glslang_program_t *);
-	const char *(*program_info_log)(glslang_program_t *);
-	const glslang_resource_t *(*default_resource)(void);
-} G;
-
-static int glslang_load(void)
-{
-	if (G.initialized)
-		return 1;
-	if (G.library)
-		return 0;
-	G.library = dlopen("libglslang_probe.so", RTLD_NOW | RTLD_LOCAL);
-	if (!G.library)
-	{
-		host_logf(HOST_LOG_ERROR, "vk: libglslang_probe.so did not load: %s", dlerror());
-		G.library = (void *)1;
-		return 0;
-	}
-#define LOAD(field, name) \
-	if (!(*(void **)&G.field = dlsym(G.library, name))) { host_logf(HOST_LOG_ERROR, "vk: glslang has no %s", name); return 0; }
-	LOAD(initialize_process, "glslang_initialize_process")
-	LOAD(shader_create, "glslang_shader_create")
-	LOAD(shader_delete, "glslang_shader_delete")
-	LOAD(shader_preprocess, "glslang_shader_preprocess")
-	LOAD(shader_parse, "glslang_shader_parse")
-	LOAD(shader_info_log, "glslang_shader_get_info_log")
-	LOAD(program_create, "glslang_program_create")
-	LOAD(program_delete, "glslang_program_delete")
-	LOAD(program_add_shader, "glslang_program_add_shader")
-	LOAD(program_link, "glslang_program_link")
-	LOAD(program_spirv_generate, "glslang_program_SPIRV_generate")
-	LOAD(program_spirv_size, "glslang_program_SPIRV_get_size")
-	LOAD(program_spirv_ptr, "glslang_program_SPIRV_get_ptr")
-	LOAD(program_info_log, "glslang_program_get_info_log")
-	LOAD(default_resource, "glslang_default_resource")
-#undef LOAD
-	if (!G.initialize_process())
-	{
-		host_logf(HOST_LOG_ERROR, "vk: glslang_initialize_process failed");
-		return 0;
-	}
-	G.initialized = 1;
-	return 1;
-}
-
-/* GLSL to a shader module (Vulkan 1.0, SPIR-V 1.0); VK_NULL_HANDLE after logging why */
-static VkShaderModule shader_module(const char *source, glslang_stage_t stage, const char *what)
-{
-	glslang_input_t input;
-	glslang_shader_t *shader;
-	glslang_program_t *program;
 	VkShaderModule module = VK_NULL_HANDLE;
-	const int messages = GLSLANG_MSG_SPV_RULES_BIT | GLSLANG_MSG_VULKAN_RULES_BIT;
+	uint32_t *words;
+	size_t count;
+	char message[2048];
 
-	if (!glslang_load())
-		return VK_NULL_HANDLE;
-	memset(&input, 0, sizeof(input));
-	input.language = GLSLANG_SOURCE_GLSL;
-	input.stage = stage;
-	input.client = GLSLANG_CLIENT_VULKAN;
-	input.client_version = GLSLANG_TARGET_VULKAN_1_0;
-	input.target_language = GLSLANG_TARGET_SPV;
-	input.target_language_version = GLSLANG_TARGET_SPV_1_0;
-	input.code = source;
-	input.default_version = 450;
-	input.default_profile = GLSLANG_NO_PROFILE;
-	input.messages = (glslang_messages_t)messages;
-	input.resource = G.default_resource();
-	shader = G.shader_create(&input);
-	if (!G.shader_preprocess(shader, &input) || !G.shader_parse(shader, &input))
+	if (!host_vk_glslang_compile(source, fragment, &words, &count, message, sizeof(message)))
 	{
-		host_logf(HOST_LOG_ERROR, "vk: glslang cannot compile the %s: %s", what, G.shader_info_log(shader));
-		G.shader_delete(shader);
+		host_logf(HOST_LOG_ERROR, "vk: cannot compile the %s: %s", what, message);
 		return VK_NULL_HANDLE;
 	}
-	program = G.program_create();
-	G.program_add_shader(program, shader);
-	if (G.program_link(program, messages))
 	{
-		size_t words;
+		VkShaderModuleCreateInfo info = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
 
-		G.program_spirv_generate(program, stage);
-		words = G.program_spirv_size(program);
-		if (words)
-		{
-			VkShaderModuleCreateInfo info = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
-
-			info.codeSize = words * 4;
-			info.pCode = G.program_spirv_ptr(program);
-			if (!HOST_VK_CHECK(vkCreateShaderModule(B.device, &info, NULL, &module)))
-				module = VK_NULL_HANDLE;
-		}
-		else
-		{
-			host_logf(HOST_LOG_ERROR, "vk: glslang made no SPIR-V for the %s", what);
-		}
+		info.codeSize = count * 4;
+		info.pCode = words;
+		if (!HOST_VK_CHECK(vkCreateShaderModule(B.device, &info, NULL, &module)))
+			module = VK_NULL_HANDLE;
 	}
-	else
-	{
-		host_logf(HOST_LOG_ERROR, "vk: glslang cannot link the %s: %s", what, G.program_info_log(program));
-	}
-	G.program_delete(program);
-	G.shader_delete(shader);
+	free(words);
 	return module;
 }
 
@@ -999,8 +896,8 @@ static VkPipeline test_pipeline(void)
 	if (T.pipeline || T.tried)
 		return T.pipeline;
 	T.tried = 1;
-	T.vertex = shader_module(test_vertex_source, GLSLANG_STAGE_VERTEX, "self-test vertex shader");
-	T.fragment = shader_module(test_fragment_source, GLSLANG_STAGE_FRAGMENT, "self-test fragment shader");
+	T.vertex = shader_module(test_vertex_source, 0, "self-test vertex shader");
+	T.fragment = shader_module(test_fragment_source, 1, "self-test fragment shader");
 	if (!T.vertex || !T.fragment || !HOST_VK_CHECK(vkCreatePipelineLayout(B.device, &layout, NULL, &T.layout)))
 		return VK_NULL_HANDLE;
 	stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -1171,6 +1068,17 @@ static void log_statistics(void)
 		c->targets, c->clears, c->presents, c->clears_drawn, c->clears_attachments, c->target_changes, B.images,
 		(unsigned long long)B.submission, retired_locked(), c->recreations, host_vk_validation_errors(), c->data_records,
 		c->data_bytes / 1024 / (c->frames ? c->frames : 1), host_vk_data_buffers());
+	{
+		char services[400];
+
+		static unsigned lines;
+
+		host_vk_services_statistics(services, sizeof(services));
+		/* the services' counts change slowly: one line in ten (about every four seconds) */
+		if (services[0] && lines++ % 10 == 0)
+			host_logf(HOST_LOG_INFO, "vk: services: %s", services);
+	}
+	c->draws_ready = c->draws_skipped_shader = c->draws_skipped_pipeline = 0;
 	c->frames = c->hand_overs = c->targets = c->clears = c->presents = c->clears_drawn = c->clears_attachments = 0;
 	c->target_changes = 0;
 	c->data_records = c->data_bytes = 0;
@@ -1232,6 +1140,7 @@ static void command_present(const struct vk_command_present *command)
 	else if (image != UINT32_MAX && !B.dead)
 		host_vk_present_queue(image);
 	host_vk_data_frame_end();
+	host_vk_services_tick();
 	B.frame = (B.frame + 1) % HOST_VK_FRAMES;
 	B.counts.presents++;
 	if (++B.counts.frames == 60)
@@ -1474,12 +1383,13 @@ static int device_create(void)
 		layout.pPushConstantRanges = &range;
 		if (!HOST_VK_CHECK(vkCreatePipelineLayout(B.device, &layout, NULL, &B.clear_layout)))
 			goto failed;
-		B.clear_vertex = shader_module(clear_vertex_source, GLSLANG_STAGE_VERTEX, "clear vertex shader");
-		B.clear_fragment = shader_module(clear_fragment_source, GLSLANG_STAGE_FRAGMENT, "clear fragment shader");
+		B.clear_vertex = shader_module(clear_vertex_source, 0, "clear vertex shader");
+		B.clear_fragment = shader_module(clear_fragment_source, 1, "clear fragment shader");
 		if (!B.clear_vertex || !B.clear_fragment)
 			host_logf(HOST_LOG_ERROR, "vk: clears of some channels only (the fog's alpha clear) will be skipped");
 	}
 	B.state = 1;
+	host_vk_services_start();
 	if (host_vk_self_test)
 		clears_selftest();
 	host_logf(HOST_LOG_INFO, "vk: device ready: queue family %u, colour targets %s, depth targets %s, blit filter %s, "
@@ -1491,6 +1401,13 @@ static int device_create(void)
 failed:
 	backend_unavailable("the device's frames could not be made");
 	return 0;
+}
+
+/* the backend's device, made if it is not yet (B.lock is held): the services' imports need it before the first hand-over */
+void host_vk_device_ensure_locked(void)
+{
+	if (B.state == 0)
+		device_create();
 }
 
 /* runs size bytes of commands at commands (a guest address), during the call */
@@ -1543,6 +1460,10 @@ void host_vk_submit(uint32_t commands, uint32_t size)
 				break;
 			at = end;
 			continue;
+		case VK_COMMAND_PIPELINE:
+			if (header->size >= sizeof(struct vk_command_pipeline))
+				host_vk_pipeline_command((const struct vk_command_pipeline *)header);
+			break;
 		case VK_COMMAND_TEST_DRAW:
 			if (header->size >= sizeof(struct vk_command_test_draw))
 				command_test_draw((const struct vk_command_test_draw *)header);

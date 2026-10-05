@@ -278,6 +278,8 @@ void host_vk_surface_lost(const char *where)
 		B.lost_at = now_ns();
 		B.lost_attempts = 0;
 		host_logf(HOST_LOG_INFO, "vk: the surface is lost (%s)", where);
+		/* the app is going to the background, which Android may follow with the process's end */
+		host_vk_pipeline_cache_save("the surface was lost");
 	}
 	present_teardown();
 }

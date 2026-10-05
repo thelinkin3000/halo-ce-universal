@@ -1486,10 +1486,10 @@ static int glslang_load(void)
 		return 1;
 	if (G.library)
 		return 0;
-	G.library = dlopen("libglslang_probe.so", RTLD_NOW | RTLD_LOCAL);
+	G.library = dlopen("libhalo_glslang.so", RTLD_NOW | RTLD_LOCAL);
 	if (!G.library)
 	{
-		rep("error: libglslang_probe.so did not load: %s", dlerror());
+		rep("error: libhalo_glslang.so did not load: %s", dlerror());
 		G.library = (void *)1;
 		return 0;
 	}
@@ -3390,7 +3390,7 @@ static void write_spirv_file(const char *name, const struct spirv *code)
 	}
 }
 
-/* the size of libglslang_probe.so in memory, from /proc/self/maps (it is mapped from the APK) */
+/* the size of libhalo_glslang.so in memory, from /proc/self/maps (it is mapped from the APK) */
 static void report_glslang_size(void)
 {
 	FILE *maps = fopen("/proc/self/maps", "r");
@@ -3403,7 +3403,7 @@ static void report_glslang_size(void)
 	{
 		unsigned long long from, to;
 
-		if (strstr(line, "libglslang_probe.so") && sscanf(line, "%llx-%llx", &from, &to) == 2)
+		if (strstr(line, "libhalo_glslang.so") && sscanf(line, "%llx-%llx", &from, &to) == 2)
 			total += to - from;
 	}
 	fclose(maps);
@@ -3431,7 +3431,7 @@ static void step_compile(void)
 	uint64_t start;
 
 	rep("step.compile: start");
-	rep("compile.glslang_library: libglslang_probe.so (glslang 16.6.0, ENABLE_OPT off, ENABLE_HLSL off), Vulkan 1.0 / SPIR-V 1.0 target, one thread");
+	rep("compile.glslang_library: libhalo_glslang.so (glslang 16.6.0, ENABLE_OPT off, ENABLE_HLSL off), Vulkan 1.0 / SPIR-V 1.0 target, one thread");
 	start = now_ns();
 	if (!glslang_load())
 	{

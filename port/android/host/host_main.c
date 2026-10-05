@@ -83,6 +83,7 @@ void host_abort(const char *reason)
 void host_exit(int code)
 {
 	host_logf(HOST_LOG_INFO, "the game exited (%d)", code);
+	host_vk_exit();
 	/* the process ends with the game; Android restarts it from the
 	launcher next time */
 	_exit(code);

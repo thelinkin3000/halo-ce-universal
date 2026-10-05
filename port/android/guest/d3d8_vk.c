@@ -161,6 +161,8 @@ struct vertex_shader_object
 	struct vertex_element elements[XGPU_VERTEX_ATTRIBUTE_COUNT];
 	unsigned long element_count;
 	unsigned long packed_mask;
+	/* FNV-1a 64 of the instruction count and words (vk_shaders.h): what the shader cache knows the program by */
+	uint64_t program_hash;
 };
 
 /* ---------- the device */
@@ -1174,6 +1176,13 @@ HRESULT WINAPI D3DDevice_CreateVertexShader(CONST DWORD *declaration, CONST DWOR
 		memcpy(object->instructions, function + 1, object->instruction_count * 4 * sizeof(DWORD));
 	}
 	parse_declaration(object, declaration);
+	{
+		uint32_t count = (uint32_t)object->instruction_count;
+
+		object->program_hash = vk_hash_mix(vk_hash_init(), &count, sizeof(count));
+		if (object->instructions)
+			object->program_hash = vk_hash_mix(object->program_hash, object->instructions, count * 4 * sizeof(DWORD));
+	}
 	vertex_shader_note(object);
 	/* odd values are FVF codes; programmable shader handles are even */
 	*handle = (DWORD)object;
@@ -1503,18 +1512,147 @@ static void dump_pixel_shader(const char *folder, const struct nv2a_pixel_shader
 	}
 }
 
-/* called at each draw that would be made: the key is made as prepare_draw makes it, and with the vertex shader noted */
+/* ---------- the shader service's handles (phase 5)
+
+The host never sees a key: a shader is asked for by its hash (vk_shaders.h's identity), and for one the host does not
+have, the GLSL is generated here and sent, to be compiled on the host's thread and kept on the device. A draw's shader
+is the handle the host gave, or 0 while it is queued or compiling (the draw would be skipped). */
+
+void host_vk_shader_compile(uint32_t stage, uint64_t hash, uint32_t glsl, uint32_t glsl_size);
+uint32_t host_vk_shader_find(uint32_t stage, uint64_t hash, uint32_t status_out);
+
+struct shader_entry
+{
+	uint64_t hash;
+	uint32_t handle;
+	unsigned char sent, failed;
+	struct shader_entry *next;
+};
+
+#define SHADER_BUCKETS 1024
+
+static struct shader_entry *shader_entries[2][SHADER_BUCKETS];
+static BOOL shader_import_logged;
+
+/* the handle of a shader, asking the host (and sending its GLSL when the host does not know it); 0 if it is not ready */
+static uint32_t shader_handle(uint32_t stage, uint64_t hash, const struct vertex_shader_object *program,
+	unsigned long mask, const struct nv2a_pixel_shader_key *key)
+{
+	struct shader_entry **bucket = &shader_entries[stage][hash % SHADER_BUCKETS];
+	struct shader_entry *entry;
+	uint32_t status = VK_SHADER_STATUS_UNKNOWN, handle;
+
+	for (entry = *bucket; entry; entry = entry->next)
+	{
+		if (entry->hash == hash)
+			break;
+	}
+	if (!entry)
+	{
+		entry = calloc(1, sizeof(*entry));
+		if (!entry)
+			return 0;
+		entry->hash = hash;
+		entry->next = *bucket;
+		*bucket = entry;
+	}
+	if (entry->handle)
+		return entry->handle;
+	if (entry->failed)
+		return 0;
+	if (!shader_import_logged)
+	{
+		shader_import_logged = TRUE;
+		platform_log("vk shaders: the first host_vk_shader_find: stage %u, hash %08x%08x (the host logs its own)",
+			(unsigned)stage, (unsigned)(hash >> 32), (unsigned)hash);
+	}
+	handle = host_vk_shader_find(stage, hash, (uint32_t)(uintptr_t)&status);
+	if (handle)
+	{
+		entry->handle = handle;
+		return handle;
+	}
+	if (status == VK_SHADER_STATUS_FAILED)
+	{
+		entry->failed = 1;
+		return 0;
+	}
+	if (status == VK_SHADER_STATUS_UNKNOWN && entry->sent < 3)
+	{
+		char *glsl = stage == VK_SHADER_STAGE_VERTEX ?
+			nv2a_vk_vertex_shader_to_glsl(program->instructions, program->instruction_count, mask) :
+			nv2a_vk_pixel_shader_to_glsl(key);
+
+		if (glsl)
+		{
+			host_vk_shader_compile(stage, hash, (uint32_t)(uintptr_t)glsl, (uint32_t)strlen(glsl));
+			free(glsl);
+			entry->sent++;
+		}
+	}
+	return 0;
+}
+
+/* the state a pipeline is asked for with until phase 6 makes it from the game's: triangle list, fill, no culling, depth
+and stencil off, no blend, all four channels written, the colour and depth targets, and sixteen four-float attributes
+(a 32-bit integer for each packed one) from one binding of stride 0 */
+static void pipeline_state_placeholder(struct vk_pipeline_state *state, unsigned long packed_mask)
+{
+	unsigned index;
+
+	memset(state, 0, sizeof(*state));
+	state->topology = VK_PLACEHOLDER_TOPOLOGY_TRIANGLE_LIST;
+	state->color_write_mask = 0xf;
+	state->color_format = 1;
+	state->depth_format = 1;
+	state->binding_count = 1;
+	for (index = 0; index < VK_PIPELINE_VERTEX_ATTRIBUTES; index++)
+		/* a packed attribute is `in uint` in the shader (phase 4): a pipeline's format for it must be an integer one */
+		state->attributes[index].format = packed_mask & (1UL << index) ? VK_PLACEHOLDER_FORMAT_R32_UINT :
+			VK_PLACEHOLDER_FORMAT_R32G32B32A32_SFLOAT;
+}
+
+/* called at each draw that would be made (phase 6 draws): the shaders it needs are asked for, the pipeline with them is
+asked for in the stream, and the dump (debug.gpu_dump_shaders) notes the shaders. The key is made as prepare_draw in
+d3d8_gl.c makes it, without binding anything. */
 static void draw_note(BOOL immediate)
 {
 	struct vertex_shader_object *program = current_program();
 	struct nv2a_pixel_shader_key key;
 	const char *folder = dump_folder();
+	unsigned long mask;
+	uint32_t generator = VK_SHADER_GENERATOR_VERSION, vertex, pixel;
+	uint64_t hash;
 
-	if (!folder || !program || !device.vertex_shader || !program->instructions)
+	if (!program || !device.vertex_shader || !program->instructions)
 		return;
 	pixel_key_make(&key);
-	dump_vertex_shader(folder, program, immediate ? 0 : device.vertex_shader->packed_mask);
-	dump_pixel_shader(folder, &key);
+	mask = immediate ? 0 : device.vertex_shader->packed_mask;
+	if (folder)
+	{
+		dump_vertex_shader(folder, program, mask);
+		dump_pixel_shader(folder, &key);
+	}
+	if (!device.video_ready)
+		return;
+	{
+		uint32_t mask32 = (uint32_t)mask;
+
+		hash = vk_hash_mix(vk_hash_init(), &generator, sizeof(generator));
+		hash = vk_hash_mix(hash, &program->program_hash, sizeof(program->program_hash));
+		hash = vk_hash_mix(hash, &mask32, sizeof(mask32));
+	}
+	vertex = shader_handle(VK_SHADER_STAGE_VERTEX, hash, program, mask, NULL);
+	hash = vk_hash_mix(vk_hash_init(), &generator, sizeof(generator));
+	hash = vk_hash_mix(hash, &key, sizeof(key));
+	pixel = shader_handle(VK_SHADER_STAGE_PIXEL, hash, NULL, 0, &key);
+	{
+		struct vk_command_pipeline *command = stream_command(VK_COMMAND_PIPELINE, sizeof(*command));
+
+		command->vertex_shader = vertex;
+		command->pixel_shader = pixel;
+		pipeline_state_placeholder(&command->state, mask);
+	}
 }
 
 /* at each Present: the first one writes every vertex shader with mask 0 as well, so that each has its immediate-mode
