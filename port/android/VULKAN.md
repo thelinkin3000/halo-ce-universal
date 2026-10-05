@@ -24,7 +24,7 @@ the phone's driver; the results are in "Progress". Not tried: a second GPU
 family (a Mali). **Phase 1 is done on the test device and committed** (the
 Vulkan image, the host's choice and its decision, the stand-ins: the game
 runs under `display.renderer = "vulkan"` on the phone's driver and on
-Turnip, with a black screen as the phase says). **Phase 2 is next.** The
+Turnip, with a black screen as the phase says). **Phase 2 is written out and next.** The
 work is on the `vulkan-backend` branch, which starts again from `main`. An
 earlier attempt, kept on the `vulkan-backend-old` branch, is not the base of
 this work and nothing here builds on it; see "Lessons from the earlier
@@ -996,29 +996,241 @@ On the test device, the `.vk` build:
 
 ## Phase 2 — the backend's skeleton
 
-The command stream (`vk_commands.h`): targets, clear, present, each a fixed-
-width record; one `host_vk_submit` per hand-over. The host: the driver
-opened through `host_vk_driver.c` (`display.vk_driver`, logged with what was
-opened), instance, device, one graphics queue, the swapchain (FIFO), frames
-in flight behind fences, the game's render targets by address (made the
-first time they are drawn into), clears, and present as a letterboxed blit
-of the back buffer into the swapchain image. Every submission is numbered
-and fenced; the guest can ask which number the GPU has finished
-(`host_vk_retired`). The surface's loss and return (backgrounding),
-`VK_ERROR_OUT_OF_DATE_KHR` and `VK_SUBOPTIMAL_KHR` (rotation: phase 0 saw it
-on every turn) make the swapchain again; phase 0 saw no SDL lifecycle events
-reach the loop, so the loss is found from the result codes.
+The first picture: the game's clears, on the screen, through Vulkan. The
+deko3d plan's phase 2 is the model (`port/switch/DEKO3D.md`, and
+`port/switch/guest/dk_commands.h`, `d3d8_dk.c`'s command stream,
+`targets_bind`, `Clear` and `Present`, and `host_dk.c`, as of commit
+`25c02a0a`: read them first). What differs is Vulkan's, and is spelled out
+below.
 
-Phase 1's `host_vk_startup` chose the queue family before there was a
-surface (the first family with graphics). With the surface made on the
-game's window, check that family with `vkGetPhysicalDeviceSurfaceSupportKHR`
-and, if it cannot present, take the first graphics family that can; none is
-a failure to log, and the GL ES image is then the player's way back (phase
-2 cannot fall back in the same process: the guest image is already chosen).
+### What this phase is, and is not
 
-**Acceptance**, on the phone's driver and on Turnip: the menus' clears show
-(colour changes are visible), frames are paced by the display, backgrounding
-and returning works ten times in a row, and a validation layer run is clean.
+- **It is** the command stream from the guest to the host, the logical
+  device, the swapchain on the game's window, frames in flight, the game's
+  render targets as images, clears, presenting the back buffer, numbered
+  submissions, the surface's loss and return, and the diagnostics every later
+  phase relies on.
+- **It is not** drawing: no vertex data, no shaders of the game, no textures
+  (phases 3 to 6). The menus show as their clears: plain colours, black for
+  most of them.
+- **The GL ES image does not change.**
+
+### Files
+
+| File | What |
+|---|---|
+| `port/android/guest/vk_commands.h` | the command stream's records, included by both halves (below) |
+| `port/android/guest/d3d8_vk.c` | the stream (as `d3d8_dk.c`'s), `targets_bind`, `Clear` and `Present` writing commands |
+| `port/android/host/host_vk.c` | the device, the swapchain, the frames, the targets, the commands (it may be split: `host_vk_targets.c`, `host_vk_present.c`, as it grows) |
+| `port/android/host/host_vk.h` | the device's state and its function table |
+| `port/android/host/host_sdl.c` | hands the backend the game's window (the last window made, under Vulkan) |
+| `port/android/host_imports.list` | `host_vk_submit`, `host_vk_retired` |
+| `port/linux/src/port_config.c` | `debug.vk_present_marker` (below), `_platform_android` |
+
+### The command stream (`vk_commands.h`)
+
+As `dk_commands.h`: every field a 32-bit integer or float (the guest's
+pointers are 32 bits, the host's 64), an address a guest address, each
+record a header (`type`, `size` in bytes including the header, a multiple of
+4) and its fields. Phase 2's records:
+
+- `VK_COMMAND_TARGETS`: the colour and the depth-stencil surface later
+  commands draw into, either `NONE`. A surface is `data` (the `D3DSurface`'s
+  `Data`, as `d3d8_gl.c` knows targets), `width`, `height` (the game's units),
+  `pixel_width`, `pixel_height` (what it is drawn at: the screen's targets at
+  the screen's scale, `render_target_get` in `d3d8_gl.c`; the guest works
+  this out, so the host never needs the screen's scale), and `kind`
+  (`COLOR`, `DEPTH`).
+- `VK_COMMAND_CLEAR`: which of red, green, blue, alpha, depth, stencil; the
+  colour (four floats), depth, stencil; and rectangles in the targets'
+  **pixels**, already clipped and scaled by the guest exactly as `d3d8_gl.c`'s
+  `Clear` does (`target_pixel`: `floor(coordinate * scale + 0.5)`; a clear
+  without rectangles is the viewport's; rectangles are clipped to the
+  viewport and moved by `UI_OFFSET`, the viewport is not). Row 0 is the top
+  of the picture, as it is in Vulkan; `d3d8_gl.c`'s GL coordinates were the
+  other way up and flipped at present, which Vulkan does not need.
+- `VK_COMMAND_PRESENT`: the back buffer's surface.
+
+The guest writes into a 1 MB buffer in its own memory over a frame and calls
+`host_vk_submit(commands, size)` at `Present`, and earlier if the buffer
+fills (as `d3d8_dk.c`). The host reads each record **during that call** and
+records what it says into the current frame's command buffer; nothing of the
+guest's memory is read later (the rule in "Where the renderer lives"). A
+record the host does not know, or a size that runs past the end, is logged
+once with its offset and type, and the rest of that hand-over is dropped.
+
+### The device
+
+Made at the first `host_vk_submit` (the window exists by then), from what
+`host_vk_startup` kept:
+
+- **The surface** on the game's window: `vkCreateAndroidSurfaceKHR` on the
+  `ANativeWindow` (`SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER`), read again each
+  time the surface is made.
+- **The queue family**: the one `host_vk_startup` chose, checked with
+  `vkGetPhysicalDeviceSurfaceSupportKHR`; if it cannot present, the first
+  graphics family that can. None: logged, and the backend draws nothing for
+  the rest of the run (the game keeps running on the stand-in swap). The
+  player's way back is `display.renderer = "gl"`; the process cannot switch
+  images.
+- **The logical device**: one queue; `VK_KHR_swapchain`; dynamic rendering
+  (the 1.3 feature, or the extension and its dependencies, as
+  `host_vk_startup` found them). Nothing else yet.
+- **The device-level function table**, as the instance's: an X-macro list,
+  each entry checked, a missing one a failure.
+- **Formats**: colour targets `B8G8R8A8_UNORM` (the Xbox's A8R8G8B8 byte
+  order), checked for colour attachment, sampling with linear filtering,
+  blit source and transfer; depth-stencil targets `D24_UNORM_S8_UINT`, else
+  `D32_SFLOAT_S8_UINT`, checked for depth-stencil attachment. Neither
+  available: the backend draws nothing, logged.
+
+### The game's render targets
+
+Images found by the surface they stand for: the key is `data`, `width`,
+`height`, `kind` and the pixel size, as `render_target_get` in `d3d8_gl.c`
+keys its textures (a table by `data`, a few entries per bucket). Made the
+first time a `TARGETS` command names them, at the pixel size, with usage
+colour or depth-stencil attachment plus transfer source and destination (and
+sampled, for phase 6), and **cleared once when made** (black, depth 1,
+stencil 0), so that a target read before anything was drawn into it reads the
+same on every driver. Each image's layout is tracked; every use transitions
+from the layout it is in. Images are kept for the run (as `d3d8_gl.c` keeps
+its textures); the log's statistics line says how many exist.
+
+### Rendering and clears
+
+The frame's command buffer has at most one rendering open
+(`vkCmdBeginRendering`) at a time: opened on the current targets when a
+command needs it, with load `LOAD` and store `STORE` (the game's targets keep
+what earlier frames drew), and ended when the targets change, before a
+transfer or a barrier, and before present. Viewport and scissor are set after
+every opening (Vulkan keeps no state across command buffers or renderings,
+unlike deko3d, whose state carried over).
+
+**A clear** is `vkCmdClearAttachments` on the rectangles, when it names all
+four colour channels or none (depth and stencil are separate aspects there,
+and depth or stencil without a depth target is skipped, as `d3d8_gl.c`
+skips them). **A clear of some channels only** - the fog's alpha-only clear
+is one - cannot be: `vkCmdClearAttachments` ignores colour write masks. It is
+drawn: a rectangle over each clear rectangle (scissor) with a small built-in
+pipeline whose colour write mask is the channels asked for (one pipeline per
+mask, made the first time; the colour in push constants; no vertex input;
+the vertex shader makes the rectangle from `gl_VertexIndex`). Its two shaders
+are GLSL compiled at device creation with glslang, loaded as the probe loads
+it (`libglslang_probe.so`, `dlopen`): phase 5 makes glslang the backend's own,
+and this is its first use. A depth or stencil clear in the same command goes
+through `vkCmdClearAttachments` as before.
+
+### Presenting
+
+At a `PRESENT` command:
+
+1. The rendering is ended. The back buffer's image goes to transfer source.
+2. A swapchain image is acquired (FIFO; `minImageCount + 1` images; the
+   format `B8G8R8A8_UNORM` or `R8G8B8A8_UNORM` with the sRGB-nonlinear colour
+   space, whichever the surface lists first; usage colour attachment and
+   transfer destination). It is cleared black, and the back buffer is blitted
+   into it letterboxed to the back buffer's shape (`vkCmdBlitImage`, linear
+   filter; the rectangle as `d3d8_gl.c`'s `Present` works it out, without its
+   flip), then transitioned for present.
+3. The command buffer is ended and submitted with the frame's fence, waiting
+   on the acquire semaphore and signalling a render-done semaphore of that
+   swapchain image (one per image, not per frame); then
+   `vkQueuePresentKHR`.
+4. The next frame in flight (two) waits for its fence before its command
+   buffer is reset and recorded.
+
+**The transform.** The test device's surface reports `ROTATE_90` as its
+current transform (phase 0). The swapchain is made with
+`preTransform = IDENTITY` (Android's compositor turns the picture), not the
+current transform (which would make the backend rotate the picture itself,
+which the probe never proved it did right). Android then answers some
+presents with `VK_SUBOPTIMAL_KHR` for the mismatch: that is not a reason to
+make the swapchain again; a different `currentExtent` is (checked when
+`SUBOPTIMAL` comes, and every 60 frames).
+
+**`debug.vk_present_marker`** (false by default): draws, after the blit, a
+red square at the top-left corner of the letterboxed picture and a green one
+at its top-right (`vkCmdClearColorImage` on regions of the swapchain image,
+outside rendering), so that a screenshot shows whether the picture is the
+right way round and where its corners land. Phase 2's test uses it, because
+the menus' clears are plain colours that show no orientation.
+
+**Pacing.** `host_vk_presenting` is set once a present has succeeded; the
+stand-in swap then stops holding frames (FIFO's acquire and present do). It
+is cleared while there is no swapchain, so that a game with nothing to
+present does not spin.
+
+### Numbered submissions
+
+Each submit is numbered from 1. `host_vk_retired()` returns the highest
+number whose fence has signalled (checked with `vkGetFenceStatus`, not
+waited on), for phase 3's locks. In this phase a frame is one submission.
+
+### The surface's loss and return
+
+Phase 0 found that SDL's lifecycle events do not reach the game's loop, and
+that the surface is lost when the app goes to the background:
+`VK_ERROR_SURFACE_LOST_KHR` or `VK_ERROR_OUT_OF_DATE_KHR` from acquire or
+present, and a window whose `ANativeWindow` changed or is gone. Then: wait for
+the device to be idle, destroy the swapchain (and the surface, if lost), and
+make them again at the next present if the window is back; until then each
+present records nothing to the screen (the frame's work is still submitted,
+so its fence and its number move on) and `host_vk_presenting` is clear. Each
+loss and return is logged once, with how long it took (the probe's
+`surface_lost` is the model), not each attempt.
+
+### Diagnostics, from this phase on
+
+- Every 60 frames, a log line: frames, hand-overs, commands by type, clears
+  (drawn and by `vkCmdClearAttachments`), target changes, images alive,
+  submissions made and retired, swapchain re-creations, and validation errors
+  so far (`host_vk_validation_errors`).
+- A wait on a fence that takes more than two seconds logs what it waited for
+  and the submission number, then keeps waiting.
+- `VK_ERROR_DEVICE_LOST` from any call logs the call, the submission number
+  and the driver's description, then stops the backend (nothing more is
+  recorded or submitted; the game keeps running on the stand-in swap), so a
+  lost device is a log line and not a crash.
+- The validation layer (`debug.vk_validation`) on for every test of the phase.
+
+### Testing on the device
+
+On the test device, the `.vk` build, `display.renderer = "vulkan"`, each case
+on the phone's driver and on Turnip:
+
+1. The menus: the screen shows their clears (black, and any colour a menu
+   clears to); with `debug.vk_present_marker = true` a screenshot shows the
+   red square top-left and the green top-right of the letterboxed picture,
+   with black bars at the sides where the back buffer is narrower than the
+   screen.
+2. A new game and the first map: the clears of a map (the sky's colour, the
+   fog's alpha-only clear among them: the statistics line counts drawn
+   clears) show; the game runs on.
+3. The pacing: the statistics line's frames per second at the display's
+   rate, paced by the swapchain (`host_vk_presenting`), the stand-in swap no
+   longer holding them.
+4. Backgrounding and returning, ten times (HOME, then `am start`): the
+   picture comes back each time; the log says each loss and return once.
+5. Turning the device over (`settings put system user_rotation 1` and `3`,
+   with `accelerometer_rotation 0`; put back afterwards): the picture stays
+   the right way round (the marker).
+6. Validation on for all of the above: no message beyond the layer's own
+   cache file.
+
+Move `config.toml` with `adb pull` and `adb push` only (phase 1's audit:
+`adb shell cat` corrupts it).
+
+### Acceptance
+
+- Each case above on both drivers, with the log lines and the screenshots'
+  findings in "Progress".
+- The GL ES image unchanged on the device.
+- No `VK_ERROR_DEVICE_LOST`, no validation error, no two-second wait in any
+  run.
+- The code audited against the source and the Vulkan specification's valid
+  usage for every call it makes (barriers, layouts, semaphores per swapchain
+  image, the swapchain's re-creation), then committed.
 
 ## Phase 3 — reading the game's memory
 
