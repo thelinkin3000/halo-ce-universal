@@ -1632,6 +1632,27 @@ Phase 0 was worked on the test device (Lenovo TB321FU, Adreno 750, Android 16,
 API 36, the phone's own driver). The reports are in `port/android/probe/reports/`.
 Newest first.
 
+### Phase 3 — audit
+
+Nothing to fix. Read against the spec and the code: the guest's
+`vk_data_put` never overruns the stream (a part is at most what is left, the
+record's padding zeroed) and puts the bytes as they are at the call; the
+self-test's third piece does straddle a part boundary; ids reset with the
+frame on both sides. The host copies only the record's payload (no guest
+address of data is read), places each id once and never moves it, checks
+parts in order, resets a frame's ring only after that frame's fence (each
+slot is marked at its own `PRESENT` and reset at its next use), and drops the
+rest of a hand-over at a bad record. `IsBusy`, `BlockUntilNotBusy` and the
+locks are untouched. Re-run at the tip (`13e5fc09`), validation on, on both
+drivers: the clears self-test and the three data cases `ok`, 0 validation
+errors, nothing but the layer's cache-file note and the expected
+pre-transform note.
+
+For phase 6: data offsets are aligned to 256 (or the uniform alignment), but
+an offset a command adds inside a piece is the command's to align: an index
+buffer's offset must be a multiple of its index size, and a draw's vertex and
+index ranges should start at offsets the formats are aligned for.
+
 ### Phase 3 — summary
 
 Worked unattended on the test device (Adreno 750) as the `.vk` build, validation on. **Phase 3 works on both drivers.**
