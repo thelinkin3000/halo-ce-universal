@@ -31,6 +31,12 @@ one is open (no SDL_Vulkan_* calls: SDL would dlopen the system loader). Not
 thread safe; call it from the thread that sets Vulkan up. */
 PFN_vkGetInstanceProcAddr host_vk_driver_open(const char *setting, char *description, size_t size);
 
+/* After the instance is made (the system loader loads a driver only then): whether the driver asked for is the one
+loaded, in text. libadrenotools hands back the system loader whatever it is given, and its hook falls back to the phone's
+own driver without a word when the library will not load, so a custom driver's library must be looked for in the
+process: returns 0 and says so if it is not there. True for the phone's own driver. */
+int host_vk_driver_verify(char *text, size_t size);
+
 /* closes the driver; every Vulkan object made through it must be destroyed
 first, and nothing may call into it afterwards */
 void host_vk_driver_close(void);

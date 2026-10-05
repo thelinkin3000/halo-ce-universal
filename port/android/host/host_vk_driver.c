@@ -25,6 +25,7 @@ Not thread safe. One driver per process.
 #include <SDL3/SDL.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <link.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,6 +50,8 @@ cannot take the app's memory or storage */
 static void *opened_library;
 static PFN_vkGetInstanceProcAddr opened_function;
 static char opened_description[512];
+/* the file name of the archive's library while a custom driver is open, else empty */
+static char custom_file[256];
 
 /* ---------- the zip reader: central directory, stored and deflated entries */
 
@@ -607,10 +610,24 @@ static int open_archive(const char *setting, void **library, char *description, 
 		return 0;
 	}
 	snprintf(path, sizeof(path), "%s%s", directory, library_name);
-	if (access(path, R_OK) != 0)
 	{
-		snprintf(error, error_size, "the archive has no %s: %s", library_name, strerror(errno));
-		return 0;
+		/* libadrenotools hands back the system loader whatever the driver is, and its hook quietly falls back to the
+		phone's driver when the library will not load, so a file that cannot be one is refused here */
+		FILE *file = fopen(path, "rb");
+		unsigned char magic[4] = { 0, 0, 0, 0 };
+
+		if (!file)
+		{
+			snprintf(error, error_size, "the archive has no %s: %s", library_name, strerror(errno));
+			return 0;
+		}
+		if (fread(magic, 1, 4, file) != 4 || memcmp(magic, "\x7f" "ELF", 4) != 0)
+		{
+			fclose(file);
+			snprintf(error, error_size, "%s is not an ELF library", library_name);
+			return 0;
+		}
+		fclose(file);
 	}
 
 	if (!native_library_directory(native, sizeof(native)))
@@ -645,7 +662,10 @@ static int open_archive(const char *setting, void **library, char *description, 
 	}
 	/* libadrenotools stays loaded: its hooks are installed in the process */
 	*library = handle;
-	snprintf(description, description_size, "%s%s%s%s%s (%s, through libadrenotools)", setting,
+	snprintf(custom_file, sizeof(custom_file), "%s", library_name);
+	/* the driver itself is loaded later, by the system loader at vkCreateInstance, through the hook:
+	host_vk_driver_verify says whether that happened */
+	snprintf(description, description_size, "%s%s%s%s%s (asked for %s through libadrenotools)", setting,
 		name[0] ? ", " : "", name, version[0] ? ", " : "", version, library_name);
 	return 1;
 }
@@ -679,6 +699,7 @@ PFN_vkGetInstanceProcAddr host_vk_driver_open(const char *setting, char *descrip
 			/* the handle is the loader adrenotools made; closing it leaves the hooks installed
 			for nothing, which is harmless, and the phone's own driver is opened below */
 			dlclose(library);
+			custom_file[0] = 0;
 		}
 		host_logf(HOST_LOG_ERROR, "vk driver: %s failed: %s; using the phone's driver", setting, error);
 	}
@@ -711,6 +732,40 @@ PFN_vkGetInstanceProcAddr host_vk_driver_open(const char *setting, char *descrip
 	return function;
 }
 
+static int find_custom_library(struct dl_phdr_info *info, size_t size, void *data)
+{
+	const char *slash;
+
+	(void)size;
+	(void)data;
+	if (!info->dlpi_name)
+		return 0;
+	slash = strrchr(info->dlpi_name, '/');
+	return slash && !strcmp(slash + 1, custom_file);
+}
+
+int host_vk_driver_verify(char *text, size_t size)
+{
+	if (!opened_function)
+	{
+		snprintf(text, size, "no driver is open");
+		return 0;
+	}
+	if (!custom_file[0])
+	{
+		snprintf(text, size, "the phone's driver was asked for");
+		return 1;
+	}
+	if (dl_iterate_phdr(find_custom_library, NULL))
+	{
+		snprintf(text, size, "%s is loaded in the process", custom_file);
+		return 1;
+	}
+	snprintf(text, size, "%s is not loaded: the hook fell back to the phone's own driver (logcat tag hook_impl says why)",
+		custom_file);
+	return 0;
+}
+
 void host_vk_driver_close(void)
 {
 	if (opened_library)
@@ -718,4 +773,5 @@ void host_vk_driver_close(void)
 	opened_library = NULL;
 	opened_function = NULL;
 	opened_description[0] = 0;
+	custom_file[0] = 0;
 }
