@@ -4,7 +4,7 @@ A second renderer for the Switch build that drives the GPU through
 [deko3d](https://github.com/devkitPro/deko3d) instead of Mesa, with compiled
 shaders cached on the SD card.
 
-Status: phases 0 to 5 done, phase 6 under way (steps 1, 2, 3 and 6 done, step 4 in part); see "Progress" at the end.
+Status: phases 0 to 5 done, phase 6 done but for split screen, which is yet to be tried on the console; see "Progress" at the end.
 
 ---
 
@@ -1101,8 +1101,41 @@ Rules kept: no edit to the OpenGL renderer; under `port/linux/src`, only
 read-only accessors behind `#ifdef HALO_SWITCH` (step 6, below), which the
 OpenGL image links but does not call.
 
-**Step 4, render targets: render-to-texture done and seen on the console;
-the mip composite, the screen's scale and split screen still to do.** The
+**Step 5, visibility tests: done and seen on the console - lens flares
+show.** A test's begin resets the GPU's samples-passed counter
+(`DK_COMMAND_VISIBILITY_BEGIN`, `dkCmdBufResetCounter`); its end has the GPU
+write the count to the test's slot of a 4096-slot report buffer, 16 bytes
+each, CPU-uncached (`DK_COMMAND_VISIBILITY_END`, `dkCmdBufReportCounter`).
+`D3DDevice_GetVisibilityTestResult` reads a slot's latest count through a
+new import, `host_dk_visibility` - from the latest test, or while the GPU is
+behind an earlier one, as the query buffer of `d3d8_gl.c`'s desktop path
+gives - so the game never waits for the GPU. deko3d enables the sample
+counter when it sets up the queue (`SampleCounterEnable`), so nothing else
+is needed. The count needs no scaling: the screen is drawn at the game's
+pixels.
+
+**Step 4, render targets: done and seen on the console, but for split
+screen.** The mip composite: a stage whose texture is a target rendered a
+level at a time (not linear, not a cube, more than one level, its top level
+the size of the target drawn there - `bind_textures`'s test) sends
+`DK_COMMAND_COMPOSITE` (the levels' addresses, by
+`xgpu_texture_level_offset`) once, and samples it with
+`dk_stage_texture.composite` set to its level count. The host
+(`composite_sampled`) keeps an RGBA8 image with every level; when a level's
+target has been bound since the last copy (`target.bound` against the
+composite's stamp), it copies each level the game drew with the 2D engine
+(`dkCmdBufBlitImage`) and makes the ones below the last drawn by halving
+(linear blits), between a fragment barrier and a full barrier with an image
+invalidate; a full barrier comes before a copied target is drawn into again
+(`tex.targets_copied`). It copies only after a redraw, where GL copies at
+every bind. The water's ripples look right. The screen's scale has nothing
+to match: on the Switch `d3d8_gl.c` takes the Android path, scale 1, 852x480
+drawn as it is (drawing at 720p would be an improvement on GL, not parity).
+Split screen needs no new code - the draw state's scissor is the viewport
+and clears are clipped to it, as in GL, from step 3 - but has not been tried
+on the console.
+
+**Step 4, render-to-texture: done and seen on the console.** The
 sniper's zoom went black: it draws into a texture and draws that texture
 back, and the texture cache read the texture's address in the game's memory,
 where the GPU never writes. Now `d3d8_dk.c` notes every color surface it
