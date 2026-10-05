@@ -8,8 +8,12 @@ phases each tried on the console before the next. Read that plan, and its
 "Progress", before this one: most of what is decided here was decided there
 first, and most of what will go wrong here went wrong there first.
 
-Status: phase 0 is written out and next. The work is on the `vulkan-backend`
-branch, which starts again from `main`. An earlier attempt, kept on the
+Status: phase 0 is done on the test device (Adreno 750) except step 6's
+fight scene and its profiling-cost comparison, which the user stopped, and
+the second GPU family (no Mali yet): the phase is not called done until the
+user decides on both. Its results and proposals are in "Progress" and in
+the rows of "Decisions" marked **(to confirm)**. The work is on the
+`vulkan-backend` branch, which starts again from `main`. An earlier attempt, kept on the
 `vulkan-backend-old` branch, is not the base of this work and nothing here
 builds on it; see "Lessons from the earlier attempt".
 
@@ -52,7 +56,11 @@ Taken from the deko3d plan unless the row says otherwise. Rows marked
 | Shader compiler | glslang, linked into the Android host, GLSL to SPIR-V on the device. **(to confirm)** after phase 0 measures it; the alternative is shipping SPIR-V for the known keys in the APK. |
 | What players share | **Keys**, not compiled shaders or pipelines, as for deko3d: the pixel and vertex shader keys come from the same `nv2a_*` key structures, so **(to confirm)** one key file format serves both renderers. |
 | Compiling the known keys a device has not cached | **In the background, on one thread, while the game runs**, unless phase 5's step 1 measures otherwise on Android (deko3d measured one thread faster than several on the Switch; a phone has more cores). |
-| Minimum Vulkan | **Decided by phase 0**: the version and extensions the design needs (below), and nothing more. A device without them gets GL ES. |
+| Minimum Vulkan | **Decided by phase 0**: the version and extensions the design needs (below), and nothing more. A device without them gets GL ES. **(to confirm)** Proposed from one device: Vulkan 1.1 with `VK_KHR_swapchain` is the floor. Dynamic rendering, extended dynamic state 1 and 2 and vertex input dynamic state are used where the device has them (the Adreno 750 has all four; none has extended dynamic state 3), and the renderer keeps a render-pass path and static state for a device without, at the price of a larger pipeline key. Settle it with a Mali's report and an older Adreno's. |
+| Guest memory (phase 3) | **(to confirm)** Proposed: **an upload ring**. The test device has no `VK_EXT_external_memory_host`, so nothing can be imported; the ring costs 0.09 ms of CPU a frame for 4 MB, and the GPU reads vertices from host-visible memory as fast as from device-local memory. Reading in place is possible by another way, which the probe found (an allocation exported as a file descriptor and mapped with `mmap` at an address below 4 GB: the GPU read the guest's writes and rewrites), and is for later, when the window itself would be made from such a mapping. |
+| Dynamic state and the pipeline key (phase 5) | **(to confirm)** Proposed: everything the device can make dynamic is dynamic (22 states on the Adreno 750: viewport and scissor with count, depth bias and its enable, blend constants, stencil masks and reference, cull mode, front face, topology, depth test, write and compare, depth bounds enable, stencil test and op, rasterizer discard, primitive restart, logic op, vertex input). What stays in the key: the two shaders' keys, the colour and depth formats, and the colour blend state (enable, factors, write mask), which only extended dynamic state 3 makes dynamic and this device lacks. Making the state dynamic did not cost creation time (cold: 5.2 and 12.0 ms; with nothing dynamic: 7.2 and 16.9 ms). |
+| A pipeline met during play (phase 5) | **(to confirm)** Proposed: compile-on-skip is small enough on this device. Twenty pipelines made on a second thread (9.5 ms each) did not disturb a thread drawing every 16 ms (0 of 12 frames during, over twice the median; submit to fence 1.5 ms before and during). A pipeline from a saved `VkPipelineCache` costs 0.1 ms. The driver's own cache does not do that (7.9 and 18.5 ms with ours empty). |
+| Shader compiler (phase 4) | **(to confirm)** Proposed: glslang on the device. 2 to 4 ms for a game-sized shader (1.5 to 3.9 ms with the CPU at its best), 100 ms for the very first compile of a process, 3.8 MB of library in the APK, 17 to 35 KB of SPIR-V a shader. Shipping SPIR-V for known keys is not needed for the cost, and can still be added as a cache. |
 
 ---
 
@@ -801,4 +809,251 @@ is kept:
 
 ## Progress
 
-Nothing yet.
+Phase 0 was worked on the test device (Lenovo TB321FU, Adreno 750, Android 16,
+API 36, the phone's own driver). The reports are in `port/android/probe/reports/`.
+Newest first.
+
+### Phase 0 — summary
+
+**Step 6 is partial, and no second GPU family was tried.** The probe's steps
+1 to 5 are done and tried on the device; step 6 has the menu and the
+standing-still map scene profiled, and not the fight scene, nor the
+profiled/unprofiled comparison on the map (the user stopped profiling).
+Everything marked (to confirm) in "Decisions" is a proposal for the user.
+Still to do for the phase: a Mali (ask the user: none has been tried), the
+fight scene if the user wants it, and the user's decisions.
+
+**Deviations from this spec, each for the user to accept:**
+
+- *Installing the build.* The device had build 50 from GitHub Actions installed,
+  signed with the release key, which a debug-signed build cannot replace
+  (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`), and without a debuggable app the
+  validation layer is never found. With the user's agreement the debug build is
+  installed **beside it as `com.halo.decomp.vk`**: `HALO_APPLICATION_ID_SUFFIX=.vk`
+  in `port/android/app/build.gradle` (the manifest's provider authority became
+  `${applicationId}.update`, and `UpdateProvider.AUTHORITY` follows it), with the
+  game's `maps/` copied into its folder by adb. Without the variable nothing
+  changes. The data folder is `/sdcard/Android/data/com.halo.decomp.vk/files`,
+  and `config.toml` there is owned by the app's UID.
+- *`present` and SDL's lifecycle events.* The step as specified waits for
+  `SDL_EVENT_WILL_ENTER_BACKGROUND` and the like. None of them arrived in the
+  probe's event loop (only window shown, pixel size, gamepad added, display
+  orientation). The surface's loss is found by `VK_ERROR_SURFACE_LOST_KHR` from
+  acquire or present, and `SDL_Vulkan_CreateSurface` fails ("Android native window
+  is not available ... usually because of backgrounding") until the app is back,
+  so the loop retries. Phase 2 should not wait for SDL's events.
+- *`memory`.* The device has no `VK_EXT_external_memory_host`, so the import cases
+  could not run (the code for them is written and **not exercised on any device**;
+  the same for the negative tests). Added beyond the spec: an export case.
+- *The profiler's handler.* The first version called `host_low_owns`, which takes
+  the memory lock, and the game hung within a second at 1000 Hz (a thread
+  interrupted while it held the lock). The handler now reads the frame chain with
+  `process_vm_readv` (a system call that says no for an address that is not mapped),
+  and flags a sample taken right after a system call (the instruction before the pc
+  is `svc #0`) as blocked. Phase 2's host code must not share locks with a signal
+  handler either.
+
+### Step 6: the GL ES path's costs (partial)
+
+GL ES build `2d2a322e+changes`, `profile_hz = 1000`, `gpu_stats = true`; 0 samples
+dropped; frames per second from the renderer's log (the run with profiling on).
+The shares are of a thread's samples; a sample taken in libc is the driver's unless
+a caller on the frame chain says otherwise, which is a heuristic (system libraries
+carry no frame pointers, so the chain past them is often garbage); guest code is
+named by the object file the linker's map puts the address in.
+
+| Scene | fps | Main thread CPU | game | renderer | boundary | driver | other (idle in a system call and the rest) |
+|---|---|---|---|---|---|---|---|
+| Main menu, idle (seconds 20 to 80) | 164.9 | 540 ms/s, **3.27 ms/frame** | 8.5% | 3.6% | 0.6% | 67.7% | 19.5% |
+| First map, standing still in the cryo-tube, `look:1` (seconds 580 to 650; 184 draws, 178 immediate) | 110.8 | 715 ms/s, **6.45 ms/frame** | 18.5% | 5.0% | 1.9% | 51.4% | 23.2% (22.5% of it blocked) |
+
+The other threads: six guest threads cost 40 to 110 ms/s each (0.4 to 0.7 ms a
+frame), four of them (all in libc, called from the host's boundary) polling or
+sleeping and two in other code (probably SDL's audio). Not measured: the fight scene; the cost of
+profiling itself (the menu ran at 164.9 fps profiled and at the display's 165 Hz
+without, from the log's frames: no visible cost there; the map scene was not run
+unprofiled). The renderer's own log: the first map's cinematic and opening drew
+180 to 525 draws a frame with **4.2 to 6.8 MB "mirrored" and 0.2 to 0.7 MB
+"streamed" a frame**: the ring of step 3 used 4 MB, so it is the right size.
+
+**Does step 6 support the case for the renderer? (to confirm)** Moderately,
+and not yet enough to say more. About half of the game thread's samples in the
+map (51%) and two thirds in the menu are the vendor driver and what it calls, and
+the renderer's and the boundary's own code is under 7% of it: those are the
+costs a Vulkan renderer removes or cuts (driver validation, compile at link time).
+But part of the driver's share is the wait for the display (22% of the map's
+samples are blocked in a system call), the attribution of libc samples is a
+heuristic, the fight scene is missing, and the main thread used 72% of a core at
+110 fps in the map, not all of a core: the game is not CPU-bound in the scenes
+measured. The fight scene (the heaviest) is the one that could change this.
+
+### Step 5: pipelines
+
+`pipelines`, `Adreno 750`, `lenovo_tb321fu_adreno750_all_cold.txt` and `_all_warm.txt`
+(no validation layer; every figure is the first run, then min and median of five
+more; the device's speed varies by up to 1.5x between runs, so compare within a run).
+
+- **Formats and state:** colour `R8G8B8A8_UNORM`, depth `D24_UNORM_S8_UINT`, dynamic
+  rendering (no render pass), alpha blending on, depth test on. Dynamic states, 22:
+  `VIEWPORT_WITH_COUNT`, `SCISSOR_WITH_COUNT`, `LINE_WIDTH`, `DEPTH_BIAS`,
+  `BLEND_CONSTANTS`, the three stencil states, cull mode, front face, primitive
+  topology, depth test, write and compare op, depth bounds test enable, stencil test
+  enable and op, rasterizer discard, depth bias enable, primitive restart enable,
+  `LOGIC_OP`, `VERTEX_INPUT_EXT`; the stride state is left out when the vertex input is
+  dynamic.
+- **Cold** (a salt of its own in the shaders' specialization constant, a cache that
+  starts empty), `vkCreateGraphicsPipelines`: pass-through pair first 2.8, then min 1.1
+  ms, median 1.2 ms; the typical pair first 8.6 ms, min 5.2 ms, median 5.2 ms; the large
+  pair first 19.6 ms, min 12.0 ms, median 12.0 ms. `vkCreateShaderModule`: 0.05 to
+  0.8 ms.
+- **From the saved cache:** a 94,351-byte file (header version 1, vendor 0x5143,
+  the device's UUID) is kept by the driver; the same pipelines cost **0.095, 0.090
+  and 0.121 ms**. With our cache empty and only the driver's own: 1.8, 7.9 and 18.5
+  ms, so the driver's cache does not help; ours is the only one that does.
+- **Without dynamic state** (only viewport and scissor): 1.2, 7.2 and 16.9 ms, against
+  1.2, 5.2 and 12.0 with it: dynamic state saves creation time on this driver.
+- **A second thread while the first draws** (a clear and 100 draws every 16 ms,
+  `submit to fence` time): before 1.8 ms median (1 frame of 188 over twice the median),
+  **during (20 pipelines, 190 ms in all, 9.5 ms each): 1.5 ms median, 0 of 12 over**,
+  after 1.8 ms (0 of 187). Creating pipelines on another thread does not stall the
+  queue.
+- Validation: clean (`_all_validation.txt`: 2 messages, both information about the
+  layer's own cache file under `/tmp`, which an app cannot write).
+
+### Step 2: a frame on the screen
+
+`present`, with the user at the device and by adb.
+
+- **Presenting works**: FIFO, 6 images, `R8G8B8A8`/`B8G8R8A8` (the surface lists both),
+  usage colour attachment and transfer destination. The panel runs at **165 Hz**: the
+  interval between presents is 6.04 to 6.08 ms median (165.0 to 165.6 Hz), over 10 s
+  windows 0 or 1 of 1024 intervals over 1.5x the median, max 7 to 15 ms, apart from the
+  moments the app was away.
+- **The three ways of clearing** (a whole-image `vkCmdClearColorImage` plus a copy of
+  the marker, dynamic rendering, a render pass) all ran, cycled by X on the user's
+  gamepad, with a clean validation layer.
+- **Backgrounding:** 4 Home round trips by the user and 10 by adb: **each lost the
+  surface** (`VK_ERROR_SURFACE_LOST_KHR`) and was remade with a new surface and swapchain
+  in 3.0 to 9.0 ms (after one or two retries while the app was still away), every time.
+  10 of 10, validation clean.
+- **Rotation:** the surface's `currentTransform` is **`ROTATE_90` from the start** on
+  this tablet (extent 2560x1600), and turning the device (180 degrees, and the
+  settings' `user_rotation`) made the driver report `VK_SUBOPTIMAL_KHR` each time: the
+  swapchain was remade with the new `currentTransform` (identity, rotate_90, rotate_270
+  seen) in 3.8 to 8.4 ms, never an error. The user pressed A (the picture looks right)
+  and never Y. The user did not say where the marker sat or whether the tone was heard.
+- **SDL beside Vulkan:** the gamepad (a GameSir Nova 2 Lite) opened and its buttons arrived
+  (A, X, X, X, B), keyboard keys arrived too (adb's `KEYCODE_A` and so on); the audio
+  stream opened and queued a tone.
+
+### Step 4: the shader compiler
+
+glslang 16.6.0 (`e1b562a8`), `ENABLE_OPT` and `ENABLE_HLSL` off, built into
+`libglslang_probe.so` (3,767,008 bytes in the APK, stored; the C++ runtime inside it),
+dlopened by the probe; Vulkan 1.0 / SPIR-V 1.0 target; one thread. Shaders: the dump of
+the GL ES game (150 files: 23 vertex, 127 pixel) from the main menu, a new campaign's
+opening and cinematics; converted by a script (`port/android/probe/*`, each says which
+dump file) as the plan describes, and the specialization constant added. `compile` run on
+its own, no validation (`_compile_only.txt`):
+
+| Shader | GLSL bytes | SPIR-V bytes | first | min | median |
+|---|---|---|---|---|---|
+| pass.vert | 677 | 1,208 | 100.7 ms (the very first compile) | 0.90 ms | 0.93 ms |
+| pass.frag | 328 | 632 | 0.91 ms | 0.82 ms | 0.87 ms |
+| vs_typical.vert (vs004_1, median) | 6,366 | 17,660 | 3.3 ms | 2.1 ms | 2.2 ms |
+| ps_typical.frag (ps_e4a3b3ae, median) | 4,100 | 9,356 | 1.7 ms | 1.5 ms | 1.5 ms |
+| vs_large.vert (vs051_0, largest) | 11,374 | 35,380 | 4.3 ms | 3.8 ms | 3.9 ms |
+| ps_large.frag (ps_297f687f, largest) | 8,568 | 24,184 | 3.1 ms | 2.9 ms | 2.9 ms |
+
+`dlopen` and `glslang_initialize_process`: 4.5 ms. Thread CPU time is within 3% of
+the wall time. All six compiled the first time; the SPIR-V was accepted by the driver
+under the validation layer (steps 3 and 5), which validates SPIR-V; **it was not run
+through `spirv-val` or `spirv-dis` off the device (neither is installed here)**. (In a
+run of `all`, step 3 loads glslang first, so its "first compile" is not the very first.)
+
+### Step 3: the game's memory, seen by the GPU
+
+`memory`, no validation for the timings.
+
+- **Import: not possible on this device**: `VK_EXT_external_memory_host` is not offered
+  (the instance is 1.4.0, the device 1.3.128, 132 device extensions). `minImportedHostPointerAlignment`
+  has nothing to report. The import, copy, vertex-fetch, index-fetch and texture cases
+  did not run.
+- **The ring (4 MB a frame):** the only host-visible type a vertex buffer can use is
+  type 6 (`device_local host_visible host_coherent host_cached`), so there is no
+  host-cached non-coherent variant to flush. The copy into it, 300 frames: **0.089 ms
+  median (min 0.084, p99 0.15–0.28, max 1.1 ms) of wall and of thread CPU**. GPU time of
+  a pass drawing 116,508 small triangles from the ring against from device-local memory
+  (timestamps; the baseline pass that draws one triangle is 10 and 27 us in the two runs):
+  host-coherent 350 us (run 1) and 654 us (run 2), device-local 355 and 727 us: **the same,
+  within the run-to-run variation of the GPU's clocks, which was 1.9x**. A 4 MB copy into
+  device-local memory costs about 210 us of GPU time on top.
+- **Beyond the spec: an allocation exported as an opaque file descriptor**
+  (`VK_KHR_external_memory_fd`), mapped with `mmap` (`MAP_SHARED | MAP_FIXED`) over a
+  range of guest-kind memory below 4 GB: it mapped, was the same pages as the driver's own
+  mapping, **the GPU read the CPU's writes and then its rewrites** (copy to a readback
+  buffer), and the CPU's speed there is close to ordinary memory (8 MB: write 17,800 to
+  23,800 MB/s against 23,800 to 28,100; read 27,700 to 38,300 against 26,900 to 40,900).
+  The memory type it uses is type 4 (`device_local host_visible host_coherent`), as a
+  dedicated allocation; no host-cached exportable type exists for the buffer
+  (`memoryTypeBits` 0x13). This is the way to read the guest's memory in place on a device
+  without host-pointer import. Not tried: mapping at the Xbox window's own address.
+- Validation: clean. (An earlier run found my bug in the cleanup of buffers never made;
+  fixed.)
+
+### Step 1: what the device has
+
+`caps`, in full in `_all_*.txt`; the column of the table below.
+
+| | Adreno 750 (Lenovo TB321FU, `qcom`/`pineapple`, `ro.hardware.vulkan` adreno) | Mali (second device) |
+|---|---|---|
+| Versions and driver | instance 1.4.0; device **1.3.128**; driver 512.762.40, "Qualcomm Technologies Inc. Adreno Vulkan Driver", build 8924aaec70, conformance 1.3.6.0; vendor 0x5143, device 0x43051401 | **missing** |
+| Dynamic rendering | yes (core 1.3, the extension too) | |
+| Extended dynamic state 1, 2 | yes, yes (logic op yes, patch control points yes) | |
+| Extended dynamic state 3 | **no** (the extension is not listed) | |
+| Vertex input dynamic state | yes | |
+| Host pointer import | **no** (`VK_EXT_external_memory_host` absent); `VK_KHR_external_memory_fd` yes, `VK_ANDROID_external_memory_android_hardware_buffer` yes | |
+| Push descriptors | yes, `maxPushDescriptors` 32 | |
+| Custom border colour, 4444 formats | yes (with and without format), yes (A4R4G4B4 and A4B4G4R4) | |
+| Maintenance4 / 5 | yes / no | |
+| Pipeline creation cache control | yes | |
+| Graphics pipeline library | **no** (nor `VK_KHR_pipeline_library`) | |
+| Core features | BC yes, ASTC yes, ETC2 yes, anisotropy yes, precise occlusion yes, depth bias clamp yes, depth clamp yes, non-solid fill yes, independent blend yes, logic op yes, clip distance yes, wide lines yes, pipeline statistics yes | |
+| Limits | 32 vertex attributes and bindings (offset 4096, stride 2048); uniform range 65,536 B; push constants 256 B; 7 descriptor sets; 16 anisotropy, 16 LOD bias; 2D 16,384, 3D 2,048; 8 colour attachments; uniform alignment 256; non-coherent atom 1; copy offset alignment 64; timestamps 48 valid bits, 52.08 ns | |
+| Memory | heap 0: 11,273 MB device-local; heap 1: 4,095 MB (protected); a vertex buffer can use types 0 and 6 only (6 is host-visible, coherent and cached) | |
+| Formats that matter | `BC1/2/3`: sampled, linear, transfer both ways (not renderable); every 16-bit colour (`R5G6B5`, `B5G6R5`, `A1R5G5B5`, `R5G5B5A1`, `B5G5R5A1`, `R4G4B4A4`, `B4G4R4A4`, `A4R4G4B4`) and the 8 and 16-bit ones (`R8`, `R8G8`, `R16`, `R16G16`, `R8G8_SNORM`, `R16G16_SNORM`) sampled, linear, renderable, blendable; depth: `D16`, `D24_S8`, `X8_D24`, `D32`, `D32_S8` all depth-stencil attachments and sampled (`D32_S8` without linear) | |
+| Surface | 5 to 64 images, extent 2560x1600, transform `ROTATE_90` (all 9 supported), composite alpha inherit only, usage 0x9f, 5 formats (37, 43, 4, 97, 64) all colour space 0, present modes mailbox and FIFO, and the two shared-present modes (no immediate) | |
+| Presenting, pacing | 165 Hz, steady (see step 2) | |
+
+The validation layer is loaded from the app's own library folder in the debuggable
+`.vk` build: `VK_LAYER_KHRONOS_validation` 1.4.363 (`vulkan-sdk-1.4.363.0`'s Android
+release), 27.7 MB in the APK; `--android-vulkan-validation` puts it there, and nothing
+puts it there otherwise (configure removes a staged copy).
+
+### The build and the files
+
+glslang is fetched at configure time (`tools/android_build.py`, pinned to 16.6.0 and
+built by `port/android/probe/glslang/CMakeLists.txt`); `configure.py
+--android-vulkan-validation` adds the validation layer. The probe is
+`port/android/host/host_vk_probe.c` (about 4,900 lines, one file), run by
+`host_main.c` when `debug.vk_probe` is set; `host_debug.c` has the profiler;
+`tools/android_profile_report.py` reads it. The three settings are rows of
+`port/linux/src/port_config.c` (`_platform_android`); that is the only change under
+`port/linux/src`. The GL ES game with `vk_probe = ""` ran the menu, a new game's
+cinematics and the first map throughout steps 3 to 6 on the same build. Audited against
+the specification's valid usage (below) and the layer, then committed.
+
+**The audit** (valid usage, by hand, beyond the layer's silence): the layer was clean in
+every run of `all`, and the code was also read for what the layer cannot see: the
+pipelines' dynamic state is complete before every draw (each listed state is set; depth
+bounds is not made dynamic, as its feature is off); no dynamic state is listed twice
+(counted viewport replaces the plain one; vertex stride is left out with the dynamic
+vertex input); an attachment's layouts are changed from `UNDEFINED` before each clearing
+pass and the render pass's final layout matches the barrier after it; the swapchain is
+destroyed before its surface and recreated with `oldSwapchain`; semaphores are per
+frame for acquire and per image for present; timestamps are written outside render passes;
+every host read of GPU writes has a transfer-to-host barrier; every `vkMapMemory` is
+matched; the exported-memory descriptor is closed after the mapping. Found and fixed in
+the audit: buffers freed without having been made (the layer's error); the features
+chain never queried (the first caps run); a handler that took a lock.
+
