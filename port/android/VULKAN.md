@@ -1117,6 +1117,32 @@ Phase 0 was worked on the test device (Lenovo TB321FU, Adreno 750, Android 16,
 API 36, the phone's own driver). The reports are in `port/android/probe/reports/`.
 Newest first.
 
+### Phase 0, part B — audit and fixes
+
+The audit of part B found its results sound and five things to fix, now fixed (commit "Fix
+what the audit of phase 0 B found"):
+
+- `host_vk_driver.h` promised that a driver that cannot be used falls back to the phone's;
+  that holds only until libadrenotools accepts the library. The header now says what
+  cannot be undone after `vkCreateInstance`, and phase 1 above makes the host check the
+  driver (`host_vk_driver_verify`, a physical device) before it chooses the game image.
+- `host_vk_driver_close()` let the driver be opened again, with libadrenotools' hooks still
+  installed; it is now final for the process.
+- The probe set the blend enable to true whenever it was dynamic, so on Turnip (extended
+  dynamic state 3) the `full_dynamic` draws, meant opaque, were blended. It now follows the
+  pipeline. The hashes did not change: the shaders' output alpha is 1 on these inputs.
+- The probe's build name was taken at configure time, so every report of part B said
+  `fc0f335a+changes`, and the Qualcomm reports predate `driver.check`. It is now written
+  at every build (`tools/android_build_stamp.py`).
+- The libadrenotools patch was applied only when first fetched; it is applied again when it
+  changes, and the build rule touches its outputs so it does not rerun at every build.
+
+**The tip, run on the device** (build `35f29e2b`, `all`, validation on, `present` ended
+by a key after 15 s): on the phone's driver and on Turnip, every step finishes, the layer
+reports 0 errors, `driver.check` is ok, and every `draw` hash is the same on both drivers.
+These two runs replace `..._qualcomm_all_validation.txt` and `..._turnip_all_validation.txt`;
+the cold and warm reports are part B's as it ran them.
+
 ### Phase 0, part B — summary
 
 Worked unattended on the test device (Lenovo TB321FU, Adreno 750, Android 16) as the
