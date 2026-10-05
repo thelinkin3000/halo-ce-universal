@@ -18,7 +18,10 @@ config.toml, live there too (port/linux/src/port_config.c, which the game
 reads); this file reads only debug.sample_seconds and debug.profile_hz from
 it, for the samplers that run here, and debug.vk_probe, which runs the
 Vulkan probe (host_vk_probe.c) instead of the game, on the driver that
-display.vk_driver names (host_vk_driver.c).
+display.vk_driver names (host_vk_driver.c). It also reads display.renderer, to
+choose between the two game images (halo_guest.elf, drawing with OpenGL ES,
+and halo_guest_vk.elf, with Vulkan: port/android/VULKAN.md), and
+debug.vk_validation for the Vulkan renderer.
 */
 
 #include "host.h"
@@ -40,6 +43,8 @@ display.vk_driver names (host_vk_driver.c).
 #include <unistd.h>
 
 void host_install_signal_handlers(void);
+
+int host_renderer_vulkan;
 
 /* ---------- logging and termination */
 
@@ -168,6 +173,9 @@ struct host_settings
 	int profile_hz;
 	char vk_probe[128]; /* empty: the game runs */
 	char vk_driver[256]; /* display.vk_driver: empty is the phone's own Vulkan driver */
+	char renderer[32]; /* display.renderer: "gl" (also when empty) or "vulkan" */
+	int vk_validation; /* debug.vk_validation */
+	int gpu_stats; /* debug.gpu_stats */
 };
 
 static void config_read(const char *path, struct host_settings *settings)
@@ -176,12 +184,18 @@ static void config_read(const char *path, struct host_settings *settings)
 
 	memset(settings, 0, sizeof(*settings));
 	if (!result.ok)
+	{
+		host_logf(HOST_LOG_WARN, "cannot read %s: %s; the host's settings are the defaults", path, result.errmsg);
 		return;
+	}
 	{
 		toml_datum_t seconds = toml_seek(result.toptab, "debug.sample_seconds");
 		toml_datum_t hz = toml_seek(result.toptab, "debug.profile_hz");
 		toml_datum_t probe = toml_seek(result.toptab, "debug.vk_probe");
 		toml_datum_t driver = toml_seek(result.toptab, "display.vk_driver");
+		toml_datum_t renderer = toml_seek(result.toptab, "display.renderer");
+		toml_datum_t validation = toml_seek(result.toptab, "debug.vk_validation");
+		toml_datum_t statistics = toml_seek(result.toptab, "debug.gpu_stats");
 		double value = seconds.type == TOML_FP64 ? seconds.u.fp64 :
 			seconds.type == TOML_INT64 ? (double)seconds.u.int64 : 0.0;
 
@@ -193,6 +207,10 @@ static void config_read(const char *path, struct host_settings *settings)
 			snprintf(settings->vk_probe, sizeof(settings->vk_probe), "%s", probe.u.s);
 		if (driver.type == TOML_STRING)
 			snprintf(settings->vk_driver, sizeof(settings->vk_driver), "%s", driver.u.s);
+		if (renderer.type == TOML_STRING)
+			snprintf(settings->renderer, sizeof(settings->renderer), "%s", renderer.u.s);
+		settings->vk_validation = validation.type == TOML_BOOLEAN && validation.u.boolean;
+		settings->gpu_stats = statistics.type == TOML_BOOLEAN && statistics.u.boolean;
 	}
 	toml_free(result);
 }
@@ -292,8 +310,10 @@ static void *game_main(void *unused)
 	const char *external;
 	char zone[64];
 	char path[600];
-	size_t image_size = 0;
-	void *image;
+	size_t image_size = 0, vk_image_size = 0, image_used_size;
+	void *image, *vk_image = NULL, *image_used;
+	uint32_t span, image_base = 0;
+	int want_vulkan = 0;
 	uint32_t boot;
 	struct host_settings settings;
 
@@ -331,24 +351,45 @@ static void *game_main(void *unused)
 	}
 	snprintf(path, sizeof(path), "%s/config.toml", data_root);
 
+	config_read(path, &settings);
+	/* the renderer decides the image (host.h). The probe runs on the GL image,
+	as before, whatever the renderer is */
+	if (settings.vk_probe[0])
+		want_vulkan = 0;
+	else if (!strcmp(settings.renderer, "vulkan"))
+		want_vulkan = 1;
+	else if (settings.renderer[0] && strcmp(settings.renderer, "gl"))
+		host_logf(HOST_LOG_WARN, "display.renderer \"%s\" is not \"gl\" or \"vulkan\"; using GL ES", settings.renderer);
+
 	image = SDL_LoadFile("halo_guest.elf", &image_size);
 	if (!image)
 		host_fatal("cannot read the game image from the APK: %s", SDL_GetError());
+	if (want_vulkan)
 	{
-		/* where its pointers are, in case its address is taken (host_loader.c) */
-		size_t relocations_size = 0;
-		void *relocations = SDL_LoadFile("halo_guest.relocs", &relocations_size);
-
-		if (host_load_image(image, image_size, relocations, relocations_size) != 0)
-			host_fatal("cannot load the game image; see logcat (tag \"halo\") for details");
-		SDL_free(relocations);
+		vk_image = SDL_LoadFile("halo_guest_vk.elf", &vk_image_size);
+		if (!vk_image)
+		{
+			host_logf(HOST_LOG_WARN, "renderer: GL ES (Vulkan was asked for: the APK has no halo_guest_vk.elf: %s)",
+				SDL_GetError());
+			want_vulkan = 0;
+		}
 	}
-	SDL_free(image);
 
-	/* only now that the image holds its address: bringing the display up
-	maps memory of its own, and on a device where one of those mappings
-	lands on the image's address there is nowhere else to put it, because
-	the image is an executable linked to run there (host_loader.c) */
+	/* the image's range is reserved before anything else is brought up: bringing the
+	display and Vulkan up map memory of their own, and on a device where one of those
+	mappings lands on the image's address there is nowhere else to put it, because the
+	image's pointers would have to be moved after the fact (host_loader.c). Both images
+	are linked to run at the same address; the larger one's span is reserved (there, or
+	wherever there is room, image_base), and the other image's data is freed once the
+	choice is made */
+	span = host_image_span(image, image_size);
+	if (want_vulkan && host_image_span(vk_image, vk_image_size) > span)
+		span = host_image_span(vk_image, vk_image_size);
+	if (want_vulkan && !host_image_span(vk_image, vk_image_size))
+		host_fatal("cannot load the Vulkan game image; see logcat (tag \"halo\") for details");
+	if (!span || host_memory_initialize(HALO_GUEST_IMAGE_BASE, span, &image_base) != 0)
+		host_fatal("cannot load the game image; see logcat (tag \"halo\") for details");
+
 	{
 		/* the game renders 480 lines at the display's aspect ratio
 		(landscape) unless display.screen_width says otherwise (d3d8_gl.c) */
@@ -368,7 +409,42 @@ static void *game_main(void *unused)
 		}
 	}
 
-	config_read(path, &settings);
+	if (want_vulkan)
+	{
+		char line[600];
+
+		host_renderer_vulkan = host_vk_startup(settings.vk_driver, settings.vk_validation, line, sizeof(line));
+		host_logf(HOST_LOG_INFO, "renderer: %s", line);
+	}
+	else
+	{
+		host_logf(HOST_LOG_INFO, "renderer: GL ES");
+	}
+	if (host_renderer_vulkan)
+	{
+		image_used = vk_image;
+		image_used_size = vk_image_size;
+	}
+	else
+	{
+		image_used = image;
+		image_used_size = image_size;
+	}
+	{
+		/* where the chosen image's pointers are, in case its address was taken
+		(host_loader.c): each image has its own table */
+		size_t relocations_size = 0;
+		void *relocations = SDL_LoadFile(image_used == vk_image ? "halo_guest_vk.relocs" : "halo_guest.relocs",
+			&relocations_size);
+		int loaded = host_load_image_reserved(image_used, image_used_size, relocations, relocations_size, image_base);
+
+		SDL_free(relocations);
+		if (loaded != 0)
+			host_fatal("cannot load the game image; see logcat (tag \"halo\") for details");
+	}
+	SDL_free(image);
+	SDL_free(vk_image);
+
 	if (settings.vk_probe[0])
 	{
 		/* the probe owns the window and ends the app; the game does not start */
@@ -392,6 +468,7 @@ static void *game_main(void *unused)
 	if (settings.sample_seconds[0])
 		host_debug_start_sampler(settings.sample_seconds);
 	host_debug_start_profiler(settings.profile_hz, data_root);
+	host_gl_statistics = settings.gpu_stats;
 	boot = make_boot(&environment);
 	host_logf(HOST_LOG_INFO, "data %s, saves %s", data_root, save_root);
 	host_run_guest_main(boot);
