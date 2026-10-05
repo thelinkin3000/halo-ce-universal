@@ -83,10 +83,19 @@ struct host_guest_image
 
 extern struct host_guest_image host_image;
 
+/* the size of the address range an ELF file's loadable segments span, from
+HALO_GUEST_IMAGE_BASE; 0 (after logging why) if it is not a guest image */
+uint32_t host_image_span(const void *elf, size_t size);
 /* maps the image from the ELF file in memory, at the address it was linked
 at if it can, else elsewhere with its pointers moved by the relocation table
-(tools/guest_relocations.py); returns 0 on success */
+(tools/guest_relocations.py); returns 0 on success. The range is reserved here
+(host_memory_initialize) ... */
 int host_load_image(const void *elf, size_t size, const void *relocations, size_t relocations_size);
+/* ... or, in the second form, before: the caller has called
+host_memory_initialize for a range at least host_image_span(elf, size) long,
+which it placed at base */
+int host_load_image_reserved(const void *elf, size_t size, const void *relocations, size_t relocations_size,
+	uint32_t base);
 
 /* ---------- entering guest code (host_thread.c) */
 
@@ -120,6 +129,37 @@ void host_debug_start_profiler(int hz, const char *data_root);
 compile, pipelines, draw, present) instead of the game, writes vk_probe.txt in
 data_root and ends the app */
 void host_vk_probe_run(const char *steps, const char *data_root, const char *vk_driver) __attribute__((noreturn));
+
+/* ---------- the renderer (host_main.c, host_vk.c; port/android/VULKAN.md)
+
+config.toml's display.renderer: "gl" (the default) runs halo_guest.elf, whose
+renderer is OpenGL ES; "vulkan" runs halo_guest_vk.elf, whose renderer is
+Vulkan, when Vulkan comes up on this device (host_vk_startup). Under Vulkan the
+host makes no GL context and no EGL surface: the guest's SDL window is real
+(Android lets one API own a window, and phase 2 makes its Vulkan surface on it)
+but its GL context is a stand-in. Set once, before the guest starts. */
+extern int host_renderer_vulkan;
+
+/* config.toml's debug.gpu_stats: under Vulkan, host_gl.c reports the GL calls the
+shared files still make (host_gl_resolve) every 10 seconds */
+extern int host_gl_statistics;
+/* once per frame, under Vulkan (host_gl.c): the report of the GL calls still made */
+void host_gl_frame(void);
+
+/* brings Vulkan up as far as an instance and a physical device and decides
+whether the Vulkan image can run: the driver display.vk_driver names (host_vk_driver.c),
+an instance (with the validation layer when validation is set and the app
+carries it), and a physical device with a graphics queue, VK_KHR_swapchain and
+dynamic rendering. Returns 1 and keeps them for the backend, or returns 0 after
+destroying what it made. line is the text of the log line "renderer: ...", for
+either outcome. Not thread safe; called once, by the thread that starts the
+game, after the image's range is reserved and SDL's video is up */
+int host_vk_startup(const char *vk_driver, int validation, char *line, size_t size);
+/* errors the validation layer has reported so far */
+unsigned host_vk_validation_errors(void);
+/* set once the backend presents frames, after which its swapchain paces them,
+not the stand-in window's swap (phase 2) */
+extern int host_vk_presenting;
 
 /* ---------- import table (host_imports.c) */
 

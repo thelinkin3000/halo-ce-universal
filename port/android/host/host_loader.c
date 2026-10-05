@@ -138,22 +138,24 @@ static void missing_import(void)
 	host_fatal("the guest called a host function that is not available");
 }
 
-int host_load_image(const void *file, size_t size, const void *relocations, size_t relocations_size)
+/* the loadable segments' range as linked (from HALO_GUEST_IMAGE_BASE); checks
+that the file is a guest image */
+static int image_range(const void *file, size_t size, uint64_t *low_out, uint64_t *high_out)
 {
 	const Elf64_Ehdr *elf = file;
 	const Elf64_Phdr *segments;
 	uint64_t low = ~0ULL, high = 0;
-	const struct halo_guest_header *header;
-	uint64_t *table;
-	const char *name;
-	uint32_t count, index, base;
-	uint64_t shift;
-	int missing = 0;
+	uint32_t index;
 
 	if (size < sizeof(*elf) || memcmp(elf->e_ident, ELFMAG, SELFMAG) || elf->e_ident[EI_CLASS] != ELFCLASS64 ||
 		elf->e_machine != EM_AARCH64 || elf->e_type != ET_EXEC)
 	{
 		host_logf(HOST_LOG_ERROR, "the guest image is not an AArch64 executable");
+		return -1;
+	}
+	if (elf->e_phoff > size || (uint64_t)elf->e_phnum * sizeof(Elf64_Phdr) > size - elf->e_phoff)
+	{
+		host_logf(HOST_LOG_ERROR, "the guest image's program headers are out of the file");
 		return -1;
 	}
 	segments = (const Elf64_Phdr *)((const char *)file + elf->e_phoff);
@@ -168,13 +170,53 @@ int host_load_image(const void *file, size_t size, const void *relocations, size
 	}
 	low &= ~0xfffULL;
 	high = (high + 0xfff) & ~0xfffULL;
-	if (low != HALO_GUEST_IMAGE_BASE || high > 0x100000000ULL)
+	if (low != HALO_GUEST_IMAGE_BASE || high > 0x100000000ULL || high <= low)
 	{
 		host_logf(HOST_LOG_ERROR, "the guest image spans %llx-%llx", (unsigned long long)low, (unsigned long long)high);
 		return -1;
 	}
+	*low_out = low;
+	*high_out = high;
+	return 0;
+}
+
+uint32_t host_image_span(const void *file, size_t size)
+{
+	uint64_t low, high;
+
+	if (image_range(file, size, &low, &high) != 0)
+		return 0;
+	return (uint32_t)(high - low);
+}
+
+int host_load_image(const void *file, size_t size, const void *relocations, size_t relocations_size)
+{
+	uint64_t low, high;
+	uint32_t base;
+
+	if (image_range(file, size, &low, &high) != 0)
+		return -1;
 	if (host_memory_initialize((uint32_t)low, (uint32_t)(high - low), &base) != 0)
 		return -1;
+	return host_load_image_reserved(file, size, relocations, relocations_size, base);
+}
+
+int host_load_image_reserved(const void *file, size_t size, const void *relocations, size_t relocations_size,
+	uint32_t base)
+{
+	const Elf64_Ehdr *elf = file;
+	const Elf64_Phdr *segments;
+	uint64_t low, high;
+	const struct halo_guest_header *header;
+	uint64_t *table;
+	const char *name;
+	uint32_t count, index;
+	uint64_t shift;
+	int missing = 0;
+
+	if (image_range(file, size, &low, &high) != 0)
+		return -1;
+	segments = (const Elf64_Phdr *)((const char *)file + elf->e_phoff);
 	/* (unsigned arithmetic: a move down wraps, and adding it back to a
 	32-bit pointer wraps the same way) */
 	shift = (uint32_t)(base - (uint32_t)low);

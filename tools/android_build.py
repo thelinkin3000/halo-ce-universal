@@ -280,7 +280,7 @@ def _musl_sources() -> List[Path]:
 
 
 def android_configure_inputs() -> List[Path]:
-    return [Path(__file__), SDL_ANDROID_MOUSE_PATCH, PORT_DIR / "guest" / "runtime", PORT_DIR / "host",
+    return [Path(__file__), SDL_ANDROID_MOUSE_PATCH, PORT_DIR / "guest", PORT_DIR / "host",
             PORT_DIR / "probe", PORT_DIR / "probe" / "adrenotools.patch", LINUX_DIR / "src",
             *hud_configure_inputs()]
 
@@ -335,6 +335,7 @@ def generate_android_build(n: Writer, sln: Any) -> None:
     platform_semantics_header = Path("build/linux/platform_msvc_semantics.h")
     prefix_header = LINUX_DIR / "include" / "halo_linux_prefix.h"
     image = BUILD / "halo_guest.elf"
+    vk_image = BUILD / "halo_guest_vk.elf"
     sdl_build = BUILD / "sdl3-build"
     libsdl = sdl_build / "libSDL3.so"
     jni_dir = BUILD / "jniLibs" / "arm64-v8a"
@@ -517,10 +518,13 @@ def generate_android_build(n: Writer, sln: Any) -> None:
         f"-I{SDL_DIR}/include", f"-I{gl_include}", *libc_includes, f"-idirafter {XDK_INCLUDE}",
     ])
     guest_host_only = {"memory_watch.c"}  # replaced by guest_memory_watch.c
+    gl_renderer_object = None
     for source in sorted((LINUX_DIR / "src").glob("*.c")):
         if source.name.startswith("posix_") or source.name in guest_host_only:
             continue
         objects.append(guest_object(source, platform_cflags))
+        if source.name == "d3d8_gl.c":
+            gl_renderer_object = objects[-1]
     # the high-res HUD's textures (port/assets/hud; port/linux/src/hud_hires.c)
     for source in hud_assets_build(n, "android", gen_dir / "hud_hires_assets.c"):
         objects.append(guest_object(source, platform_cflags))
@@ -585,20 +589,33 @@ def generate_android_build(n: Writer, sln: Any) -> None:
     # where the image's 32-bit pointers are, so the host can load it elsewhere
     # when its address is taken (tools/guest_relocations.py): linked with its
     # relocations, which the table is made from and the image then drops
+    # (one table per image: $relocations names it)
     relocations = BUILD / "halo_guest.relocs"
     n.rule(
         name="android_guest_link",
         command=(f"$android_ndk_bin/ld.lld -m aarch64linux -static -nostdlib -T {linker_script} "
                  f"--emit-relocs -Map $out.map -o $out.full @$out.rsp {libguestc} "
                  "$$($android_host_cc -print-libgcc-file-name) && "
-                 f"{python} tools/guest_relocations.py $out.full {relocations} && "
+                 f"{python} tools/guest_relocations.py $out.full $relocations && "
                  "$android_ndk_bin/llvm-objcopy --remove-section='.rela*' $out.full $out && rm -f $out.full"),
         description="ANDROID LINK $out",
         rspfile="$out.rsp",
         rspfile_content="$in_newline",
     )
     n.build(outputs=image, rule="android_guest_link", inputs=objects, implicit_outputs=[relocations],
-            implicit=[libguestc, linker_script, Path("tools/guest_relocations.py")])
+            implicit=[libguestc, linker_script, Path("tools/guest_relocations.py")],
+            variables={"relocations": str(relocations)})
+
+    # The same game with the Vulkan renderer (port/android/VULKAN.md): its device,
+    # port/android/guest/d3d8_vk.c, takes the place of d3d8_gl.c and every other
+    # object is shared. The host runs one image or the other, as config.toml's
+    # display.renderer says (port/android/host/host_main.c).
+    vk_objects = [obj for obj in objects if obj != gl_renderer_object]
+    vk_objects.append(guest_object(PORT_DIR / "guest" / "d3d8_vk.c", platform_cflags))
+    vk_relocations = BUILD / "halo_guest_vk.relocs"
+    n.build(outputs=vk_image, rule="android_guest_link", inputs=vk_objects, implicit_outputs=[vk_relocations],
+            implicit=[libguestc, linker_script, Path("tools/guest_relocations.py")],
+            variables={"relocations": str(vk_relocations)})
 
     # ---------- SDL3
 
@@ -720,6 +737,7 @@ def generate_android_build(n: Writer, sln: Any) -> None:
 
     staged_sdl = jni_dir / "libSDL3.so"
     staged_image = assets_dir / "halo_guest.elf"
+    staged_vk_image = assets_dir / "halo_guest_vk.elf"
     n.rule(name="android_copy", command="cp $in $out", description="ANDROID STAGE $out")
     n.rule(name="android_copy_into", command="mkdir -p $$(dirname $out) && cp $in $out",
            description="ANDROID STAGE $out")
@@ -727,6 +745,9 @@ def generate_android_build(n: Writer, sln: Any) -> None:
     n.build(outputs=staged_image, rule="android_copy", inputs=image)
     staged_relocations = assets_dir / "halo_guest.relocs"
     n.build(outputs=staged_relocations, rule="android_copy", inputs=relocations)
+    n.build(outputs=staged_vk_image, rule="android_copy", inputs=vk_image)
+    staged_vk_relocations = assets_dir / "halo_guest_vk.relocs"
+    n.build(outputs=staged_vk_relocations, rule="android_copy", inputs=vk_relocations)
     # internet play's MQTT brokers, in the APK: the app writes them beside
     # config.toml (port/android/host/host_main.c)
     staged_brokers = assets_dir / "brokers.txt"
@@ -761,7 +782,8 @@ def generate_android_build(n: Writer, sln: Any) -> None:
     if not stamp.exists() or stamp.read_text() != wanted:
         stamp.write_text(wanted)
     n.build(outputs="android", rule="phony",
-            inputs=[libmain, staged_sdl, staged_image, staged_relocations, staged_brokers, *probe_staged])
+            inputs=[libmain, staged_sdl, staged_image, staged_relocations, staged_vk_image, staged_vk_relocations,
+                    staged_brokers, *probe_staged])
 
     apk = PORT_DIR / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk"
     sdl_android_mouse_listener = SDL_DIR / SDL_ANDROID_MOUSE_LISTENER
@@ -774,7 +796,8 @@ def generate_android_build(n: Writer, sln: Any) -> None:
         pool="console",
     )
     n.build(outputs=apk, rule="android_gradle",
-            inputs=[libmain, staged_sdl, staged_image, staged_relocations, staged_brokers, *probe_staged],
+            inputs=[libmain, staged_sdl, staged_image, staged_relocations, staged_vk_image, staged_vk_relocations,
+                    staged_brokers, *probe_staged],
             implicit=[stamp, sdl_android_mouse_listener])
     n.build(outputs="android_apk", rule="phony", inputs=apk)
     n.newline()
