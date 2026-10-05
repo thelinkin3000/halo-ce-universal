@@ -21,10 +21,14 @@ Status: phase 0 is done on the test device (Adreno 750) and committed, parts A
 and B: the probe runs on the phone's own driver and on Turnip, loaded by the
 app, and Turnip draws the game's shaders with descriptor sets, identically to
 the phone's driver; the results are in "Progress". Not tried: a second GPU
-family (a Mali). **Phase 1 is written out and next.** The work is
-on the `vulkan-backend` branch, which starts again from `main`. An earlier
-attempt, kept on the `vulkan-backend-old` branch, is not the base of this
-work and nothing here builds on it; see "Lessons from the earlier attempt".
+family (a Mali). **Phase 1 is done on the test device and committed** (the
+Vulkan image, the host's choice and its decision, the stand-ins: the game
+runs under `display.renderer = "vulkan"` on the phone's driver and on
+Turnip, with a black screen as the phase says). **Phase 2 is next.** The
+work is on the `vulkan-backend` branch, which starts again from `main`. An
+earlier attempt, kept on the `vulkan-backend-old` branch, is not the base of
+this work and nothing here builds on it; see "Lessons from the earlier
+attempt".
 
 ---
 
@@ -1283,6 +1287,93 @@ is kept:
 Phase 0 was worked on the test device (Lenovo TB321FU, Adreno 750, Android 16,
 API 36, the phone's own driver). The reports are in `port/android/probe/reports/`.
 Newest first.
+
+### Phase 1 — summary
+
+Worked unattended on the test device (Lenovo TB321FU, Adreno 750, Android 16) as the `.vk` build, with
+`--android-vulkan-validation`. **Phase 1 works on both drivers.**
+
+**What works**
+
+| | Phone's driver (Qualcomm 512.762.40) | Turnip v26.0.0 R8 |
+|---|---|---|
+| Log line | `renderer: Vulkan on the phone's driver (libvulkan.so), Adreno (TM) 750, Vulkan 1.3.128, Qualcomm Technologies Inc. Adreno Vulkan Driver Driver Build: 8924aaec70, ...` | `renderer: Vulkan on Turnip_v26.0.0_R8.zip, Mesa Turnip driver v26.0.0 - R8, Vulkan 1.4.335 (asked for vulkan.ad07xx.so through libadrenotools), Turnip Adreno (TM) 750, Vulkan 1.4.335, turnip Mesa driver Mesa 26.0.0-devel (git-5ac41be677)` |
+| Menus, new game | keys move through the menus; a new game starts, the map loads (`WARNING: object_create - 'cryotube_1' already exists` at 15:09, 3.5 minutes after the start), the log goes on | the same (map loaded 2 minutes after the start) |
+| Frames | `vk: 1651 frames swapped in 10.0 s ... (the display mode says 165.0 Hz)`, every 10 s, in the menus and in the map | the same |
+| Backgrounding, ten times (HOME, `am start`) | the game goes on (frames dip while away: 803 in a 10 s window, 1226, then 1651 again) | the same, process still alive |
+| Validation (`debug.vk_validation = true`) | `validation on` in the log line, no `vk: [` message | the same (the probe's two messages about the layer's cache file did not appear) |
+| GL calls from the shared files | `vk gl calls: 0 of the 102 GL imports called` per 10 s | the same |
+
+The screen is black under Vulkan (a screenshot is 19.8 KB, an empty picture; under GL ES the same keys give the
+menu), and the audio track of the app exists (`dumpsys audio`), as does the game's `starting main menu music` line.
+Under GL ES the same keys give the same debug.txt lines, including two that look like faults and are not ours:
+`checksum failed on persistent storage` (the test profile) and, in the map, `too many lens flares submitted to frame` and
+`biped marine_armored ... fell outside world and was erased`: the GL ES image logs the same lines at the same point
+of the map, so they are the game's, not the renderer's (the lens-flare one is what a visibility test that reports
+no samples would be expected to leave alone, and it is not caused by it).
+
+**The failure cases** (all as the spec says)
+
+- `vk_driver = "missing.zip"`: `vk driver: missing.zip failed: .../missing.zip: No such file or directory; using the phone's driver`, then
+  `renderer: Vulkan on missing.zip failed: ...; using the phone's driver, Adreno (TM) 750, Vulkan 1.3.128, ...`: Vulkan on the phone's driver.
+- `vk_driver = "fake.zip"` (a zip with `libgsl_alloc_hook.so` renamed `fake.so` and a `meta.json`): `renderer: GL ES (Vulkan was asked for:
+  fake.zip, Not a driver, 1 (asked for fake.so through libadrenotools) has no physical device)`; the game is drawn by GL ES
+  (the `frame N: ... draws` lines of the GL image are in the log; the process keeps the driver loaded, harmlessly).
+- `renderer = "vlukan"`: `display.renderer "vlukan" is not "gl" or "vulkan"; using GL ES`, `renderer: GL ES`.
+- `debug.vk_probe = "caps"` with `renderer = "vulkan"`: the probe runs (on the GL image, as before).
+- No `halo_guest_vk.elf` in the APK: not made for the test (as the spec says); the code path is `host_main.c`, which logs
+  `renderer: GL ES (Vulkan was asked for: the APK has no halo_guest_vk.elf: ...)` and the same for a file that is not a guest image.
+
+**The build.** `ninja android_apk` with and without `--android-vulkan-validation` builds both images (checked: the APK
+without the flag has both and no layer). Of the GL ES image's objects only `port_config.o` changed.
+
+**The GL calls left in the Vulkan image.** None are reached in the menus or in the first map's opening (the shared
+files' GL calls are all reached through `d3d8_gl.c`, which the Vulkan image does not have, so with no draw they
+are not made). The count is real: each of the 102 `hostgl_` imports resolves to a stub of its own
+(`host_gl.c`), a self-test at start-up calls one and sees it counted (`vk gl stubs: self-test ok`), and with
+`debug.gpu_stats = true` the log says every 10 s which were called, how often and from which guest address
+(`vk gl call: <name> <n> calls in <frames> frames, from <guest address>`; symbolize the address with
+`llvm-symbolizer` on `build/android/halo_guest_vk.elf`). **Not tried:** a call from the guest through a stub (the
+self-test calls it from the host, and no guest call happens until phase 6 adds draws), and no scene with a HUD, text drawn by
+`text_hires.c` over a map or a menu texture upload was seen making one; phase 6 reads this count again at each
+step.
+
+**What is left for the user**: the (to confirm) decisions; a second GPU family; the second device that appeared on
+adb partway through (`NB1GAD1791306511`) was not touched; every command was pinned to the Lenovo's serial.
+
+### Phase 1: deviations from the spec
+
+1. **`d3d8_vk.c` was cut from `d3d8_dk.c` (commit `25c02a0a`), not from `d3d8_gl.c` directly.** `d3d8_gl.c` has not changed
+   since commit `151bbfd0`, before that file was cut; so `d3d8_dk.c` is a faithful cut of the same source, the spec
+   names it the reference, and its deko3d command stream was removed. Checked: the exported symbols of `d3d8_vk.o` and
+   `d3d8_gl.o` are the same set (`llvm-nm -g --defined-only`, diff empty; `d3d8_gl_map_loaded`, which is
+   Switch-only, is not in either), and the link needs nothing else. What the cut keeps and answers is as the spec lists
+   (`IsBusy` false, locks and waits return at once, visibility tests report 0, `Clear` and draws keep nothing and
+   return, `Present` swaps the stand-in window and keeps the flip logic). `debug.gpu_stats`' own line is not kept in the
+   Vulkan device (phase 2's diagnostics).
+2. **`host_vk_startup(vk_driver, validation, line, size)`**: it takes `debug.vk_validation` as an argument (the host
+   reads `config.toml` in `host_main.c`, which now also reads `display.renderer` and `debug.gpu_stats`) and returns
+   the text of the log line, which `host_main.c` prints, rather than printing it. `host_vk.h` holds the state kept for
+   phase 2.
+3. **`config.toml` is read before the images are loaded**, since the renderer decides which are. Both images are read
+   with `SDL_LoadFile` (17 MB each), the larger span is reserved, and the one not used is freed after the choice. The
+   GL ES image therefore runs with a reservation as large as the larger image's (the Vulkan image is 0x13000 bytes
+   shorter, so for a GL ES run nothing changes; the log's "guest image 40000000-41909000" is the span used).
+   `host_load_image` keeps its old form beside the new `host_load_image_reserved` and `host_image_span`.
+4. **The GL stubs return zero and do not call the driver.** The spec says Android's GL library answers a call made
+   without a context with a no-op; the stubs make that answer themselves, so that the GL library is not entered
+   without a context (it logs a warning per thread) and so that each call can be counted and its caller recorded. The
+   host-side `host_gl_*` imports (extensions, buffer write, fences) are no-ops under Vulkan for the same reason.
+5. **The pacing uses the display mode's rate each frame** (`SDL_GetCurrentDisplayMode`, as the spec says): on this
+   device it says 165 Hz, and 1651 frames in 10 s came out (earlier in one run, 60 Hz for a few seconds right after the
+   start, and 596 frames: the mode changes with the panel's refresh rate switching; the log line says the rate it saw).
+6. **Menu keys in this build**: New Game is `ENTER`, `DOWN`, `ENTER` (Campaign, then New Game), then `ENTER` for the
+   level (the test profile shows a Load Level screen) and `ENTER` for the difficulty; the spec's
+   `DOWN, ENTER, ENTER` goes to the multiplayer menu here (`searching for a network game`). The opening cinematics did not
+   take ten minutes: the map's objects were created after two to three and a half minutes, and the screen being black, the
+   map was told from the log.
+7. **Not done**: the spec's "frame count every 10 s is the display's rate" was checked against the display mode's
+   rate, not against an independent measure of the panel's; no GL ES run was compared frame for frame.
 
 ### Phase 0, part B — audit and fixes
 
