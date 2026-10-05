@@ -1,0 +1,27 @@
+# GL ES build 2d2a322e+changes, profile_hz 1000, gpu_stats, main menu idle, seconds 20 to 80 of the run
+348994 samples at 1000 Hz; frames per second: 164.9
+thread                   samples      game  renderer  boundary    driver     other  cpu ms/s  cpu ms/frame
+Thread-2 (1200)            49998      8.5%      3.6%      0.6%     67.7%     19.5%     539.8          3.27
+Thread-2 (1210)            49993      0.0%      0.0%     99.9%      0.0%      0.0%      78.1          0.47
+Thread-2 (1212)            49973      0.0%      0.0%    100.0%      0.0%      0.0%      73.7          0.45
+Thread-2 (1213)            49960      0.0%      0.0%     98.6%      0.0%      1.4%     109.0          0.66
+Thread-2 (1222)            49912      0.2%      0.0%     98.6%      0.0%      1.2%      71.0          0.43
+Thread-2 (1223)            49868      0.1%      0.0%      0.0%      0.0%     99.9%      96.7          0.59
+Thread-2 (1225)            49290      0.0%      0.0%      0.0%      0.0%    100.0%     111.2          0.67
+
+Thread-2 (1200): most sampled
+   52.0%  libc.so
+   18.0%  (in a system call: blocked)
+   13.5%  libGLESv2_adreno.so
+   12.2%  ??
+    0.7%  libgui.so
+    0.7%  base.apk
+    0.4%  libbinder.so
+    0.4%  libgsl.so
+Thread-2 (1210): most sampled
+   99.9%  libc.so
+    0.0%  (in a system call: blocked)
+    0.0%  ??
+    0.0%  base.apk
+Thread-2 (1212): most sampled
+  100.0%  libc.so
