@@ -1009,7 +1009,7 @@ static struct
 	int failed;
 } art[MAXIMUM_ART];
 static long art_count;
-#ifdef HALO_SWITCH
+#if defined(HALO_SWITCH) || defined(HALO_ANDROID)
 /* changed whenever the art registered changes (menu_art_serial) */
 static unsigned long art_serial = 1;
 #endif
@@ -1046,7 +1046,7 @@ void halo_menus_art_register(void const *texture, char const *png)
 	memset(&art[index], 0, sizeof(art[index]));
 	art[index].data = data;
 	art[index].png = strdup(png);
-#ifdef HALO_SWITCH
+#if defined(HALO_SWITCH) || defined(HALO_ANDROID)
 	art_serial++;
 #endif
 }
@@ -1062,7 +1062,7 @@ void halo_menus_art_forget(void)
 			glDeleteTextures(1, &art[index].texture);
 	}
 	art_count = 0;
-#ifdef HALO_SWITCH
+#if defined(HALO_SWITCH) || defined(HALO_ANDROID)
 	art_serial++;
 #endif
 }
@@ -1096,7 +1096,7 @@ unsigned int menu_art_texture(unsigned long data, unsigned long *levels)
 	return art[index].texture;
 }
 
-#ifdef HALO_SWITCH
+#if defined(HALO_SWITCH) || defined(HALO_ANDROID)
 unsigned long menu_art_serial(void)
 {
 	return art_serial;

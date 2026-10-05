@@ -31,7 +31,7 @@ VK_HIRES says whether they are on).
 #include <string.h>
 
 /* the high-res HUD, text and menu replacements (step 3) */
-#define VK_HIRES 0
+#define VK_HIRES 1
 
 /* ---------- formats */
 

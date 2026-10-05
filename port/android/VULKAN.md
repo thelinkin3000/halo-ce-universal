@@ -2325,6 +2325,23 @@ Newest first.
 
 ### Phase 6 — progress (under way; each step's result, newest first)
 
+**Step 3, the high-res HUD and text and the menus' art: done on the device, both drivers.** `xbox_textures_vk.c` makes the three
+replacements as images of its own from the same id allocator (`VK_HIRES 1`): the text's atlas (2048 square, white with the coverage as
+alpha; after the first upload only the rows written since, as `VK_COMMAND_TEXTURE_DATA`'s new `top` and `rows`), a menu's art (by
+file name, kept) and a high-res HUD bitmap (found by `hud_hires_override_find`, kept); PNGs by `hud_hires_png_pixels`, their mip levels
+by halving, red and blue swapped to BGRA; their samplers filter linearly from the levels (`hires`). **The one change to
+`port/linux/src`**: the four read-only accessors deko3d added (`hud_hires_png_pixels`, `text_hires_atlas_rows`, `menu_art_name`,
+`menu_art_png`) and `menu_art_serial` with the serial it returns, which sit behind `#ifdef HALO_SWITCH` in `hud_hires.c/.h`,
+`text_hires.c/.h` and `menu_files.c/.h`, are now behind `#if defined(HALO_SWITCH) || defined(HALO_ANDROID)`; the GL ES image links
+them and does not call them (and the serial is bumped where art is registered, which costs nothing), so it is unchanged in what it does.
+
+PC menus (`display.menus = "pc"`, the default): the main menu (title, the five items, the version number in orange, the planet, the
+stars and the ring) and the Campaign screen (CONTINUE / NEW GAME / LOAD GAME / BACK) draw in the Vulkan image as in GL ES, on the
+phone's driver and on Turnip (the ring is at another point of its loop, which two screenshots of the same renderer show too: a run
+under GL ES at 25 s has the ring away and one at 32 s has it in front, and Vulkan's at 24 s and 30 s the same way round). 31 to 41
+images, 0 draws with a texture missing, nothing skipped for a shader, pipeline, data or target after the first window; validation 0
+errors; **the GL calls the shared files still make: 0 of the 102 imports in 1,650 frames**, on both drivers.
+
 **Step 2, textures: done on the device, both drivers.** `xbox_textures_vk.c` (a copy of the deko3d copy, which is a copy of
 `xbox_textures.c`; it replaces the original in the Vulkan image's objects, `tools/android_build.py`) keeps the decoders and the
 cache; a texture is `VK_COMMAND_TEXTURE` (the image's description, numbers from 1 handed back when the cache drops one) and one
