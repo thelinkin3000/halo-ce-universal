@@ -314,6 +314,9 @@ static struct target *target_get(const struct dk_surface *surface)
 is done with the frame last recorded there */
 static pthread_mutex_t dk_lock = PTHREAD_MUTEX_INITIALIZER;
 
+static void textures_frame_begin(void);
+static void textures_initialize(void);
+
 static void frame_begin(void)
 {
 	/* (under the lock: the guest's other threads read the fences through
@@ -332,6 +335,7 @@ static void frame_begin(void)
 	/* the upload slice is reused the same way, behind the same fence */
 	dk.upload_used = 0;
 	dk.upload_generation++;
+	textures_frame_begin();
 	dk.color = dk.depth = NULL;
 	/* the queue is not trusted to be as the draws were told: put it back */
 	dk.state_dirty = dk.shaders_dirty = dk.format_dirty = 1;
@@ -609,6 +613,7 @@ static int initialize(void)
 	else
 		host_logf(HOST_LOG_ERROR, "deko3d: no upload buffer; data outside the window will not draw");
 
+	textures_initialize();
 	dk.uniform_memory = memory_block(UNIFORM_MEMORY_SIZE, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached, NULL);
 	if (dk.uniform_memory)
 		dk.uniform_gpu = dkMemBlockGetGpuAddr(dk.uniform_memory);
@@ -817,6 +822,672 @@ static void present(const struct dk_command_present *command)
 		host_logf(HOST_LOG_INFO, "deko3d: first frame presented");
 	dk.frame = (dk.frame + 1) % FRAMES;
 	frame_begin();
+}
+
+/* ---------- textures (DEKO3D.md, phase 6, step 2)
+
+The guest's texture cache numbers the images (dk_commands.h) and says when
+one's texels are new; the host keeps the images, each with a slot in the
+image descriptor set (deko3d binds textures by descriptor), and the samplers,
+each with a slot in the sampler descriptor set, found by their contents.
+
+An image the guest drops, or remakes in another shape, may still be read by
+draws recorded earlier: its memory and descriptor slot are held back until the
+GPU has finished the submission they were let go in (releases_collect). */
+
+/* where each image's memory comes from: blocks of image memory with a list of
+the ranges in them that are free, since images come and go (a render target's
+image, which stays, comes out of image_memory) */
+#define TEXTURE_BLOCK_SIZE (32 * 1024 * 1024)
+#define TEXTURE_BLOCK_LIMIT 12
+#define FREE_RANGES 256
+#define RELEASE_LIMIT 1024
+#define IMAGE_SLOTS 8192
+#define SAMPLER_SLOTS 1024
+#define DESCRIPTOR_SIZE 32
+/* texels waiting to be copied to an image, for the draws of one frame; one
+slice a frame, reused behind the frame's fence like the upload buffer's */
+#define STAGING_SLICE_SIZE (8 * 1024 * 1024)
+#define STAGING_ALIGNMENT 256
+#define TEXTURE_SIZE_LIMIT 4096
+#define TEXTURE_DEPTH_LIMIT 512
+
+struct texture_block
+{
+	DkMemBlock memory;
+	struct
+	{
+		uint32_t offset, size;
+	} free[FREE_RANGES];
+	uint32_t free_count;
+};
+
+struct texture
+{
+	int present;
+	DkImage image;
+	uint32_t slot;
+	uint32_t block, offset, size;
+	uint32_t kind, format, width, height, depth, levels;
+};
+
+/* what is waiting for the GPU to be done with a submission */
+struct release
+{
+	uint32_t serial;
+	uint32_t block, offset, size;
+	uint32_t slot;
+};
+
+static struct
+{
+	struct texture_block blocks[TEXTURE_BLOCK_LIMIT];
+	uint32_t block_count;
+	struct texture table[DK_TEXTURE_LIMIT];
+	struct texture dummy;
+
+	struct release releases[RELEASE_LIMIT];
+	uint32_t release_count;
+	uint32_t slot_next;
+	uint32_t slots_free[IMAGE_SLOTS];
+	uint32_t slots_free_count;
+
+	DkMemBlock image_descriptors, sampler_descriptors;
+	DkGpuAddr image_descriptors_gpu, sampler_descriptors_gpu;
+	struct dk_sampler samplers[SAMPLER_SLOTS];
+	uint32_t sampler_count;
+
+	DkMemBlock staging_memory;
+	void *staging_cpu;
+	DkGpuAddr staging_gpu;
+	uint32_t staging_used;
+
+	/* the stages' images and samplers as told, and as handles for the next draw */
+	uint32_t stage_id[4];
+	uint32_t stage_sampler[4];
+	int stages_dirty;
+	int descriptors_bound;
+	/* texels were written since the last barrier, or draws were recorded
+	since the last one (a texture rewritten in place waits for them) */
+	int written_unfenced;
+	int draws_unfenced;
+	int said_problem;
+} tex;
+
+static void texture_problem(const char *format, ...) __attribute__((format(printf, 1, 2)));
+
+static void texture_problem(const char *format, ...)
+{
+	char message[256];
+	va_list arguments;
+
+	if (tex.said_problem >= 16)
+		return;
+	tex.said_problem++;
+	va_start(arguments, format);
+	vsnprintf(message, sizeof(message), format, arguments);
+	va_end(arguments);
+	host_logf(HOST_LOG_ERROR, "deko3d: %s", message);
+}
+
+/* ---------- image memory */
+
+static void block_free_range(struct texture_block *block, uint32_t offset, uint32_t size)
+{
+	uint32_t index, insert = block->free_count;
+
+	for (index = 0; index < block->free_count; index++)
+	{
+		if (block->free[index].offset > offset)
+		{
+			insert = index;
+			break;
+		}
+	}
+	/* joined to the range before it and the one after, if they touch */
+	if (insert > 0 && block->free[insert - 1].offset + block->free[insert - 1].size == offset)
+	{
+		block->free[insert - 1].size += size;
+		if (insert < block->free_count && block->free[insert - 1].offset + block->free[insert - 1].size ==
+			block->free[insert].offset)
+		{
+			block->free[insert - 1].size += block->free[insert].size;
+			memmove(&block->free[insert], &block->free[insert + 1], (block->free_count - insert - 1) * sizeof(block->free[0]));
+			block->free_count--;
+		}
+		return;
+	}
+	if (insert < block->free_count && offset + size == block->free[insert].offset)
+	{
+		block->free[insert].offset = offset;
+		block->free[insert].size += size;
+		return;
+	}
+	if (block->free_count == FREE_RANGES)
+		return; /* (the range is lost: the table is full of small holes) */
+	memmove(&block->free[insert + 1], &block->free[insert], (block->free_count - insert) * sizeof(block->free[0]));
+	block->free[insert].offset = offset;
+	block->free[insert].size = size;
+	block->free_count++;
+}
+
+static int texture_memory_take(uint32_t size, uint32_t alignment, uint32_t *block_out, uint32_t *offset_out)
+{
+	uint32_t block_index, index;
+
+	if (size > TEXTURE_BLOCK_SIZE)
+		return 0;
+	for (block_index = 0; block_index <= tex.block_count; block_index++)
+	{
+		struct texture_block *block;
+
+		if (block_index == tex.block_count)
+		{
+			if (tex.block_count == TEXTURE_BLOCK_LIMIT)
+				return 0;
+			block = &tex.blocks[tex.block_count];
+			block->memory = memory_block(TEXTURE_BLOCK_SIZE, DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image, NULL);
+			if (!block->memory)
+				return 0;
+			block->free[0].offset = 0;
+			block->free[0].size = TEXTURE_BLOCK_SIZE;
+			block->free_count = 1;
+			tex.block_count++;
+		}
+		block = &tex.blocks[block_index];
+		for (index = 0; index < block->free_count; index++)
+		{
+			uint32_t start = (block->free[index].offset + alignment - 1) & ~(alignment - 1);
+			uint32_t end = block->free[index].offset + block->free[index].size;
+
+			if (start + size <= end)
+			{
+				uint32_t range_offset = block->free[index].offset, range_size = block->free[index].size;
+
+				/* what is left on either side stays free */
+				memmove(&block->free[index], &block->free[index + 1], (block->free_count - index - 1) * sizeof(block->free[0]));
+				block->free_count--;
+				if (start > range_offset)
+					block_free_range(block, range_offset, start - range_offset);
+				if (start + size < range_offset + range_size)
+					block_free_range(block, start + size, range_offset + range_size - (start + size));
+				*block_out = block_index;
+				*offset_out = start;
+				return 1;
+			}
+		}
+	}
+	return 0;
+}
+
+/* ---------- descriptor slots and what is waiting for the GPU */
+
+/* lets go of what the GPU has finished with; the game thread */
+static void releases_collect(void)
+{
+	uint32_t retired = host_dk_retired();
+	uint32_t index, kept = 0;
+
+	for (index = 0; index < tex.release_count; index++)
+	{
+		struct release *release = &tex.releases[index];
+
+		if (release->serial > retired)
+		{
+			tex.releases[kept++] = *release;
+			continue;
+		}
+		if (release->size)
+			block_free_range(&tex.blocks[release->block], release->offset, release->size);
+		if (release->slot != (uint32_t)-1 && tex.slots_free_count < IMAGE_SLOTS)
+			tex.slots_free[tex.slots_free_count++] = release->slot;
+	}
+	tex.release_count = kept;
+}
+
+static int slot_take(uint32_t *slot)
+{
+	if (!tex.slots_free_count)
+		releases_collect();
+	if (tex.slots_free_count)
+	{
+		*slot = tex.slots_free[--tex.slots_free_count];
+		return 1;
+	}
+	if (tex.slot_next == IMAGE_SLOTS)
+		return 0;
+	*slot = tex.slot_next++;
+	return 1;
+}
+
+/* an image's memory and slot are let go once the submission being recorded
+has run */
+static void texture_release(struct texture *texture)
+{
+	if (!texture->present)
+		return;
+	if (tex.release_count == RELEASE_LIMIT)
+	{
+		/* too many waiting: the GPU is waited for, which is rare and lets them all go */
+		dkQueueWaitIdle(dk.queue);
+		releases_collect();
+	}
+	if (tex.release_count < RELEASE_LIMIT)
+	{
+		struct release *release = &tex.releases[tex.release_count++];
+
+		release->serial = dk.serial;
+		release->block = texture->block;
+		release->offset = texture->offset;
+		release->size = texture->size;
+		release->slot = texture->slot;
+	}
+	texture->present = 0;
+}
+
+/* ---------- staging */
+
+/* texels outside the window, on their way to an image: copied into the frame's
+slice. A slice too small is made empty by waiting for the GPU - rare, and a
+texture of a map's load is the likeliest to do it. 0 if the texels are bigger
+than a slice. */
+static DkGpuAddr staging_copy(const void *data, uint32_t size)
+{
+	uint32_t offset = (tex.staging_used + STAGING_ALIGNMENT - 1) & ~(STAGING_ALIGNMENT - 1);
+
+	if (!tex.staging_memory || size > STAGING_SLICE_SIZE)
+		return 0;
+	if (offset + size > STAGING_SLICE_SIZE)
+	{
+		if (dk.recorded)
+			commands_submit();
+		dkQueueWaitIdle(dk.queue);
+		offset = 0;
+	}
+	memcpy((char *)tex.staging_cpu + (size_t)dk.frame * STAGING_SLICE_SIZE + offset, data, size);
+	tex.staging_used = offset + size;
+	return tex.staging_gpu + (size_t)dk.frame * STAGING_SLICE_SIZE + offset;
+}
+
+/* ---------- images */
+
+static DkImageFormat image_format(uint32_t format)
+{
+	switch (format)
+	{
+	case DK_TEXTURE_BC1: return DkImageFormat_RGBA_BC1;
+	case DK_TEXTURE_BC2: return DkImageFormat_RGBA_BC2;
+	case DK_TEXTURE_BC3: return DkImageFormat_RGBA_BC3;
+	default: return DkImageFormat_BGRA8_Unorm;
+	}
+}
+
+static uint32_t level_size(uint32_t value, uint32_t level)
+{
+	value >>= level;
+	return value ? value : 1;
+}
+
+/* the bytes of one level, in the command's source */
+static uint32_t level_bytes(const struct dk_command_texture *command, uint32_t level)
+{
+	uint32_t width = level_size(command->width, level), height = level_size(command->height, level);
+	uint32_t depth = command->kind == DK_TEXTURE_3D ? level_size(command->depth, level) : 1;
+
+	if (command->format == DK_TEXTURE_BGRA)
+		return width * height * depth * 4;
+	return ((width + 3) / 4) * ((height + 3) / 4) * (command->format == DK_TEXTURE_BC1 ? 8 : 16) * depth;
+}
+
+/* makes the image for a texture command, in the table's entry */
+static int texture_make(struct texture *texture, const struct dk_command_texture *command)
+{
+	DkImageLayoutMaker maker;
+	DkImageLayout layout;
+	DkImageView view;
+	uint32_t size, alignment;
+	DkImageDescriptor *descriptors = (DkImageDescriptor *)dkMemBlockGetCpuAddr(tex.image_descriptors);
+
+	if (!slot_take(&texture->slot))
+	{
+		texture_problem("no descriptor slot for texture %u", (unsigned)command->id);
+		return 0;
+	}
+	dkImageLayoutMakerDefaults(&maker, dk.device);
+	maker.type = command->kind == DK_TEXTURE_CUBE ? DkImageType_Cubemap : command->kind == DK_TEXTURE_3D ?
+		DkImageType_3D : DkImageType_2D;
+	maker.flags = 0;
+	maker.format = image_format(command->format);
+	maker.dimensions[0] = command->width;
+	maker.dimensions[1] = command->height;
+	maker.dimensions[2] = command->kind == DK_TEXTURE_CUBE ? 6 : command->kind == DK_TEXTURE_3D ? command->depth : 0;
+	maker.mipLevels = command->levels;
+	dkImageLayoutInitialize(&layout, &maker);
+	size = (uint32_t)dkImageLayoutGetSize(&layout);
+	alignment = dkImageLayoutGetAlignment(&layout);
+	if (!texture_memory_take(size, alignment, &texture->block, &texture->offset))
+	{
+		/* what the GPU has finished with may make room */
+		releases_collect();
+		if (!texture_memory_take(size, alignment, &texture->block, &texture->offset))
+		{
+			if (tex.slots_free_count < IMAGE_SLOTS)
+				tex.slots_free[tex.slots_free_count++] = texture->slot;
+			texture_problem("no image memory for texture %u (%ux%u, %u levels, %u bytes)", (unsigned)command->id,
+				(unsigned)command->width, (unsigned)command->height, (unsigned)command->levels, (unsigned)size);
+			return 0;
+		}
+	}
+	texture->size = size;
+	dkImageInitialize(&texture->image, &layout, tex.blocks[texture->block].memory, texture->offset);
+	dkImageViewDefaults(&view, &texture->image);
+	dkImageDescriptorInitialize(&descriptors[texture->slot], &view, false, false);
+	texture->kind = command->kind;
+	texture->format = command->format;
+	texture->width = command->width;
+	texture->height = command->height;
+	texture->depth = command->depth;
+	texture->levels = command->levels;
+	texture->present = 1;
+	return 1;
+}
+
+/* the barrier the images' writes and reads are ordered by: the writes done
+since the last one are made visible to the draws that follow */
+static void textures_fence(int before_writes)
+{
+	if (before_writes)
+	{
+		if (tex.draws_unfenced)
+			dkCmdBufBarrier(dk.commands, DkBarrier_Full, 0);
+		tex.draws_unfenced = 0;
+		return;
+	}
+	if (!tex.written_unfenced)
+		return;
+	dkCmdBufBarrier(dk.commands, DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_Descriptors);
+	tex.written_unfenced = 0;
+	tex.draws_unfenced = 0;
+}
+
+/* copies the command's texels into the image: every face, every level */
+/* host_texels: the texels in the host's own memory (the dummy's), or NULL
+for the command's source, which is a guest address. They must not cross in
+the command: a host address does not fit its 32 bits, and cut short it named
+memory that is not there (the first textured draw on a console faulted in
+staging_copy on the dummy's four bytes) */
+static void texture_write(struct texture *texture, const struct dk_command_texture *command, const void *host_texels)
+{
+	uint32_t faces = command->kind == DK_TEXTURE_CUBE ? 6 : 1;
+	uint32_t face, level, face_bytes = 0;
+	DkGpuAddr source;
+
+	for (level = 0; level < command->levels; level++)
+		face_bytes += level_bytes(command, level);
+	if (command->source_bytes < command->face_bytes * (faces - 1) + face_bytes || command->face_bytes < face_bytes)
+	{
+		texture_problem("texture %u names %u bytes of texels and needs %u", (unsigned)command->id,
+			(unsigned)command->source_bytes, (unsigned)(command->face_bytes * (faces - 1) + face_bytes));
+		return;
+	}
+	/* in the window, where the game keeps it, for the compressed formats; the
+	decoded ones the guest made elsewhere are copied to the staging buffer */
+	if (host_texels)
+		source = staging_copy(host_texels, command->source_bytes);
+	else
+	{
+		source = window_read(command->source, command->source_bytes);
+		if (!source)
+			source = staging_copy((const void *)(uintptr_t)command->source, command->source_bytes);
+	}
+	if (!source)
+	{
+		texture_problem("texture %u (%u bytes) could not be read", (unsigned)command->id,
+			(unsigned)command->source_bytes);
+		return;
+	}
+	/* (a texture written in place waits for the draws that read it) */
+	textures_fence(1);
+	for (face = 0; face < faces; face++)
+	{
+		uint32_t offset = face * command->face_bytes;
+
+		for (level = 0; level < command->levels; level++)
+		{
+			DkImageView view;
+			DkImageRect rectangle;
+			DkCopyBuf copy;
+
+			dkImageViewDefaults(&view, &texture->image);
+			view.mipLevelOffset = (uint8_t)level;
+			view.mipLevelCount = 1;
+			if (command->kind == DK_TEXTURE_CUBE)
+			{
+				view.layerOffset = (uint16_t)face;
+				view.layerCount = 1;
+			}
+			rectangle.x = rectangle.y = rectangle.z = 0;
+			rectangle.width = level_size(command->width, level);
+			rectangle.height = level_size(command->height, level);
+			rectangle.depth = command->kind == DK_TEXTURE_3D ? level_size(command->depth, level) : 1;
+			copy.addr = source + offset;
+			copy.rowLength = 0;
+			copy.imageHeight = 0;
+			dkCmdBufCopyBufferToImage(dk.commands, &copy, &view, &rectangle, 0);
+			offset += level_bytes(command, level);
+		}
+	}
+	tex.written_unfenced = 1;
+	dk.recorded = 1;
+}
+
+static int texture_command_valid(const struct dk_command_texture *command)
+{
+	uint32_t largest = command->width > command->height ? command->width : command->height;
+	uint32_t levels_possible = 1;
+
+	if (command->id == 0 || command->id >= DK_TEXTURE_LIMIT || command->kind > DK_TEXTURE_CUBE ||
+		command->format > DK_TEXTURE_BC3 || !command->width || !command->height || !command->depth ||
+		command->width > TEXTURE_SIZE_LIMIT || command->height > TEXTURE_SIZE_LIMIT ||
+		command->depth > TEXTURE_DEPTH_LIMIT || !command->levels)
+		return 0;
+	if (command->kind == DK_TEXTURE_CUBE && command->width != command->height)
+		return 0;
+	if (command->kind != DK_TEXTURE_3D && command->depth != 1)
+		return 0;
+	if (command->kind == DK_TEXTURE_3D && command->depth > largest)
+		largest = command->depth;
+	while ((largest >> levels_possible) != 0)
+		levels_possible++;
+	return command->levels <= levels_possible;
+}
+
+static void texture_receive(const struct dk_command_texture *command)
+{
+	struct texture *texture;
+
+	if (!texture_command_valid(command))
+	{
+		texture_problem("a bad texture command: image %u, kind %u, format %u, %ux%ux%u, %u levels",
+			(unsigned)command->id, (unsigned)command->kind, (unsigned)command->format, (unsigned)command->width,
+			(unsigned)command->height, (unsigned)command->depth, (unsigned)command->levels);
+		return;
+	}
+	if (!dk.ready || !tex.image_descriptors)
+		return;
+	texture = &tex.table[command->id];
+	/* the same shape: written in place; else remade */
+	if (texture->present && (texture->kind != command->kind || texture->format != command->format ||
+		texture->width != command->width || texture->height != command->height || texture->depth != command->depth ||
+		texture->levels != command->levels))
+		texture_release(texture);
+	if (!texture->present && !texture_make(texture, command))
+		return;
+	texture_write(texture, command, NULL);
+	tex.stages_dirty = 1;
+}
+
+static void texture_free_receive(const struct dk_command_texture_free *command)
+{
+	if (command->id && command->id < DK_TEXTURE_LIMIT && dk.ready)
+	{
+		texture_release(&tex.table[command->id]);
+		tex.stages_dirty = 1;
+	}
+}
+
+/* ---------- the dummy a stage with no image samples: opaque black, as OpenGL's
+unbound texture is */
+
+static void dummy_make(void)
+{
+	static const unsigned char black[4] = { 0, 0, 0, 255 };
+	struct dk_command_texture command;
+
+	if (tex.dummy.present)
+		return;
+	memset(&command, 0, sizeof(command));
+	command.id = 0;
+	command.kind = DK_TEXTURE_2D;
+	command.format = DK_TEXTURE_BGRA;
+	command.width = command.height = command.depth = command.levels = 1;
+	command.source = 0;
+	command.face_bytes = command.source_bytes = 4;
+	/* (the host's own four bytes: handed to the write as such, through the
+	staging buffer, not as the command's guest address) */
+	if (texture_make(&tex.dummy, &command))
+		texture_write(&tex.dummy, &command, black);
+}
+
+/* ---------- samplers */
+
+static DkWrapMode wrap_mode(uint32_t wrap)
+{
+	switch (wrap)
+	{
+	case DK_WRAP_MIRROR: return DkWrapMode_MirroredRepeat;
+	case DK_WRAP_CLAMP: return DkWrapMode_ClampToEdge;
+	case DK_WRAP_BORDER: return DkWrapMode_ClampToBorder;
+	default: return DkWrapMode_Repeat;
+	}
+}
+
+/* the slot of a sampler with these contents, made if there is none */
+static uint32_t sampler_slot(const struct dk_sampler *sampler)
+{
+	DkSamplerDescriptor *descriptors = (DkSamplerDescriptor *)dkMemBlockGetCpuAddr(tex.sampler_descriptors);
+	DkSampler made;
+	uint32_t index;
+
+	for (index = 0; index < tex.sampler_count; index++)
+	{
+		if (!memcmp(&tex.samplers[index], sampler, sizeof(*sampler)))
+			return index;
+	}
+	if (tex.sampler_count == SAMPLER_SLOTS)
+	{
+		texture_problem("more than %u samplers; the first is used instead", SAMPLER_SLOTS);
+		return 0;
+	}
+	dkSamplerDefaults(&made);
+	made.minFilter = sampler->min_linear ? DkFilter_Linear : DkFilter_Nearest;
+	made.magFilter = sampler->mag_linear ? DkFilter_Linear : DkFilter_Nearest;
+	made.mipFilter = sampler->mip_filter == DK_MIP_LINEAR ? DkMipFilter_Linear :
+		sampler->mip_filter == DK_MIP_NEAREST ? DkMipFilter_Nearest : DkMipFilter_None;
+	made.wrapMode[0] = wrap_mode(sampler->wrap[0]);
+	made.wrapMode[1] = wrap_mode(sampler->wrap[1]);
+	made.wrapMode[2] = wrap_mode(sampler->wrap[2]);
+	made.lodClampMin = sampler->lod_minimum;
+	made.lodBias = sampler->lod_bias;
+	made.maxAnisotropy = sampler->anisotropy < 1.0f ? 1.0f : sampler->anisotropy > 16.0f ? 16.0f : sampler->anisotropy;
+	for (index = 0; index < 4; index++)
+		made.borderColor[index].value_f = sampler->border[index];
+	index = tex.sampler_count++;
+	tex.samplers[index] = *sampler;
+	dkSamplerDescriptorInitialize(&descriptors[index], &made);
+	return index;
+}
+
+static void textures_receive(const struct dk_command_textures *command)
+{
+	uint32_t stage;
+
+	if (!tex.sampler_descriptors)
+		return;
+	for (stage = 0; stage < 4; stage++)
+	{
+		tex.stage_id[stage] = command->stages[stage].id;
+		tex.stage_sampler[stage] = sampler_slot(&command->stages[stage].sampler);
+	}
+	tex.stages_dirty = 1;
+}
+
+/* the stages' textures bound for the next draw: the descriptor sets once a
+frame (frame_begin), the handles when they change */
+static int textures_apply(void)
+{
+	DkResHandle handles[4];
+	uint32_t stage;
+
+	if (!tex.image_descriptors || !tex.sampler_descriptors)
+		return 0;
+	if (!tex.descriptors_bound)
+	{
+		dkCmdBufBindImageDescriptorSet(dk.commands, tex.image_descriptors_gpu, IMAGE_SLOTS);
+		dkCmdBufBindSamplerDescriptorSet(dk.commands, tex.sampler_descriptors_gpu, SAMPLER_SLOTS);
+		tex.descriptors_bound = 1;
+		tex.stages_dirty = 1;
+	}
+	dummy_make();
+	/* what was written since the last barrier is made visible to this draw */
+	textures_fence(0);
+	if (!tex.stages_dirty)
+		return 1;
+	for (stage = 0; stage < 4; stage++)
+	{
+		uint32_t id = tex.stage_id[stage];
+		const struct texture *texture = id && tex.table[id].present ? &tex.table[id] : &tex.dummy;
+
+		if (!texture->present)
+			return 0;
+		handles[stage] = dkMakeTextureHandle(texture->slot, tex.stage_sampler[stage]);
+	}
+	dkCmdBufBindTextures(dk.commands, DkStage_Fragment, DK_BINDING_TEXTURE0, handles, 4);
+	tex.stages_dirty = 0;
+	return 1;
+}
+
+/* the start of a frame: the staging slice is free again behind the frame's
+fence, the descriptor sets are bound anew, and what the GPU has finished with
+is let go */
+static void textures_frame_begin(void)
+{
+	tex.staging_used = 0;
+	tex.descriptors_bound = 0;
+	if (dk.ready)
+		releases_collect();
+}
+
+/* the memory textures need, made when the device is */
+static void textures_initialize(void)
+{
+	tex.image_descriptors = memory_block(IMAGE_SLOTS * DESCRIPTOR_SIZE, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached,
+		NULL);
+	tex.sampler_descriptors = memory_block(SAMPLER_SLOTS * DESCRIPTOR_SIZE, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached,
+		NULL);
+	tex.staging_memory = memory_block(FRAMES * STAGING_SLICE_SIZE, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached,
+		NULL);
+	if (!tex.image_descriptors || !tex.sampler_descriptors || !tex.staging_memory)
+	{
+		host_logf(HOST_LOG_ERROR, "deko3d: no memory for textures' descriptors or staging; nothing textured will draw");
+		tex.image_descriptors = tex.sampler_descriptors = NULL;
+		return;
+	}
+	tex.image_descriptors_gpu = dkMemBlockGetGpuAddr(tex.image_descriptors);
+	tex.sampler_descriptors_gpu = dkMemBlockGetGpuAddr(tex.sampler_descriptors);
+	tex.staging_cpu = dkMemBlockGetCpuAddr(tex.staging_memory);
+	tex.staging_gpu = dkMemBlockGetGpuAddr(tex.staging_memory);
+	/* (the dummy takes slot 0 of the descriptors; the guest's images follow) */
 }
 
 /* ---------- draws (DEKO3D.md, phase 6) */
@@ -1201,6 +1872,11 @@ static void draw(const struct dk_command_draw *command)
 		draw_problem("a shader is not loaded");
 		return;
 	}
+	if (!textures_apply())
+	{
+		draw_problem("the textures could not be bound");
+		return;
+	}
 	for (binding = 0; binding < streams; binding++)
 	{
 		uint32_t size = command->streams[binding][1];
@@ -1258,6 +1934,7 @@ static void draw(const struct dk_command_draw *command)
 		dkCmdBufDraw(dk.commands, primitive_of(command->primitive), command->count, 1, 0, 0);
 	}
 	dk.recorded = 1;
+	tex.draws_unfenced = 1;
 }
 
 /* runs size bytes of commands at commands (a guest address): one
@@ -1317,6 +1994,15 @@ void host_dk_submit(uint32_t commands, uint32_t size)
 			break;
 		case DK_COMMAND_DRAW:
 			draw((const struct dk_command_draw *)header);
+			break;
+		case DK_COMMAND_TEXTURE:
+			texture_receive((const struct dk_command_texture *)header);
+			break;
+		case DK_COMMAND_TEXTURE_FREE:
+			texture_free_receive((const struct dk_command_texture_free *)header);
+			break;
+		case DK_COMMAND_TEXTURES:
+			textures_receive((const struct dk_command_textures *)header);
 			break;
 		default:
 			host_logf(HOST_LOG_ERROR, "deko3d: unknown command %u", (unsigned)header->type);
