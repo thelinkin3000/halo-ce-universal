@@ -164,6 +164,8 @@ shader's module, or 0 and writes a VK_SHADER_STATUS_* to the guest address statu
 address, copied during the call) for the compile thread. A 64-bit hash travels in one register */
 uint32_t host_vk_shader_find(uint32_t stage, uint64_t hash, uint32_t status_out);
 void host_vk_shader_compile(uint32_t stage, uint64_t hash, uint32_t glsl, uint32_t glsl_size);
+/* whether the device reads a Vulkan format as a vertex attribute (host_vk_render.c), asked once for each by the guest */
+uint32_t host_vk_format_supported(uint32_t format);
 /* the game's exit: what the backend keeps on the device is written */
 void host_vk_exit(void);
 /* errors the validation layer has reported so far */
