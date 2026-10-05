@@ -24,7 +24,7 @@ the phone's driver; the results are in "Progress". Not tried: a second GPU
 family (a Mali). **Phase 1 is done on the test device and committed** (the
 Vulkan image, the host's choice and its decision, the stand-ins: the game
 runs under `display.renderer = "vulkan"` on the phone's driver and on
-Turnip, with a black screen as the phase says). **Phase 2 is done on the test device and committed** (the command stream, the device, the swapchain, the targets, clears and present: the game's clears are on the screen through Vulkan on both drivers). **Phase 3 is written out and next.** The
+Turnip, with a black screen as the phase says). **Phase 2 is done on the test device and committed** (the command stream, the device, the swapchain, the targets, clears and present: the game's clears are on the screen through Vulkan on both drivers). **Phase 3 is done on the test device and committed** (data records, the 4 MB stream, the upload rings and the data table; the data self-test is `ok` on both drivers). **Phase 4 is next.** The
 work is on the `vulkan-backend` branch, which starts again from `main`. An
 earlier attempt, kept on the `vulkan-backend-old` branch, is not the base of
 this work and nothing here builds on it; see "Lessons from the earlier
@@ -1631,6 +1631,36 @@ is kept:
 Phase 0 was worked on the test device (Lenovo TB321FU, Adreno 750, Android 16,
 API 36, the phone's own driver). The reports are in `port/android/probe/reports/`.
 Newest first.
+
+### Phase 3 — summary
+
+Worked unattended on the test device (Adreno 750) as the `.vk` build, validation on. **Phase 3 works on both drivers.**
+
+| | Phone's driver | Turnip v26.0.0 R8 |
+|---|---|---|
+| `debug.vk_self_test`, clears | `vk: clears self-test: ok (...)` | the same |
+| `debug.vk_self_test`, data | `vk: data self-test: id 1 ok (wanted R255 G0 B0, seen R255 G0 B0)`, `id 2 ok (R0 G255 B0)`, `id 3 ok (R0 G0 B255)` | the same three lines |
+| Statistics line | first one after the test: `data: 4 records, 68 KB a frame, 1 ring buffers` (three puts, one split into two parts); then `data: 0 records, 0 KB a frame, 1 ring buffers` | the same |
+| Stress (temporary hook in the guest's `Present`, not committed: three 6 MB puts a frame, each split into parts across hand-overs, and a test draw of each, every frame) | 6144 tests `ok`, 0 `FAILED`; `18432 KB a frame, 4 ring buffers` (a second 16 MB buffer made in each frame's ring, kept); validation errors 0 | 6158 `ok`, 0 `FAILED`, the same line, retired equal to submissions |
+| Menus and a new game's map, no self-test | 60 hand-overs, 240 clears and 4 images per 60 frames, `data: 0 records`; validation errors 0; no wait over two seconds | the same |
+| `renderer = "gl"` | `renderer: GL ES`, no `vk:` line, the game runs | |
+| Validation | only the layer's cache-file message and the expected pre-transform note from phase 2 | the same |
+
+Nothing in the backend waits on the GPU for a resource: the only waits are the frame's fence (phase 2's, which the frame's command buffer needs as well) and the self-tests' own. `IsBusy`, `BlockUntilNotBusy` and the locks are as they were. The host reads only the bytes the guest put into the stream for a draw (`host_vk_data_command` copies out of the record; no command carries a guest address of data).
+
+**What is left for the user**: a second GPU family is not tried; a single piece of data larger than a ring buffer (16 MB, which gets a buffer of its own) and the bad-record paths (part out of order, id reused) are written but not met on the device; the game itself puts no data until phase 6.
+
+### Phase 3: deviations from the spec
+
+1. **`VK_COMMAND_TEST_DRAW`** carries a `vk_data_ref` (id and offset: it draws the three vertices at that offset), the colour expected, and a `last` flag. With `last` the host lets the frame's data go afterwards (as `PRESENT` does), since the self-test runs at the device's creation, before any `PRESENT`, and the game's first frame would otherwise find ids 1 to 3 taken ("id reused").
+2. **The third buffer's vertices straddle the first part's boundary** (they start 40 bytes before the end of the stream's room) rather than being at its start, so that a part placed anywhere but contiguously would show garbage; the buffer is the stream's size plus 4 KB, so it always splits.
+3. **The ring is reset lazily**: at the first `DATA` record of a frame after its fence has passed (the record opens the frame's command buffer, which waits for the fence), and `PRESENT` marks the frame's ring for reset (`ring_valid`). The spec says only "reused when the fence has passed".
+4. **A ring's pieces are placed first-fit** over all its buffers (never moved), 16 MB buffers, a larger piece getting its own size.
+5. **The test's 16x16 target stays alive** as an image (counted in "images").
+6. **The test draw submits and waits** on the frame's fence (`frame_submit_and_wait`, shared with the clears self-test, which now also stops if the frame could not be submitted instead of waiting on a fence that is never signalled).
+7. **`debug.vk_present_marker` no longer runs the clears self-test**: `debug.vk_self_test` does, and the marker only draws the marker. The host reads the new setting in `host_main.c` like the others.
+8. **"KB a frame"** in the statistics is the average over the 60 frames.
+9. **The ring and table live in a new `host_vk_data.c`**, with `host_vk_buffer_make` (host-visible, coherent, mapped) shared with the test.
 
 ### Phase 2 — audit
 
