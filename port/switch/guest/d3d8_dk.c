@@ -444,6 +444,23 @@ static struct rendered
 } rendered[RENDERED_LIMIT];
 static unsigned long rendered_count;
 
+/* whether two copies of a state are the same, compared a word at a time:
+musl's memcmp goes a byte at a time, and every draw compares several
+hundred bytes of state against what the host was told (7% of the game
+thread in a match's profile). The structs compared are words throughout. */
+static int words_equal(const void *a, const void *b, size_t size)
+{
+	const uint32_t *x = a, *y = b;
+	size_t index;
+
+	for (index = 0; index < size / 4; index++)
+	{
+		if (x[index] != y[index])
+			return 0;
+	}
+	return size % 4 ? !memcmp((const char *)a + size - size % 4, (const char *)b + size - size % 4, size % 4) : 1;
+}
+
 static void rendered_note(const struct dk_surface *surface)
 {
 	unsigned long index;
@@ -531,8 +548,8 @@ static BOOL targets_bind(BOOL *has_depth)
 		return FALSE;
 	if (has_depth)
 		*has_depth = targets.depth.kind != DK_SURFACE_NONE;
-	if (!targets_known || memcmp(&targets.color, &targets_told.color, sizeof(targets.color)) ||
-		memcmp(&targets.depth, &targets_told.depth, sizeof(targets.depth)))
+	if (!targets_known || !words_equal(&targets.color, &targets_told.color, sizeof(targets.color)) ||
+		!words_equal(&targets.depth, &targets_told.depth, sizeof(targets.depth)))
 	{
 		struct dk_command_targets *command = stream_command(DK_COMMAND_TARGETS, sizeof(*command));
 
@@ -588,7 +605,7 @@ static void constants_store(unsigned long first, const void *data, unsigned long
 
 	for (index = 0; index < count; index++)
 	{
-		if (memcmp(device.constants[first + index], values[index], sizeof(device.constants[0])))
+		if (!words_equal(device.constants[first + index], values[index], sizeof(device.constants[0])))
 		{
 			memcpy(device.constants[first + index], values[index], sizeof(device.constants[0]));
 			constant_serials[first + index] = ++constants_serial;
@@ -1721,7 +1738,7 @@ static void draw_state_send(BOOL has_depth)
 	struct dk_draw_state state;
 
 	draw_state_make(has_depth, &state);
-	if (state_known && !memcmp(&state, &state_told, sizeof(state)))
+	if (state_known && words_equal(&state, &state_told, sizeof(state)))
 		return;
 	{
 		struct dk_command_state *command = stream_command(DK_COMMAND_STATE, sizeof(*command));
@@ -1822,7 +1839,7 @@ static void draw_parameters_send(float texture_scale[4][4])
 		inputs[count++] = state[D3DTSS_BUMPENVLSCALE];
 		inputs[count++] = state[D3DTSS_BUMPENVLOFFSET];
 	}
-	if (draw_uniform_inputs_known && !memcmp(inputs, draw_uniform_inputs, sizeof(inputs)))
+	if (draw_uniform_inputs_known && words_equal(inputs, draw_uniform_inputs, sizeof(inputs)))
 		return;
 	memcpy(draw_uniform_inputs, inputs, sizeof(inputs));
 	draw_uniform_inputs_known = TRUE;
@@ -1862,14 +1879,14 @@ static void draw_parameters_send(float texture_scale[4][4])
 			pixel.bump_luminance[stage][0] = dword_to_float(state[D3DTSS_BUMPENVLSCALE]);
 			pixel.bump_luminance[stage][1] = dword_to_float(state[D3DTSS_BUMPENVLOFFSET]);
 		}
-		if (!parameters_known || memcmp(&vertex, &vertex_parameters_told, sizeof(vertex)))
+		if (!parameters_known || !words_equal(&vertex, &vertex_parameters_told, sizeof(vertex)))
 		{
 			struct dk_command_vertex_parameters *command = stream_command(DK_COMMAND_VERTEX_PARAMETERS, sizeof(*command));
 
 			command->parameters = vertex;
 			vertex_parameters_told = vertex;
 		}
-		if (!parameters_known || memcmp(&pixel, &pixel_parameters_told, sizeof(pixel)))
+		if (!parameters_known || !words_equal(&pixel, &pixel_parameters_told, sizeof(pixel)))
 		{
 			struct dk_command_pixel_parameters *command = stream_command(DK_COMMAND_PIXEL_PARAMETERS, sizeof(*command));
 
@@ -1897,7 +1914,7 @@ static void draw_shaders_send(uint32_t vertex, uint32_t pixel)
 
 static void draw_format_send(const struct dk_vertex_format *format)
 {
-	if (format_known && !memcmp(format, &format_told, sizeof(*format)))
+	if (format_known && words_equal(format, &format_told, sizeof(*format)))
 		return;
 	{
 		struct dk_command_vertex_format *command = stream_command(DK_COMMAND_VERTEX_FORMAT, sizeof(*command));
@@ -2033,7 +2050,7 @@ static void pixel_key_make(struct nv2a_pixel_shader_key *key, float texture_scal
 
 static void draw_textures_send(const struct dk_command_textures *textures)
 {
-	if (textures_known && !memcmp(&textures->stages, &textures_told.stages, sizeof(textures->stages)))
+	if (textures_known && words_equal(&textures->stages, &textures_told.stages, sizeof(textures->stages)))
 		return;
 	{
 		struct dk_command_textures *command = stream_command(DK_COMMAND_TEXTURES, sizeof(*command));

@@ -104,6 +104,10 @@ void WINAPI D3DResource_Register(D3DResource *resource, void *base)
 	fields[1] = PLATFORM_VIRTUAL_TO_PHYSICAL((unsigned long)base + fields[1]);
 }
 
+#ifdef HALO_SWITCH
+static void vertex_buffer_rename_forget(const D3DVertexBuffer *buffer);
+#endif
+
 ULONG WINAPI D3DResource_Release(D3DResource *resource)
 {
 	DWORD *fields = (DWORD *)resource;
@@ -117,6 +121,10 @@ ULONG WINAPI D3DResource_Release(D3DResource *resource)
 	/* resources the game built itself (not D3DCOMMON_D3DCREATED) are never freed here */
 	if (!count && (fields[0] & D3DCOMMON_D3DCREATED))
 	{
+#ifdef HALO_SWITCH
+		if ((fields[0] & D3DCOMMON_TYPE_MASK) == D3DCOMMON_TYPE_VERTEXBUFFER)
+			vertex_buffer_rename_forget((const D3DVertexBuffer *)resource);
+#endif
 		if ((fields[0] & D3DCOMMON_TYPE_MASK) == D3DCOMMON_TYPE_INDEXBUFFER)
 			free((void *)fields[1]);
 		else if (fields[1])
@@ -152,6 +160,114 @@ static void lock_wait(const void *resource, DWORD flags)
 {
 	if (!(flags & (D3DLOCK_NOOVERWRITE | D3DLOCK_READONLY)))
 		halo_resource_wait((D3DResource *)resource);
+}
+
+/* A vertex buffer's ring of storage. The game rewrites its dynamic vertex
+buffers every frame, its first lock of each a frame waiting (flags 0) for
+the GPU to finish the last frame's draws from it - under deko3d, which
+submits a frame at its end, that is most of the GPU's time on the last frame
+(13% of the game thread in a match, the GPU being far from busy). A lock
+that would wait gives the buffer other storage instead - one the GPU is done
+with, or a new one, up to RENAME_LIMIT - and the GPU goes on reading the old.
+The game writes every range it draws a frame after that first lock, so the
+new storage needs nothing of the old. Only for buffers this file made (their
+Data is its to replace; the rasterizer reads no dynamic buffer's Data
+itself), and only where something is busy, which under OpenGL nothing is. */
+#define RENAME_LIMIT 4
+#define RENAMED_BUFFERS 64
+
+static struct renamed_buffer
+{
+	D3DVertexBuffer *buffer;
+	unsigned long size;
+	int count;
+	DWORD storage[RENAME_LIMIT];
+	/* the submission that last read each (D3DResource.Lock, kept here while
+	the storage is not the buffer's) */
+	DWORD last_use[RENAME_LIMIT];
+} renamed_buffers[RENAMED_BUFFERS];
+
+static struct renamed_buffer *renamed_find(const D3DVertexBuffer *buffer)
+{
+	int index;
+
+	for (index = 0; index < RENAMED_BUFFERS; index++)
+	{
+		if (renamed_buffers[index].buffer == buffer)
+			return &renamed_buffers[index];
+	}
+	return NULL;
+}
+
+/* TRUE if the buffer now has storage the GPU is not reading */
+static BOOL vertex_buffer_rename(D3DVertexBuffer *buffer)
+{
+	struct renamed_buffer *ring = renamed_find(buffer);
+	D3DResource probe;
+	int index, current = -1;
+
+	if (!ring)
+	{
+		ring = renamed_find(NULL);
+		if (!ring)
+			return FALSE;
+		ring->buffer = buffer;
+		ring->size = platform_contiguous_block_size(resource_data(buffer->Data));
+		ring->count = 1;
+		ring->storage[0] = buffer->Data;
+		ring->last_use[0] = 0;
+	}
+	for (index = 0; index < ring->count; index++)
+	{
+		if (ring->storage[index] == buffer->Data)
+			current = index;
+	}
+	if (current < 0 || !ring->size)
+		return FALSE;
+	ring->last_use[current] = buffer->Lock;
+	memset(&probe, 0, sizeof(probe));
+	for (index = 0; index < ring->count; index++)
+	{
+		if (index == current)
+			continue;
+		probe.Lock = ring->last_use[index];
+		if (!halo_resource_busy(&probe))
+		{
+			buffer->Data = ring->storage[index];
+			buffer->Lock = 0;
+			return TRUE;
+		}
+	}
+	if (ring->count < RENAME_LIMIT)
+	{
+		void *memory = allocate_resource_memory(ring->size);
+
+		if (memory)
+		{
+			ring->storage[ring->count] = PLATFORM_VIRTUAL_TO_PHYSICAL(memory);
+			ring->last_use[ring->count] = 0;
+			buffer->Data = ring->storage[ring->count++];
+			buffer->Lock = 0;
+			return TRUE;
+		}
+	}
+	return FALSE;
+}
+
+/* (D3DResource_Release) the storage other than the buffer's own, freed */
+static void vertex_buffer_rename_forget(const D3DVertexBuffer *buffer)
+{
+	struct renamed_buffer *ring = renamed_find(buffer);
+	int index;
+
+	if (!ring)
+		return;
+	for (index = 0; index < ring->count; index++)
+	{
+		if (ring->storage[index] != buffer->Data)
+			platform_contiguous_free(PLATFORM_PHYSICAL_TO_VIRTUAL(ring->storage[index]));
+	}
+	memset(ring, 0, sizeof(*ring));
 }
 #endif
 
@@ -423,6 +539,10 @@ HRESULT WINAPI D3DDevice_CreateVertexBuffer(UINT length, DWORD usage, DWORD fvf,
 void WINAPI D3DVertexBuffer_Lock(D3DVertexBuffer *buffer, UINT offset, UINT size, BYTE **data, DWORD flags)
 {
 #ifdef HALO_SWITCH
+	/* (a buffer the GPU still reads gets other storage, if it can) */
+	if (!(flags & (D3DLOCK_NOOVERWRITE | D3DLOCK_READONLY)) && (buffer->Common & D3DCOMMON_D3DCREATED) &&
+		halo_resource_busy((D3DResource *)buffer))
+		vertex_buffer_rename(buffer);
 	lock_wait(buffer, flags);
 #else
 	(void)flags;
