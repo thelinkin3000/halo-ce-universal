@@ -57,6 +57,16 @@ SDL_TAG = "release-3.4.16"
 SDL_DIR = THIRD_PARTY / "SDL3"
 SDL_URL = "https://github.com/libsdl-org/SDL.git"
 ANDROID_API = 28
+# the Vulkan probe's shader compiler (port/android/VULKAN.md, phase 0, step 4)
+GLSLANG_TAG = "16.6.0"
+GLSLANG_DIR = THIRD_PARTY / "glslang"
+GLSLANG_URL = "https://github.com/KhronosGroup/glslang.git"
+# the Android release of the validation layer, only with --android-vulkan-validation
+VALIDATION_VERSION = "1.4.363.0"
+VALIDATION_URL = ("https://github.com/KhronosGroup/Vulkan-ValidationLayers/releases/download/"
+                  f"vulkan-sdk-{VALIDATION_VERSION}/android-binaries-{VALIDATION_VERSION}.tar.gz")
+VALIDATION_DIR = THIRD_PARTY / f"vulkan-validation-{VALIDATION_VERSION}"
+PROBE_DIR = PORT_DIR / "probe"
 
 # The guest ABI: AArch64 code with 32-bit pointers (clang's only such target
 # is Apple's arm64_32, whose Mach-O output is converted afterwards). The
@@ -151,6 +161,18 @@ def _quote(path: Any) -> str:
     return f'"{text}"' if " " in text else text
 
 
+def _git_describe() -> str:
+    """The commit this is built from, with a mark if the tree has changes (configure time)."""
+    try:
+        head = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
+                              check=True).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], capture_output=True,
+                               text=True, check=True).stdout.strip()
+    except (subprocess.CalledProcessError, OSError):
+        return "unknown"
+    return head + ("+changes" if dirty else "")
+
+
 def _find_ndk() -> Optional[Path]:
     for variable in ("ANDROID_NDK_HOME", "ANDROID_NDK_ROOT", "ANDROID_NDK"):
         if os.environ.get(variable) and Path(os.environ[variable]).is_dir():
@@ -169,8 +191,8 @@ def _find_ndk() -> Optional[Path]:
     return None
 
 
-def fetch_third_party() -> None:
-    """Download musl and SDL3 (configure time, once)."""
+def fetch_third_party(validation: bool = False) -> None:
+    """Download musl, SDL3, glslang and, if asked, the validation layer (configure time, once)."""
     THIRD_PARTY.mkdir(parents=True, exist_ok=True)
     if not MUSL_DIR.is_dir():
         print(f"Downloading {MUSL_URL}")
@@ -182,6 +204,17 @@ def fetch_third_party() -> None:
         print(f"Cloning SDL3 {SDL_TAG}")
         subprocess.run(["git", "clone", "-q", "--depth", "1", "--branch", SDL_TAG, SDL_URL, str(SDL_DIR)],
                        check=True)
+    if not GLSLANG_DIR.is_dir():
+        print(f"Cloning glslang {GLSLANG_TAG}")
+        subprocess.run(["git", "clone", "-q", "--depth", "1", "--branch", GLSLANG_TAG, GLSLANG_URL,
+                        str(GLSLANG_DIR)], check=True)
+    if validation and not VALIDATION_DIR.is_dir():
+        print(f"Downloading {VALIDATION_URL}")
+        archive = THIRD_PARTY / "vulkan-validation.tar.gz"
+        VALIDATION_DIR.mkdir(parents=True)
+        subprocess.run(["curl", "-sSfL", "-o", str(archive), VALIDATION_URL], check=True)
+        subprocess.run(["tar", "xzf", str(archive.resolve()), "-C", str(VALIDATION_DIR)], check=True)
+        archive.unlink()
 
 
 def _musl_sources() -> List[Path]:
@@ -205,21 +238,23 @@ def _musl_sources() -> List[Path]:
 
 
 def android_configure_inputs() -> List[Path]:
-    return [Path(__file__), PORT_DIR / "guest" / "runtime", PORT_DIR / "host", LINUX_DIR / "src", *hud_configure_inputs()]
+    return [Path(__file__), PORT_DIR / "guest" / "runtime", PORT_DIR / "host", PORT_DIR / "probe",
+            LINUX_DIR / "src", *hud_configure_inputs()]
 
 
 def generate_android_build(n: Writer, sln: Any) -> None:
     config_path = LINUX_DIR / "port.json"
     if not config_path.is_file() or not (PORT_DIR / "host").is_dir():
         return
+    validation = bool(getattr(sln, "android_vulkan_validation", False))
     ndk = Path(sln.android_ndk) if getattr(sln, "android_ndk", None) else _find_ndk()
     if not ndk or not ndk.is_dir():
         n.comment("Android build: no NDK found (set ANDROID_NDK_HOME or pass --android-ndk)")
         return
     try:
-        fetch_third_party()
+        fetch_third_party(validation)
     except (subprocess.CalledProcessError, OSError) as error:
-        print(f"Android build disabled: cannot fetch musl/SDL3 ({error})", file=sys.stderr)
+        print(f"Android build disabled: cannot fetch musl/SDL3/glslang ({error})", file=sys.stderr)
         return
     import json
     config: Dict[str, Any] = json.loads(config_path.read_text(encoding="utf-8"))
@@ -532,6 +567,25 @@ def generate_android_build(n: Writer, sln: Any) -> None:
     )
     n.build(outputs=libsdl, rule="android_sdl3", implicit=[SDL_DIR / "CMakeLists.txt"])
 
+    # ---------- glslang, for the Vulkan probe: loaded with dlopen, never linked
+
+    glslang_build = BUILD / "glslang-build"
+    libglslang = glslang_build / "libglslang_probe.so"
+    n.rule(
+        name="android_glslang",
+        command=(f"cmake -S {PROBE_DIR}/glslang -B {glslang_build} -G Ninja "
+                 f"-DGLSLANG_SOURCE={GLSLANG_DIR.resolve()} "
+                 f"-DCMAKE_TOOLCHAIN_FILE={ndk}/build/cmake/android.toolchain.cmake "
+                 f"-DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-{ANDROID_API} -DCMAKE_BUILD_TYPE=Release "
+                 f"-DANDROID_STL=c++_static "
+                 f"> {BUILD}/glslang-configure.log && ninja -C {glslang_build} glslang_probe "
+                 f"> {BUILD}/glslang-build.log"),
+        description="ANDROID GLSLANG",
+        pool="console",
+    )
+    n.build(outputs=libglslang, rule="android_glslang",
+            implicit=[GLSLANG_DIR / "CMakeLists.txt", PROBE_DIR / "glslang" / "CMakeLists.txt"])
+
     # ---------- the host library
 
     host_objects: List[Path] = []
@@ -546,7 +600,9 @@ def generate_android_build(n: Writer, sln: Any) -> None:
     host_cflags = " ".join([
         "-O2", "-g", "-fPIC", "-Wall", "-Wno-unused-function", "-D_GNU_SOURCE",
         f"-I{PORT_DIR}/include", f"-I{PORT_DIR}/host", f"-I{SDL_DIR}/include", f"-I{LINUX_DIR}/src",
-        f"-I{TOML_DIR}",
+        f"-I{TOML_DIR}", f"-I{GLSLANG_DIR}",
+        # the probe's report names the build (host_vk_probe.c)
+        f'-DHALO_PROBE_BUILD=\\"{_git_describe()}\\"',
     ])
     host_sources = sorted((PORT_DIR / "host").glob("*.c")) + [
         LINUX_DIR / "src" / "posix_files.c", LINUX_DIR / "src" / "posix_net.c",
@@ -584,6 +640,8 @@ def generate_android_build(n: Writer, sln: Any) -> None:
     staged_sdl = jni_dir / "libSDL3.so"
     staged_image = assets_dir / "halo_guest.elf"
     n.rule(name="android_copy", command="cp $in $out", description="ANDROID STAGE $out")
+    n.rule(name="android_copy_into", command="mkdir -p $$(dirname $out) && cp $in $out",
+           description="ANDROID STAGE $out")
     n.build(outputs=staged_sdl, rule="android_copy", inputs=libsdl)
     n.build(outputs=staged_image, rule="android_copy", inputs=image)
     staged_relocations = assets_dir / "halo_guest.relocs"
@@ -592,8 +650,33 @@ def generate_android_build(n: Writer, sln: Any) -> None:
     # config.toml (port/android/host/host_main.c)
     staged_brokers = assets_dir / "brokers.txt"
     n.build(outputs=staged_brokers, rule="android_copy", inputs=Path("port/assets/network/brokers.txt"))
-    n.build(outputs="android", rule="phony", inputs=[libmain, staged_sdl, staged_image, staged_relocations,
-                                                     staged_brokers])
+    # the Vulkan probe's shader compiler, its shaders and, only when asked
+    # for, the validation layer (a debuggable app's loader finds a layer in
+    # the app's own native library folder)
+    staged_glslang = jni_dir / "libglslang_probe.so"
+    n.build(outputs=staged_glslang, rule="android_copy", inputs=libglslang)
+    probe_staged = [staged_glslang]
+    for source in sorted(PROBE_DIR.glob("*.vert")) + sorted(PROBE_DIR.glob("*.frag")):
+        staged = assets_dir / "vk_probe" / source.name
+        n.build(outputs=staged, rule="android_copy_into", inputs=source)
+        probe_staged.append(staged)
+    staged_layer = jni_dir / "libVkLayer_khronos_validation.so"
+    if validation:
+        layer = (VALIDATION_DIR / f"android-binaries-{VALIDATION_VERSION}" / "arm64-v8a"
+                     / "libVkLayer_khronos_validation.so")
+        n.build(outputs=staged_layer, rule="android_copy", inputs=layer)
+        probe_staged.append(staged_layer)
+    elif staged_layer.exists():
+        staged_layer.unlink()
+    # the APK is made again when --android-vulkan-validation is given or dropped: the flag's stamp is an
+    # input, rewritten only when its value changes
+    stamp = BUILD / "vulkan_validation.stamp"
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    wanted = "validation\n" if validation else "no validation\n"
+    if not stamp.exists() or stamp.read_text() != wanted:
+        stamp.write_text(wanted)
+    n.build(outputs="android", rule="phony",
+            inputs=[libmain, staged_sdl, staged_image, staged_relocations, staged_brokers, *probe_staged])
 
     apk = PORT_DIR / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk"
     n.rule(
@@ -604,7 +687,8 @@ def generate_android_build(n: Writer, sln: Any) -> None:
         description="ANDROID GRADLE $out",
         pool="console",
     )
-    n.build(outputs=apk, rule="android_gradle", inputs=[libmain, staged_sdl, staged_image, staged_relocations,
-                                                       staged_brokers])
+    n.build(outputs=apk, rule="android_gradle",
+            inputs=[libmain, staged_sdl, staged_image, staged_relocations, staged_brokers, *probe_staged],
+            implicit=[stamp])
     n.build(outputs="android_apk", rule="phony", inputs=apk)
     n.newline()
