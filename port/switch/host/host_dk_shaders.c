@@ -87,6 +87,8 @@ struct dksh_slot
 	/* whole, but no room for it in code memory or the table: not read
 	again either (a cache past 16 MB of code would want a bigger block) */
 	uint8_t unloadable;
+	/* queued for the loader thread, or being loaded */
+	uint8_t loading;
 };
 
 /* one loaded shader; the handle the guest gets is this's index plus one */
@@ -107,6 +109,8 @@ struct dksh_request
 	uint32_t priority;
 	char *glsl;
 };
+
+#define DKSH_LOAD_QUEUE 1024
 
 static struct
 {
@@ -147,6 +151,12 @@ static struct
 	unsigned long logged;
 
 	int logged_first_hash;
+	/* the loader thread's queue (shaders on the card, to be read and put
+	in code memory) */
+	struct { uint64_t hash; uint32_t stage; } load_queue[DKSH_LOAD_QUEUE];
+	uint32_t load_count;
+	pthread_cond_t load_condition;
+	int loader_started;
 } dksh;
 
 /* ---------- paths */
@@ -457,6 +467,8 @@ static void *compile_thread(void *unused)
 /* ---------- starting (the game thread; the card scan is under the lock
 and touches no deko3d, so compile may call this too) */
 
+static void *loader_thread(void *unused);
+
 static void service_start(void)
 {
 	pthread_attr_t attributes;
@@ -466,6 +478,7 @@ static void service_start(void)
 	dksh.started = 1;
 	pthread_mutex_init(&dksh.lock, NULL);
 	pthread_cond_init(&dksh.queue_condition, NULL);
+	pthread_cond_init(&dksh.load_condition, NULL);
 	cache_scan();
 	pthread_attr_init(&attributes);
 	pthread_attr_setstacksize(&attributes, DKSH_THREAD_STACK);
@@ -479,6 +492,18 @@ static void service_start(void)
 	{
 		pthread_detach(dksh.compile_thread);
 		host_logf(HOST_LOG_INFO, "dk shader: one compile thread (UAM %s)", HOST_DK_UAM_COMMIT);
+	}
+	{
+		pthread_t loader;
+
+		if (pthread_create(&loader, &attributes, loader_thread, NULL) == 0)
+		{
+			pthread_detach(loader);
+			dksh.loader_started = 1;
+		}
+		else
+			host_logf(HOST_LOG_WARN, "dk shader: the loader thread could not be made; shaders are loaded on the "
+				"game thread");
 	}
 	pthread_attr_destroy(&attributes);
 }
@@ -627,6 +652,45 @@ static uint32_t shader_load(uint64_t hash, uint32_t stage)
 	return handle;
 }
 
+/* The loader thread. A shader on the card was read and put in code memory
+on the game thread when a draw first asked for it: an open and a read on the
+card each, 3% of the game thread in a match. The find queues it here and
+answers that it is coming, and the draw is skipped until then, as for one
+being compiled - a few milliseconds, not a compile's seconds, which is why
+this is not the compile thread's queue. The code memory is made on the game
+thread, before the first load is queued. */
+static void *loader_thread(void *unused)
+{
+	(void)unused;
+	host_thread_place_on_helper_core();
+	for (;;)
+	{
+		uint64_t hash;
+		uint32_t stage;
+
+		pthread_mutex_lock(&dksh.lock);
+		while (!dksh.load_count)
+			pthread_cond_wait(&dksh.load_condition, &dksh.lock);
+		hash = dksh.load_queue[0].hash;
+		stage = dksh.load_queue[0].stage;
+		memmove(&dksh.load_queue[0], &dksh.load_queue[1], (dksh.load_count - 1) * sizeof(dksh.load_queue[0]));
+		dksh.load_count--;
+		pthread_mutex_unlock(&dksh.lock);
+
+		shader_load(hash, stage);
+
+		pthread_mutex_lock(&dksh.lock);
+		{
+			struct dksh_slot *slot = set_find(hash);
+
+			if (slot)
+				slot->loading = 0;
+		}
+		pthread_mutex_unlock(&dksh.lock);
+	}
+	return NULL;
+}
+
 /* ---------- the imports (the game thread) */
 
 uint32_t host_dk_shader_find(uint32_t stage, uint64_t hash, uint32_t state_out)
@@ -644,12 +708,29 @@ uint32_t host_dk_shader_find(uint32_t stage, uint64_t hash, uint32_t state_out)
 			(unsigned long long)hash);
 	}
 
+	/* (made here, on the game thread, before anything is loaded) */
+	if (dksh.loader_started)
+		code_memory_make();
 	pthread_mutex_lock(&dksh.lock);
 	slot = set_find(hash);
 	if (slot && (slot->stage != stage || slot->broken))
 		slot = NULL;
 	if (slot && slot->handle)
 		handle = slot->handle;
+	else if (slot && !slot->unloadable && dksh.loader_started)
+	{
+		/* on the card: the loader's, and coming (the draw is skipped) */
+		if (!slot->loading && dksh.load_count < DKSH_LOAD_QUEUE)
+		{
+			slot->loading = 1;
+			dksh.load_queue[dksh.load_count].hash = hash;
+			dksh.load_queue[dksh.load_count].stage = stage;
+			dksh.load_count++;
+			pthread_cond_signal(&dksh.load_condition);
+		}
+		state = 1;
+		slot = NULL;
+	}
 	else if (!slot)
 	{
 		/* not on the card: being compiled, or queued? */
@@ -665,9 +746,9 @@ uint32_t host_dk_shader_find(uint32_t stage, uint64_t hash, uint32_t state_out)
 	}
 	pthread_mutex_unlock(&dksh.lock);
 
-	/* a shader on the card and not yet in the GPU's memory: read and load
-	it now, on this thread (the game thread, the one deko3d runs on) -
-	unless loading it failed before */
+	/* a shader on the card and not yet in the GPU's memory, with no loader
+	thread: read and load it now, on this thread - unless loading it failed
+	before */
 	if (!handle && slot && !slot->unloadable)
 		handle = shader_load(hash, stage);
 	if (state_out)

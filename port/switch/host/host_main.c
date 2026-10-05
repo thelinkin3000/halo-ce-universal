@@ -123,58 +123,134 @@ static double seconds_since_the_log_opened(void)
 		(double)(now.tv_nsec - log_opened.tv_nsec) / 1000000000.0;
 }
 
+/* Lines below an error are written by a thread of their own. Written where
+ * they were logged, each was a synchronous write to the card (the file is
+ * O_SYNC) and, for warnings - every line of the guest's platform_log - an
+ * fsync, on whatever thread logged it, usually the game's, and under the
+ * lock every guest file call takes: a profile of a match had the game thread
+ * in the log's writes 2.8% of the time. The logger now copies the line into
+ * a buffer and goes on; the writer writes it a few milliseconds later. Errors
+ * and worse are still written by the thread that logs them, after what is
+ * buffered (so the order holds), and synced: the lines that explain a death
+ * are the ones that must not wait. A buffer that fills is written by whoever
+ * fills it. */
+#define LOG_BUFFER_SIZE (256 * 1024)
+
+static char log_buffer[LOG_BUFFER_SIZE];
+static size_t log_buffered;
+static pthread_mutex_t log_buffer_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t log_buffer_wake = PTHREAD_COND_INITIALIZER;
+static int log_writer_started;
+
+/* writes what is buffered (under log_lock, which the caller holds) */
+static void log_drain_locked(void)
+{
+	static char out[LOG_BUFFER_SIZE];
+	size_t size;
+
+	pthread_mutex_lock(&log_buffer_lock);
+	size = log_buffered;
+	memcpy(out, log_buffer, size);
+	log_buffered = 0;
+	pthread_mutex_unlock(&log_buffer_lock);
+	if (size && log_descriptor >= 0)
+		(void)!write(log_descriptor, out, size);
+	/* (and to stderr, which nxlink shows, as each line once was) */
+	if (size)
+	{
+		fwrite(out, 1, size, stderr);
+		fflush(stderr);
+	}
+}
+
+static void *log_writer(void *unused)
+{
+	(void)unused;
+	for (;;)
+	{
+		pthread_mutex_lock(&log_buffer_lock);
+		while (!log_buffered)
+			pthread_cond_wait(&log_buffer_wake, &log_buffer_lock);
+		pthread_mutex_unlock(&log_buffer_lock);
+		pthread_mutex_lock(&log_lock);
+		log_drain_locked();
+		pthread_mutex_unlock(&log_lock);
+	}
+	return NULL;
+}
+
 int __android_log_write(int priority, const char *tag, const char *text)
 {
 	char line[2048];
 	int length;
 
-	pthread_mutex_lock(&log_lock);
-
-	if (log_descriptor >= 0)
+	length = snprintf(line, sizeof(line), "%7.2f %s %s: %s\n",
+		seconds_since_the_log_opened(), priority_name(priority), tag, text);
+	if (length >= (int)sizeof(line))
+		length = (int)sizeof(line) - 1;
+	if (length > 0 && priority < HOST_LOG_ERROR && log_descriptor >= 0)
 	{
-		length = snprintf(line, sizeof(line), "%7.2f %s %s: %s\n",
-			seconds_since_the_log_opened(), priority_name(priority), tag, text);
-		if (length > 0)
+		int queued = 0;
+
+		pthread_mutex_lock(&log_buffer_lock);
+		if (!log_writer_started)
 		{
-			(void)!write(log_descriptor, line, (size_t)length);
-			/* fsync is reserved for lines that say something went wrong.
-			*
-			* An fsync per line - several hundred a second while the guest's
-			* allocator churns - proved to be more than the card driver could
-			* take: runs ended with the console itself locked up, the log cut
-			* off mid-line and even the lock-free heartbeat file ending in
-			* garbage, which is the signature of a card write that never came
-			* back. O_SYNC alone still gets the line to the driver; the fsync
-			* on warnings and worse keeps the lines that explain a death
-			* durable. */
-			if (priority >= HOST_LOG_WARN)
-				(void)fsync(log_descriptor);
-		}
-	}
-	{
-		struct timespec now;
+			pthread_t thread;
 
-		clock_gettime(CLOCK_MONOTONIC, &now);
-		fprintf(stderr, "%5ld.%03ld %s %s: %s\n", (long)now.tv_sec, now.tv_nsec / 1000000L,
-			priority_name(priority), tag, text);
+			log_writer_started = pthread_create(&thread, NULL, log_writer, NULL) == 0 ? 1 : -1;
+			if (log_writer_started > 0)
+				pthread_detach(thread);
+		}
+		if (log_writer_started > 0 && log_buffered + (size_t)length <= LOG_BUFFER_SIZE)
+		{
+			memcpy(log_buffer + log_buffered, line, (size_t)length);
+			log_buffered += (size_t)length;
+			pthread_cond_signal(&log_buffer_wake);
+			queued = 1;
+		}
+		pthread_mutex_unlock(&log_buffer_lock);
+		if (queued)
+			return 1;
+	}
+	pthread_mutex_lock(&log_lock);
+	if (log_descriptor >= 0 && length > 0)
+	{
+		log_drain_locked();
+		(void)!write(log_descriptor, line, (size_t)length);
+		/* fsync is reserved for lines that say something went wrong.
+		*
+		* An fsync per line - several hundred a second while the guest's
+		* allocator churns - proved to be more than the card driver could
+		* take: runs ended with the console itself locked up, the log cut
+		* off mid-line and even the lock-free heartbeat file ending in
+		* garbage, which is the signature of a card write that never came
+		* back. O_SYNC alone still gets the line to the driver; the fsync
+		* on errors and worse keeps the lines that explain a death
+		* durable. */
+		if (priority >= HOST_LOG_ERROR)
+			(void)fsync(log_descriptor);
+	}
+	if (length > 0)
+	{
+		fwrite(line, 1, (size_t)length, stderr);
 		fflush(stderr);
 	}
 	pthread_mutex_unlock(&log_lock);
 	return 1;
 }
 
-/* a marker that cannot be lost: no formatting, no clock, one write */
+/* a marker that cannot be lost: no formatting, no clock, one write, after
+what is buffered */
 static void log_marker(const char *text)
 {
 	pthread_mutex_lock(&log_lock);
 	if (log_descriptor >= 0)
 	{
+		log_drain_locked();
 		(void)!write(log_descriptor, text, strlen(text));
 		(void)!write(log_descriptor, "\n", 1);
 		(void)fsync(log_descriptor);
 	}
-	fprintf(stderr, "%s\n", text);
-	fflush(stderr);
 	pthread_mutex_unlock(&log_lock);
 }
 
@@ -633,6 +709,26 @@ static int config_renderer_is_deko3d(const char *path)
 	return deko3d;
 }
 
+/* the profiler's rate from config.toml: 0 unless debug.profiler is true,
+then debug.profile_hz, or 500 if that is not set */
+static unsigned config_profile_hz(const char *path)
+{
+	toml_result_t result = toml_parse_file_ex(path);
+	unsigned hz = 0;
+
+	if (!result.ok)
+		return 0;
+	{
+		toml_datum_t enabled = toml_seek(result.toptab, "debug.profiler");
+		toml_datum_t value = toml_seek(result.toptab, "debug.profile_hz");
+
+		if (enabled.type == TOML_BOOLEAN && enabled.u.boolean)
+			hz = value.type == TOML_INT64 && value.u.int64 > 0 ? (unsigned)value.u.int64 : 500;
+	}
+	toml_free(result);
+	return hz;
+}
+
 /* debug.sample_seconds from config.toml, as text for the sampler, or 0 */
 static int config_sample_seconds(const char *path, char *text, size_t size)
 {
@@ -894,6 +990,8 @@ static void *game_main(void *unused)
 
 		if (config_sample_seconds(path, seconds, sizeof(seconds)))
 			host_debug_start_sampler(seconds);
+		host_debug_start_profiler(config_profile_hz(path),
+			host_renderer_deko3d ? "halo_guest_dk.elf" : "halo_guest.elf");
 	}
 	log_marker("marker: building the guest's boot structure");
 	boot = make_boot(&environment);

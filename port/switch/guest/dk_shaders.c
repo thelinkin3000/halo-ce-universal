@@ -43,9 +43,11 @@ what tests the writer in this phase.
 #include "platform.h"
 #include "posix.h"
 
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* the host's half of the cache, through the import stubs (a 64-bit hash
 goes in one X register on both sides; the pointers are guest addresses,
@@ -228,38 +230,123 @@ static unsigned long keys_read_file(const char *xbox_path)
 	return added;
 }
 
-/* appends one record to console.dkk (the header written if the file does
-not exist), the writer the import and phase 6's draws share */
-static void console_append(uint32_t stage, uint32_t map_hash, const void *data, unsigned long size)
+/* Records for console.dkk, written on a thread of their own. Opening and
+writing a file on the card stalls whoever does it, and a draw meets new keys
+by the hundred on a map not played before: written from the draw, each one
+was two opens and a write on the game thread, and a first online match on a
+new map hitched for its first minute (frames of 200-400 ms, the game thread
+mostly waiting). The draw queues the record; the writer appends what has
+queued in one open, at most once a second. Records still queued when the
+game ends are lost, and met again. A queue that fills (the import of the
+OpenGL records at the first start, all at once) is written by whoever fills
+it, as before. */
+#define APPEND_QUEUE_LIMIT 1024
+#define APPEND_INTERVAL_US 1000000
+
+static struct dk_key_record append_queue[APPEND_QUEUE_LIMIT];
+static unsigned long append_count;
+static pthread_mutex_t append_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t append_wake = PTHREAD_COND_INITIALIZER;
+static int append_started;
+/* (one writer of the file at a time: the thread, or a caller whose queue filled) */
+static pthread_mutex_t write_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* writes records to console.dkk, the header first if the file does not exist yet */
+static void console_write(const struct dk_key_record *records, unsigned long count)
 {
+	static int exists = -1;
 	char path[512];
 	FILE *file;
-	int fresh;
-	struct dk_key_record record;
 
+	pthread_mutex_lock(&write_lock);
 	platform_translate_path(DK_KEY_CONSOLE_FILE, path, sizeof(path));
-	file = fopen(path, "rb");
-	fresh = file == NULL;
-	if (file)
-		fclose(file);
-	file = fopen(path, fresh ? "wb" : "ab");
+	if (exists < 0)
+	{
+		file = fopen(path, "rb");
+		exists = file != NULL;
+		if (file)
+			fclose(file);
+	}
+	file = fopen(path, exists ? "ab" : "wb");
 	if (!file)
 	{
-		platform_log("shader keys: %s cannot be written", path);
+		platform_log("shader keys: %s cannot be written; %lu keys are not recorded", path, count);
+		pthread_mutex_unlock(&write_lock);
 		return;
 	}
-	if (fresh)
+	if (!exists)
 	{
-		uint32_t header[3] = { DK_KEY_MAGIC, DK_KEY_FORMAT, sizeof(record) };
+		uint32_t header[3] = { DK_KEY_MAGIC, DK_KEY_FORMAT, sizeof(struct dk_key_record) };
 
 		fwrite(header, sizeof(header), 1, file);
+		exists = 1;
 	}
+	fwrite(records, sizeof(*records), count, file);
+	fclose(file);
+	pthread_mutex_unlock(&write_lock);
+}
+
+static void *console_writer(void *unused)
+{
+	static struct dk_key_record taken[APPEND_QUEUE_LIMIT];
+
+	(void)unused;
+	for (;;)
+	{
+		unsigned long count;
+
+		pthread_mutex_lock(&append_lock);
+		while (!append_count)
+			pthread_cond_wait(&append_wake, &append_lock);
+		pthread_mutex_unlock(&append_lock);
+		/* (the rest of a burst joins it) */
+		usleep(APPEND_INTERVAL_US);
+		pthread_mutex_lock(&append_lock);
+		count = append_count;
+		memcpy(taken, append_queue, count * sizeof(*taken));
+		append_count = 0;
+		pthread_mutex_unlock(&append_lock);
+		console_write(taken, count);
+	}
+	return NULL;
+}
+
+/* queues one record for console.dkk, the writer the import and phase 6's
+draws share */
+static void console_append(uint32_t stage, uint32_t map_hash, const void *data, unsigned long size)
+{
+	struct dk_key_record record;
+
 	memset(&record, 0, sizeof(record));
 	record.stage = (uint8_t)stage;
 	record.map_hash = map_hash;
 	memcpy(record.data, data, size);
-	fwrite(&record, sizeof(record), 1, file);
-	fclose(file);
+	pthread_mutex_lock(&append_lock);
+	if (!append_started)
+	{
+		pthread_t thread;
+
+		append_started = 1;
+		if (pthread_create(&thread, NULL, console_writer, NULL) == 0)
+			pthread_detach(thread);
+		else
+			append_started = -1;
+	}
+	if (append_started < 0)
+	{
+		pthread_mutex_unlock(&append_lock);
+		console_write(&record, 1);
+		return;
+	}
+	if (append_count == APPEND_QUEUE_LIMIT)
+	{
+		/* (written here, under the queue's lock, so the order stays) */
+		console_write(append_queue, append_count);
+		append_count = 0;
+	}
+	append_queue[append_count++] = record;
+	pthread_cond_signal(&append_wake);
+	pthread_mutex_unlock(&append_lock);
 }
 
 /* ---------- the OpenGL records, imported once */
@@ -611,6 +698,22 @@ uint32_t dk_shader_for_draw(uint32_t stage, const void *key_data)
 	uint64_t hash;
 	uint32_t state = 0;
 	uint32_t handle;
+	/* each stage's last key and its handle: draws in a row mostly share
+	their shaders, and the copy and the hash below are a byte at a time
+	(dk_shader_for_draw was 3.8% of the game thread in a match) */
+	static uint32_t last_key[2][(sizeof(struct nv2a_pixel_shader_key) + 3) / 4];
+	static uint32_t last_handle[2];
+	int which = stage == DK_SHADER_STAGE_PIXEL;
+	const uint32_t *words = key_data;
+	unsigned long word;
+
+	if (last_handle[which] && !(size % 4) && !((uintptr_t)key_data % 4))
+	{
+		for (word = 0; word < size / 4 && words[word] == last_key[which][word]; word++)
+			;
+		if (word == size / 4)
+			return last_handle[which];
+	}
 
 	/* the key as it is known: a pixel key with count_samples at 0 (it does
 	not change the GLSL), which is how the imported and shared keys hash */
@@ -622,7 +725,11 @@ uint32_t dk_shader_for_draw(uint32_t stage, const void *key_data)
 
 	entry = handle_slot(hash);
 	if (entry->hash == hash)
+	{
+		memcpy(last_key[which], key_data, size);
+		last_handle[which] = entry->handle;
 		return entry->handle;
+	}
 	handle = host_dk_shader_find(stage, hash, (uint32_t)(uintptr_t)&state);
 	if (handle)
 	{
