@@ -28,7 +28,10 @@ struct game_state_header
 	elsewhere is ignored rather than restoring pointers that point nowhere
 	(0x12C) */
 	unsigned long layout_address;
-	long unused[6];
+	/* and how far the port had moved the game's own image, whose addresses
+	the state holds too (halo_port_window.h's PORT_IMAGE_SHIFT) */
+	unsigned long image_shift;
+	long unused[5];
 	unsigned long checksum; // 0x148
 };
 
