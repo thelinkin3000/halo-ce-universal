@@ -1,0 +1,560 @@
+probe.start: all
+build.git: fc0f335a+changes
+device.model: TB321FU
+device.manufacturer: Lenovo
+device.hardware: qcom
+device.hardware_vulkan: adreno
+device.board_platform: pineapple
+device.android_api: 36
+device.android_release: 16
+probe.steps_asked: all
+driver.setting: "Turnip_v26.0.0_R8.zip"
+driver.opened: Turnip_v26.0.0_R8.zip, Mesa Turnip driver v26.0.0 - R8, Vulkan 1.4.335 (asked for vulkan.ad07xx.so through libadrenotools)
+caps.instance_version: 1.4.0 (loader)
+caps.instance_extension: VK_KHR_surface 25
+caps.instance_extension: VK_KHR_surface_protected_capabilities 1
+caps.instance_extension: VK_KHR_android_surface 6
+caps.instance_extension: VK_EXT_swapchain_colorspace 5
+caps.instance_extension: VK_KHR_get_surface_capabilities2 1
+caps.instance_extension: VK_GOOGLE_surfaceless_query 2
+caps.instance_extension: VK_EXT_surface_maintenance1 1
+caps.instance_extension: VK_KHR_device_group_creation 1
+caps.instance_extension: VK_KHR_external_fence_capabilities 1
+caps.instance_extension: VK_KHR_external_memory_capabilities 1
+caps.instance_extension: VK_KHR_external_semaphore_capabilities 1
+caps.instance_extension: VK_KHR_get_physical_device_properties2 2
+caps.instance_extension: VK_EXT_debug_report 10
+caps.instance_extension: VK_EXT_debug_utils 2
+caps.instance_extension: VK_EXT_headless_surface 1
+caps.instance_layer: VK_LAYER_KHRONOS_validation (spec 1.4.363)
+validation.requested: no
+validation.layer_found: yes
+caps.instance_extension_enabled: VK_KHR_surface
+caps.instance_extension_enabled: VK_KHR_android_surface
+caps.instance_extension_enabled: VK_KHR_get_physical_device_properties2
+validation.enabled: no
+caps.physical_devices: 1
+caps.physical_device.0: Turnip Adreno (TM) 750 (vendor 5143 device 43051401 api 1.4.335)
+caps.queue_family.0: flags 0xf count 1 timestampValidBits 48
+caps.queue_family.1: flags 0x8 count 1 timestampValidBits 48
+caps.selected: Turnip Adreno (TM) 750, queue family 0
+caps.extension: VK_KHR_incremental_present 2
+caps.extension: VK_EXT_hdr_metadata 3
+caps.extension: VK_GOOGLE_display_timing 1
+caps.extension: VK_EXT_swapchain_maintenance1 1
+caps.extension: VK_KHR_swapchain_mutable_format 1
+caps.extension: VK_KHR_8bit_storage 1
+caps.extension: VK_KHR_16bit_storage 1
+caps.extension: VK_KHR_acceleration_structure 13
+caps.extension: VK_KHR_bind_memory2 1
+caps.extension: VK_KHR_buffer_device_address 1
+caps.extension: VK_KHR_calibrated_timestamps 1
+caps.extension: VK_KHR_copy_commands2 1
+caps.extension: VK_KHR_create_renderpass2 1
+caps.extension: VK_KHR_dedicated_allocation 3
+caps.extension: VK_KHR_deferred_host_operations 4
+caps.extension: VK_KHR_depth_stencil_resolve 1
+caps.extension: VK_KHR_descriptor_update_template 1
+caps.extension: VK_KHR_device_group 4
+caps.extension: VK_KHR_draw_indirect_count 1
+caps.extension: VK_KHR_driver_properties 1
+caps.extension: VK_KHR_dynamic_rendering 1
+caps.extension: VK_KHR_dynamic_rendering_local_read 1
+caps.extension: VK_KHR_external_fence 1
+caps.extension: VK_KHR_external_fence_fd 1
+caps.extension: VK_KHR_external_memory 1
+caps.extension: VK_KHR_external_memory_fd 1
+caps.extension: VK_KHR_external_semaphore 1
+caps.extension: VK_KHR_external_semaphore_fd 1
+caps.extension: VK_KHR_format_feature_flags2 2
+caps.extension: VK_KHR_fragment_shading_rate 2
+caps.extension: VK_KHR_get_memory_requirements2 1
+caps.extension: VK_KHR_global_priority 1
+caps.extension: VK_KHR_image_format_list 1
+caps.extension: VK_KHR_imageless_framebuffer 1
+caps.extension: VK_KHR_index_type_uint8 1
+caps.extension: VK_KHR_line_rasterization 1
+caps.extension: VK_KHR_load_store_op_none 1
+caps.extension: VK_KHR_maintenance1 2
+caps.extension: VK_KHR_maintenance2 1
+caps.extension: VK_KHR_maintenance3 1
+caps.extension: VK_KHR_maintenance4 2
+caps.extension: VK_KHR_maintenance5 1
+caps.extension: VK_KHR_maintenance6 1
+caps.extension: VK_KHR_map_memory2 1
+caps.extension: VK_KHR_multiview 1
+caps.extension: VK_KHR_pipeline_executable_properties 1
+caps.extension: VK_KHR_pipeline_library 1
+caps.extension: VK_KHR_push_descriptor 2
+caps.extension: VK_KHR_ray_query 1
+caps.extension: VK_KHR_ray_tracing_maintenance1 1
+caps.extension: VK_KHR_relaxed_block_layout 1
+caps.extension: VK_KHR_sampler_mirror_clamp_to_edge 3
+caps.extension: VK_KHR_sampler_ycbcr_conversion 14
+caps.extension: VK_KHR_separate_depth_stencil_layouts 1
+caps.extension: VK_KHR_shader_atomic_int64 1
+caps.extension: VK_KHR_shader_clock 1
+caps.extension: VK_KHR_shader_draw_parameters 1
+caps.extension: VK_KHR_shader_expect_assume 1
+caps.extension: VK_KHR_shader_float16_int8 1
+caps.extension: VK_KHR_shader_float_controls 4
+caps.extension: VK_KHR_shader_float_controls2 1
+caps.extension: VK_KHR_shader_integer_dot_product 1
+caps.extension: VK_KHR_shader_non_semantic_info 1
+caps.extension: VK_KHR_shader_subgroup_extended_types 1
+caps.extension: VK_KHR_shader_subgroup_rotate 2
+caps.extension: VK_KHR_shader_subgroup_uniform_control_flow 1
+caps.extension: VK_KHR_shader_terminate_invocation 1
+caps.extension: VK_KHR_spirv_1_4 1
+caps.extension: VK_KHR_storage_buffer_storage_class 1
+caps.extension: VK_KHR_synchronization2 1
+caps.extension: VK_KHR_timeline_semaphore 2
+caps.extension: VK_KHR_uniform_buffer_standard_layout 1
+caps.extension: VK_KHR_variable_pointers 1
+caps.extension: VK_KHR_vertex_attribute_divisor 1
+caps.extension: VK_KHR_vulkan_memory_model 3
+caps.extension: VK_KHR_workgroup_memory_explicit_layout 1
+caps.extension: VK_KHR_zero_initialize_workgroup_memory 1
+caps.extension: VK_EXT_4444_formats 1
+caps.extension: VK_EXT_attachment_feedback_loop_dynamic_state 1
+caps.extension: VK_EXT_attachment_feedback_loop_layout 2
+caps.extension: VK_EXT_border_color_swizzle 1
+caps.extension: VK_EXT_calibrated_timestamps 2
+caps.extension: VK_EXT_color_write_enable 1
+caps.extension: VK_EXT_conditional_rendering 2
+caps.extension: VK_EXT_conservative_rasterization 1
+caps.extension: VK_EXT_custom_border_color 12
+caps.extension: VK_EXT_custom_resolve 1
+caps.extension: VK_EXT_depth_clamp_zero_one 1
+caps.extension: VK_EXT_depth_clip_control 1
+caps.extension: VK_EXT_depth_clip_enable 1
+caps.extension: VK_EXT_descriptor_buffer 1
+caps.extension: VK_EXT_descriptor_indexing 2
+caps.extension: VK_EXT_device_address_binding_report 1
+caps.extension: VK_EXT_dynamic_rendering_unused_attachments 1
+caps.extension: VK_EXT_extended_dynamic_state 1
+caps.extension: VK_EXT_extended_dynamic_state2 1
+caps.extension: VK_EXT_extended_dynamic_state3 2
+caps.extension: VK_EXT_external_memory_dma_buf 1
+caps.extension: VK_EXT_filter_cubic 3
+caps.extension: VK_EXT_fragment_density_map 2
+caps.extension: VK_EXT_fragment_density_map_offset 1
+caps.extension: VK_EXT_global_priority 2
+caps.extension: VK_EXT_global_priority_query 1
+caps.extension: VK_EXT_graphics_pipeline_library 1
+caps.extension: VK_EXT_host_image_copy 1
+caps.extension: VK_EXT_host_query_reset 1
+caps.extension: VK_EXT_image_2d_view_of_3d 1
+caps.extension: VK_EXT_image_drm_format_modifier 2
+caps.extension: VK_EXT_image_robustness 1
+caps.extension: VK_EXT_image_view_min_lod 1
+caps.extension: VK_EXT_index_type_uint8 1
+caps.extension: VK_EXT_inline_uniform_block 1
+caps.extension: VK_EXT_legacy_dithering 2
+caps.extension: VK_EXT_legacy_vertex_attributes 1
+caps.extension: VK_EXT_line_rasterization 1
+caps.extension: VK_EXT_load_store_op_none 1
+caps.extension: VK_EXT_map_memory_placed 1
+caps.extension: VK_EXT_memory_budget 1
+caps.extension: VK_EXT_multi_draw 1
+caps.extension: VK_EXT_multisampled_render_to_single_sampled 1
+caps.extension: VK_EXT_mutable_descriptor_type 1
+caps.extension: VK_EXT_nested_command_buffer 1
+caps.extension: VK_EXT_non_seamless_cube_map 1
+caps.extension: VK_EXT_pipeline_creation_cache_control 3
+caps.extension: VK_EXT_pipeline_creation_feedback 1
+caps.extension: VK_EXT_primitive_topology_list_restart 1
+caps.extension: VK_EXT_primitives_generated_query 1
+caps.extension: VK_EXT_private_data 1
+caps.extension: VK_EXT_provoking_vertex 1
+caps.extension: VK_EXT_queue_family_foreign 1
+caps.extension: VK_EXT_rasterization_order_attachment_access 1
+caps.extension: VK_EXT_robustness2 1
+caps.extension: VK_EXT_sample_locations 1
+caps.extension: VK_EXT_sampler_filter_minmax 2
+caps.extension: VK_EXT_scalar_block_layout 1
+caps.extension: VK_EXT_separate_stencil_usage 1
+caps.extension: VK_EXT_shader_atomic_float 1
+caps.extension: VK_EXT_shader_demote_to_helper_invocation 1
+caps.extension: VK_EXT_shader_module_identifier 1
+caps.extension: VK_EXT_shader_replicated_composites 1
+caps.extension: VK_EXT_shader_stencil_export 1
+caps.extension: VK_EXT_shader_viewport_index_layer 1
+caps.extension: VK_EXT_subgroup_size_control 2
+caps.extension: VK_EXT_texel_buffer_alignment 1
+caps.extension: VK_EXT_tooling_info 1
+caps.extension: VK_EXT_transform_feedback 1
+caps.extension: VK_EXT_vertex_attribute_divisor 3
+caps.extension: VK_EXT_vertex_input_dynamic_state 2
+caps.extension: VK_EXT_zero_initialize_device_memory 1
+caps.extension: VK_AMD_buffer_marker 1
+caps.extension: VK_ANDROID_external_memory_android_hardware_buffer 5
+caps.extension: VK_KHR_swapchain 70
+caps.extension: VK_ARM_rasterization_order_attachment_access 1
+caps.extension: VK_GOOGLE_decorate_string 1
+caps.extension: VK_GOOGLE_hlsl_functionality1 1
+caps.extension: VK_IMG_filter_cubic 1
+caps.extension: VK_NV_compute_shader_derivatives 1
+caps.extension: VK_QCOM_fragment_density_map_offset 3
+caps.extension: VK_QCOM_render_pass_shader_resolve 4
+caps.extension: VK_VALVE_fragment_density_map_layered 1
+caps.extension: VK_VALVE_mutable_descriptor_type 1
+caps.device_extension_enabled: VK_KHR_swapchain
+caps.device_extension_enabled: VK_EXT_extended_dynamic_state
+caps.device_extension_enabled: VK_EXT_extended_dynamic_state2
+caps.device_extension_enabled: VK_EXT_extended_dynamic_state3
+caps.device_extension_enabled: VK_EXT_vertex_input_dynamic_state
+caps.device_extension_enabled: VK_KHR_push_descriptor
+caps.device_extension_enabled: VK_KHR_external_memory_fd
+caps.dynamic_rendering_used: yes
+driver.check: ok (vulkan.ad07xx.so is loaded in the process)
+driver.loaded_library: /system/lib64/libEGL.so
+driver.loaded_library: /system/lib64/libGLESv1_CM.so
+driver.loaded_library: /system/lib64/libGLESv2.so
+driver.loaded_library: /system/lib64/libGLESv3.so
+driver.loaded_library: /system/lib64/libvulkan.so
+driver.loaded_library: /vendor/lib64/egl/libEGL_adreno.so
+driver.loaded_library: /vendor/lib64/libadreno_utils.so
+driver.loaded_library: /vendor/lib64/libgsl.so
+driver.loaded_library: /vendor/lib64/egl/libGLESv2_adreno.so
+driver.loaded_library: /vendor/lib64/egl/libGLESv1_CM_adreno.so
+driver.loaded_library: /data/app/~~AeSPOX6zVKvCTs2EzUfD3Q==/com.halo.decomp.vk-qGy1L-RvZQwLgyfG7iFABw==/lib/arm64/libmain.so
+driver.loaded_library: /data/app/~~AeSPOX6zVKvCTs2EzUfD3Q==/com.halo.decomp.vk-qGy1L-RvZQwLgyfG7iFABw==/lib/arm64/libadrenotools.so
+driver.loaded_library: /data/app/~~AeSPOX6zVKvCTs2EzUfD3Q==/com.halo.decomp.vk-qGy1L-RvZQwLgyfG7iFABw==/lib/arm64/libhook_impl.so
+driver.loaded_library: /data/app/~~AeSPOX6zVKvCTs2EzUfD3Q==/com.halo.decomp.vk-qGy1L-RvZQwLgyfG7iFABw==/lib/arm64/libmain_hook.so
+driver.loaded_library: /memfd:/system/lib64/libvulkan.so (deleted)
+driver.loaded_library: /data/app/~~AeSPOX6zVKvCTs2EzUfD3Q==/com.halo.decomp.vk-qGy1L-RvZQwLgyfG7iFABw==/lib/arm64/libhook_impl.so
+driver.loaded_library: /data/data/com.halo.decomp.vk/files/vk_driver/Turnip_v26.0.0_R8.zip/vulkan.ad07xx.so
+probe.setup: ok
+step.caps: start
+caps.device.api_version: 1.4.335
+caps.device.driver_version: 0x6463063 (25.99.99)
+caps.device.vendor_id: 0x5143
+caps.device.device_id: 0x43051401
+caps.device.name: Turnip Adreno (TM) 750
+caps.device.type: 1
+caps.device.pipeline_cache_uuid: 980bbf89-4907-9793-23fe-10eda42c11f3
+caps.device.ro_hardware_vulkan: adreno
+caps.device.ro_board_platform: pineapple
+caps.api_used_as_core: 1.3.0
+caps.driver.id: 18
+caps.driver.name: turnip Mesa driver
+caps.driver.info: Mesa 26.0.0-devel (git-5ac41be677)
+caps.driver.conformance: 1.4.0.0
+caps.max_push_descriptors: 32
+caps.feature.dynamic_rendering: yes
+caps.feature.dynamic_rendering_extension: yes
+caps.feature.extended_dynamic_state: yes (core in 1.3)
+caps.feature.extended_dynamic_state2: yes (core in 1.3)
+caps.feature.extended_dynamic_state2_logic_op: yes
+caps.feature.extended_dynamic_state2_patch_control_points: yes
+caps.feature.extended_dynamic_state3_TessellationDomainOrigin: yes
+caps.feature.extended_dynamic_state3_DepthClampEnable: yes
+caps.feature.extended_dynamic_state3_PolygonMode: yes
+caps.feature.extended_dynamic_state3_RasterizationSamples: yes
+caps.feature.extended_dynamic_state3_SampleMask: yes
+caps.feature.extended_dynamic_state3_AlphaToCoverageEnable: yes
+caps.feature.extended_dynamic_state3_AlphaToOneEnable: yes
+caps.feature.extended_dynamic_state3_LogicOpEnable: yes
+caps.feature.extended_dynamic_state3_ColorBlendEnable: yes
+caps.feature.extended_dynamic_state3_ColorBlendEquation: yes
+caps.feature.extended_dynamic_state3_ColorWriteMask: yes
+caps.feature.extended_dynamic_state3_RasterizationStream: yes
+caps.feature.extended_dynamic_state3_ConservativeRasterizationMode: yes
+caps.feature.extended_dynamic_state3_ExtraPrimitiveOverestimationSize: yes
+caps.feature.extended_dynamic_state3_DepthClipEnable: yes
+caps.feature.extended_dynamic_state3_SampleLocationsEnable: yes
+caps.feature.extended_dynamic_state3_ColorBlendAdvanced: no
+caps.feature.extended_dynamic_state3_ProvokingVertexMode: yes
+caps.feature.extended_dynamic_state3_LineRasterizationMode: yes
+caps.feature.extended_dynamic_state3_LineStippleEnable: no
+caps.feature.extended_dynamic_state3_DepthClipNegativeOneToOne: yes
+caps.feature.extended_dynamic_state3_ViewportWScalingEnable: no
+caps.feature.extended_dynamic_state3_ViewportSwizzle: no
+caps.feature.extended_dynamic_state3_CoverageToColorEnable: no
+caps.feature.extended_dynamic_state3_CoverageToColorLocation: no
+caps.feature.extended_dynamic_state3_CoverageModulationMode: no
+caps.feature.extended_dynamic_state3_CoverageModulationTableEnable: no
+caps.feature.extended_dynamic_state3_CoverageModulationTable: no
+caps.feature.extended_dynamic_state3_CoverageReductionMode: no
+caps.feature.extended_dynamic_state3_RepresentativeFragmentTestEnable: no
+caps.feature.extended_dynamic_state3_ShadingRateImageEnable: no
+caps.feature.vertex_input_dynamic_state: yes
+caps.feature.external_memory_host: no
+caps.feature.push_descriptor: yes
+caps.feature.custom_border_color: yes (extension yes)
+caps.feature.custom_border_color_without_format: yes
+caps.feature.4444_formats: a4r4g4b4 yes, a4b4g4r4 yes (extension yes)
+caps.feature.maintenance4: yes (extension yes, core in 1.3)
+caps.feature.maintenance5: yes (extension yes)
+caps.feature.pipeline_creation_cache_control: yes (extension yes)
+caps.feature.graphics_pipeline_library: yes (extension yes)
+caps.feature.pipeline_library_extension: yes
+caps.feature.textureCompressionBC: yes
+caps.feature.textureCompressionASTC_LDR: yes
+caps.feature.textureCompressionETC2: yes
+caps.feature.samplerAnisotropy: yes
+caps.feature.occlusionQueryPrecise: yes
+caps.feature.depthBiasClamp: yes
+caps.feature.depthClamp: yes
+caps.feature.fillModeNonSolid: yes
+caps.feature.independentBlend: yes
+caps.feature.logicOp: yes
+caps.feature.shaderClipDistance: yes
+caps.feature.wideLines: yes
+caps.feature.pipelineStatisticsQuery: yes
+caps.limit.maxVertexInputAttributes: 32
+caps.limit.maxVertexInputBindings: 32
+caps.limit.maxVertexInputAttributeOffset: 4095
+caps.limit.maxVertexInputBindingStride: 2048
+caps.limit.maxUniformBufferRange: 65536
+caps.limit.maxPushConstantsSize: 256
+caps.limit.maxBoundDescriptorSets: 7
+caps.limit.maxPerStageDescriptorSamplers: 16777216
+caps.limit.maxSamplerAnisotropy: 16.0
+caps.limit.maxSamplerLodBias: 16.0
+caps.limit.maxImageDimension2D: 16384
+caps.limit.maxImageDimension3D: 2048
+caps.limit.maxImageDimensionCube: 16384
+caps.limit.maxColorAttachments: 8
+caps.limit.minUniformBufferOffsetAlignment: 64
+caps.limit.nonCoherentAtomSize: 64
+caps.limit.optimalBufferCopyOffsetAlignment: 128
+caps.limit.optimalBufferCopyRowPitchAlignment: 128
+caps.limit.timestampPeriod: 52.0833 ns
+caps.limit.timestampComputeAndGraphics: yes
+caps.queue.timestampValidBits: 48
+caps.limit.maxMemoryAllocationCount: 4294967295
+caps.memory_heap.0: 8454 MB device_local
+caps.memory.buffer_type_bits: 0x7 (size 65536, alignment 64)
+caps.memory_type.0: heap 0, device_local host_visible host_coherent (a plain buffer can use it)
+caps.memory_type.1: heap 0, device_local host_visible host_coherent host_cached (a plain buffer can use it)
+caps.memory_type.2: heap 0, device_local host_visible host_cached (a plain buffer can use it)
+caps.memory_type.3: heap 0, device_local lazy (a plain buffer cannot use it)
+caps.format.B8G8R8A8_UNORM: sampled=yes linear=yes color=yes blend=yes depth=no transfer_dst=yes transfer_src=yes
+caps.format.R8G8B8A8_UNORM: sampled=yes linear=yes color=yes blend=yes depth=no transfer_dst=yes transfer_src=yes
+caps.format.A8B8G8R8_UNORM_PACK32: sampled=yes linear=yes color=yes blend=yes depth=no transfer_dst=yes transfer_src=yes
+caps.format.R5G6B5_UNORM_PACK16: sampled=yes linear=yes color=yes blend=yes depth=no transfer_dst=yes transfer_src=yes
+caps.format.B5G6R5_UNORM_PACK16: sampled=yes linear=yes color=yes blend=yes depth=no transfer_dst=yes transfer_src=yes
+caps.format.A1R5G5B5_UNORM_PACK16: sampled=yes linear=yes color=yes blend=yes depth=no transfer_dst=yes transfer_src=yes
+caps.format.R5G5B5A1_UNORM_PACK16: sampled=yes linear=yes color=yes blend=yes depth=no transfer_dst=yes transfer_src=yes
+caps.format.B5G5R5A1_UNORM_PACK16: sampled=yes linear=yes color=yes blend=yes depth=no transfer_dst=yes transfer_src=yes
+caps.format.R4G4B4A4_UNORM_PACK16: sampled=yes linear=yes color=yes blend=yes depth=no transfer_dst=yes transfer_src=yes
+caps.format.B4G4R4A4_UNORM_PACK16: sampled=yes linear=yes color=yes blend=yes depth=no transfer_dst=yes transfer_src=yes
+caps.format.A4R4G4B4_UNORM_PACK16_EXT: sampled=yes linear=yes color=yes blend=yes depth=no transfer_dst=yes transfer_src=yes
+caps.format.R8_UNORM: sampled=yes linear=yes color=yes blend=yes depth=no transfer_dst=yes transfer_src=yes
+caps.format.R8G8_UNORM: sampled=yes linear=yes color=yes blend=yes depth=no transfer_dst=yes transfer_src=yes
+caps.format.R16_UNORM: sampled=yes linear=yes color=yes blend=yes depth=no transfer_dst=yes transfer_src=yes
+caps.format.R16G16_UNORM: sampled=yes linear=yes color=yes blend=yes depth=no transfer_dst=yes transfer_src=yes
+caps.format.R8G8_SNORM: sampled=yes linear=yes color=yes blend=yes depth=no transfer_dst=yes transfer_src=yes
+caps.format.R16G16_SNORM: sampled=yes linear=yes color=yes blend=yes depth=no transfer_dst=yes transfer_src=yes
+caps.format.BC1_RGBA_UNORM_BLOCK: sampled=yes linear=yes color=no blend=no depth=no transfer_dst=yes transfer_src=yes
+caps.format.BC2_UNORM_BLOCK: sampled=yes linear=yes color=no blend=no depth=no transfer_dst=yes transfer_src=yes
+caps.format.BC3_UNORM_BLOCK: sampled=yes linear=yes color=no blend=no depth=no transfer_dst=yes transfer_src=yes
+caps.format.D16_UNORM: sampled=yes linear=yes color=yes blend=yes depth=yes transfer_dst=yes transfer_src=yes
+caps.format.D24_UNORM_S8_UINT: sampled=yes linear=yes color=yes blend=yes depth=yes transfer_dst=yes transfer_src=yes
+caps.format.D32_SFLOAT_S8_UINT: sampled=yes linear=yes color=yes blend=yes depth=yes transfer_dst=yes transfer_src=yes
+caps.format.X8_D24_UNORM_PACK32: sampled=yes linear=yes color=yes blend=yes depth=yes transfer_dst=yes transfer_src=yes
+caps.format.D32_SFLOAT: sampled=yes linear=yes color=yes blend=yes depth=yes transfer_dst=yes transfer_src=yes
+caps.surface.image_count: min 5 max 64
+caps.surface.current_extent: 2560x1600
+caps.surface.min_extent: 1x1
+caps.surface.max_extent: 4096x4096
+caps.surface.max_image_array_layers: 1
+caps.surface.supported_transforms: 0x1ff
+caps.surface.current_transform: 0x2
+caps.surface.supported_composite_alpha: 0x8
+caps.surface.supported_usage: 0x9f (color attachment yes, transfer dst yes, transfer src yes, sampled yes)
+caps.surface.format.0: format 37 colorspace 0
+caps.surface.format.1: format 43 colorspace 0
+caps.surface.format.2: format 4 colorspace 0
+caps.surface.format.3: format 97 colorspace 0
+caps.surface.format.4: format 64 colorspace 0
+caps.surface.present_mode.0: 1
+caps.surface.present_mode.1: 2
+step.caps: done
+step.memory: start
+memory.window: the guest's window is the same kind of mapping (host_memory.c), anonymous and private
+memory.import: not possible: VK_EXT_external_memory_host is not offered by this device
+memory.ring.bytes_per_frame: 4194304 (the figure until step 6 measures the game's)
+memory.ring.vertices: 349524 (116508 triangles)
+memory.ring.coherent.type: 0, device_local host_visible host_coherent 
+memory.ring.cached.type: 2, device_local host_visible host_cached 
+error: no memory type with flags 0x1 for a buffer
+memory.ring.coherent.cpu_copy_wall: min 0.090 ms, median 0.120 ms, p99 0.224 ms, max 1.403 ms (300)
+memory.ring.coherent.cpu_copy_thread_cpu: min 0.090 ms, median 0.115 ms, p99 0.216 ms, max 1.344 ms (300)
+memory.ring.cached.cpu_copy_wall: min 0.189 ms, median 0.209 ms, p99 0.423 ms, max 1.131 ms (300)
+memory.ring.cached.cpu_copy_thread_cpu: min 0.188 ms, median 0.203 ms, p99 0.422 ms, max 1.098 ms (300)
+memory.ring.gpu.baseline_pass: median 21.8 us, min 21.6 us (a pass that draws one triangle)
+memory.ring.gpu.draw_from_host_coherent: median 633.2 us, min 617.8 us (611.4 us over the baseline)
+memory.ring.gpu.draw_from_host_cached: median 640.2 us, min 618.5 us (618.3 us over the baseline)
+memory.export.cached.buffer_properties: features 0x6 (exportable yes, dedicated only no), compatible handle types 0x201
+memory.export.cached.get_fd: result 0, fd 144 (memory type 1, device_local host_visible host_coherent host_cached )
+memory.export.cached.mmap_anywhere: mapped (errno 0)
+memory.export.cached.mmap_below_4GB: mapped at 0x13004000 (errno 0)
+memory.export.cached.same_pages_as_the_drivers_mapping: yes
+memory.export.cached.gpu_reads_guest_writes: yes
+memory.export.cached.gpu_reads_rewrite: yes
+memory.export.cached.cpu_write_MBps: 22499 here, 23336 in ordinary memory
+memory.export.cached.cpu_read_MBps: 31781 here, 35763 in ordinary memory
+memory.export.uncached.buffer_properties: features 0x6 (exportable yes, dedicated only no), compatible handle types 0x201
+memory.export.uncached.get_fd: result 0, fd 145 (memory type 0, device_local host_visible host_coherent )
+memory.export.uncached.mmap_anywhere: mapped (errno 0)
+memory.export.uncached.mmap_below_4GB: mapped at 0x13004000 (errno 0)
+memory.export.uncached.same_pages_as_the_drivers_mapping: yes
+memory.export.uncached.gpu_reads_guest_writes: yes
+memory.export.uncached.gpu_reads_rewrite: yes
+memory.export.uncached.cpu_write_MBps: 30094 here, 41480 in ordinary memory
+memory.export.uncached.cpu_read_MBps: 45097 here, 44834 in ordinary memory
+step.memory: done
+step.compile: start
+compile.glslang_library: libglslang_probe.so (glslang 16.6.0, ENABLE_OPT off, ENABLE_HLSL off), Vulkan 1.0 / SPIR-V 1.0 target, one thread
+compile.load_and_initialize_process: 0.000 ms (dlopen, symbols, glslang_initialize_process)
+compile.library_mapped_bytes: 3776512
+compile.pass.vert.source_bytes: 677
+compile.pass.vert.spirv_bytes: 1208
+compile.pass.vert.wall: first 0.952 ms, then min 0.590 ms, median 0.596 ms, max 0.736 ms (9 more)
+compile.pass.vert.thread_cpu: first 0.951 ms, then min 0.590 ms, median 0.594 ms, max 0.695 ms (9 more)
+compile.first_compile_of_the_first_shader: 0.952 ms wall, 0.951 ms thread cpu (it pays the front end's start)
+compile.pass.frag.source_bytes: 328
+compile.pass.frag.spirv_bytes: 632
+compile.pass.frag.wall: first 0.619 ms, then min 0.563 ms, median 0.564 ms, max 0.604 ms (9 more)
+compile.pass.frag.thread_cpu: first 0.588 ms, then min 0.563 ms, median 0.564 ms, max 0.572 ms (9 more)
+compile.vs_typical.vert.source_bytes: 6366
+compile.vs_typical.vert.spirv_bytes: 17660
+compile.vs_typical.vert.wall: first 2.442 ms, then min 2.019 ms, median 2.121 ms, max 2.157 ms (9 more)
+compile.vs_typical.vert.thread_cpu: first 2.426 ms, then min 2.021 ms, median 2.111 ms, max 2.133 ms (9 more)
+compile.ps_typical.frag.source_bytes: 4100
+compile.ps_typical.frag.spirv_bytes: 9356
+compile.ps_typical.frag.wall: first 1.605 ms, then min 1.347 ms, median 1.367 ms, max 1.522 ms (9 more)
+compile.ps_typical.frag.thread_cpu: first 1.606 ms, then min 1.347 ms, median 1.366 ms, max 1.498 ms (9 more)
+compile.vs_large.vert.source_bytes: 11374
+compile.vs_large.vert.spirv_bytes: 35380
+compile.vs_large.vert.wall: first 4.001 ms, then min 3.490 ms, median 3.524 ms, max 3.834 ms (9 more)
+compile.vs_large.vert.thread_cpu: first 3.974 ms, then min 3.486 ms, median 3.498 ms, max 3.811 ms (9 more)
+compile.ps_large.frag.source_bytes: 8568
+compile.ps_large.frag.spirv_bytes: 24184
+compile.ps_large.frag.wall: first 2.750 ms, then min 2.615 ms, median 2.652 ms, max 2.866 ms (9 more)
+compile.ps_large.frag.thread_cpu: first 2.740 ms, then min 2.611 ms, median 2.620 ms, max 2.851 ms (9 more)
+compile.spirv_files: /storage/emulated/0/Android/data/com.halo.decomp.vk/files/vk_probe_spirv/*.spv (check off the device with spirv-val and spirv-dis)
+step.compile: done
+step.pipelines: start
+pipelines.formats: colour 37, depth-stencil 129, dynamic rendering yes
+pipelines.dynamic_states_full: 32 states (VkDynamicState values 1000267003,1000267004,2,3,4,6,7,8,1000267000,1000267001,1000267002,1000267006,1000267007,1000267008,1000267009,1000267010,1000267011,1000377001,1000377002,1000377004,1000377003,1000455003,1000455004,1000455005,1000455006,1000455007,1000455008,1000455009,1000455010,1000455011,1000455012,1000352000)
+pipelines.dynamic_states_plain: 2 states (VkDynamicState values 0,1)
+pipelines.dynamic_state_flags: counted viewport yes, stride no, vertex input yes
+pipelines.saved_cache: none (run the probe again for the warm figures)
+pipelines.salts: base 1031245006
+pipelines.cold.pass.shader_modules: first 0.004 ms, then min 0.002 ms, median 0.002 ms, max 0.002 ms (5 more)
+pipelines.cold.pass.pipeline_wall: first 0.720 ms, then min 0.302 ms, median 0.325 ms, max 0.459 ms (5 more)
+pipelines.cold.pass.pipeline_thread_cpu: first 0.720 ms, then min 0.302 ms, median 0.326 ms, max 0.423 ms (5 more)
+pipelines.cold.typical.shader_modules: first 0.018 ms, then min 0.017 ms, median 0.017 ms, max 0.018 ms (5 more)
+pipelines.cold.typical.pipeline_wall: first 3.829 ms, then min 3.229 ms, median 3.267 ms, max 3.362 ms (5 more)
+pipelines.cold.typical.pipeline_thread_cpu: first 3.812 ms, then min 3.230 ms, median 3.237 ms, max 3.328 ms (5 more)
+pipelines.cold.large.shader_modules: first 0.038 ms, then min 0.037 ms, median 0.037 ms, max 0.041 ms (5 more)
+pipelines.cold.large.pipeline_wall: first 13.720 ms, then min 12.336 ms, median 12.545 ms, max 13.230 ms (5 more)
+pipelines.cold.large.pipeline_thread_cpu: first 13.626 ms, then min 12.239 ms, median 12.451 ms, max 13.124 ms (5 more)
+pipelines.no_dynamic_state.pass.shader_modules: first 0.003 ms, then min 0.002 ms, median 0.002 ms, max 0.002 ms (5 more)
+pipelines.no_dynamic_state.pass.pipeline_wall: first 0.389 ms, then min 0.280 ms, median 0.299 ms, max 0.368 ms (5 more)
+pipelines.no_dynamic_state.pass.pipeline_thread_cpu: first 0.389 ms, then min 0.280 ms, median 0.300 ms, max 0.349 ms (5 more)
+pipelines.no_dynamic_state.typical.shader_modules: first 0.018 ms, then min 0.017 ms, median 0.017 ms, max 0.017 ms (5 more)
+pipelines.no_dynamic_state.typical.pipeline_wall: first 3.300 ms, then min 3.230 ms, median 3.246 ms, max 3.336 ms (5 more)
+pipelines.no_dynamic_state.typical.pipeline_thread_cpu: first 3.261 ms, then min 3.214 ms, median 3.232 ms, max 3.292 ms (5 more)
+pipelines.no_dynamic_state.large.shader_modules: first 0.038 ms, then min 0.037 ms, median 0.037 ms, max 0.038 ms (5 more)
+pipelines.no_dynamic_state.large.pipeline_wall: first 12.366 ms, then min 12.317 ms, median 12.361 ms, max 12.414 ms (5 more)
+pipelines.no_dynamic_state.large.pipeline_thread_cpu: first 12.309 ms, then min 12.238 ms, median 12.272 ms, max 12.317 ms (5 more)
+pipelines.thread.twenty_pipelines: 169.0 ms in all, 8.4 ms each on average (the typical and the large pair, alternating)
+pipelines.thread.before.frame_cpu: min 0.087 ms, median 0.199 ms, p99 0.328 ms, max 0.481 ms (188)
+pipelines.thread.before.submit_to_fence: min 1.398 ms, median 1.568 ms, p99 1.952 ms, max 10.446 ms (188)
+pipelines.thread.before.frames_over_twice_the_median_submit_to_fence: 1 of 188
+pipelines.thread.during.frame_cpu: min 0.138 ms, median 0.155 ms, p99 0.200 ms, max 0.200 ms (11)
+pipelines.thread.during.submit_to_fence: min 1.333 ms, median 1.382 ms, p99 1.543 ms, max 1.543 ms (11)
+pipelines.thread.during.frames_over_twice_the_median_submit_to_fence: 0 of 11
+pipelines.thread.after.frame_cpu: min 0.057 ms, median 0.196 ms, p99 0.248 ms, max 0.252 ms (187)
+pipelines.thread.after.submit_to_fence: min 1.320 ms, median 1.569 ms, p99 1.651 ms, max 1.655 ms (187)
+pipelines.thread.after.frames_over_twice_the_median_submit_to_fence: 0 of 187
+pipelines.saved_cache_now: 260389 bytes
+step.pipelines: done
+step.draw: start
+draw.textures: 64x64 R8G8B8A8, BC1, and cubes of both
+draw.clear_word: 0xff996633
+draw.typical.descriptors_written: yes (2 uniform buffers, 4 combined image samplers)
+draw.large.descriptors_written: yes (2 uniform buffers, 4 combined image samplers)
+draw.pass.opaque.finished: yes
+draw.pass.opaque.pixels_not_clear: 65536 of 65536
+draw.pass.opaque.hash: 0x0b8280346d3f0383
+draw.pass.opaque.center_pixel: 0xff20a0ff (r 255 g 160 b 32 a 255)
+draw.pass.blend.finished: yes
+draw.pass.blend.pixels_not_clear: 65536 of 65536
+draw.pass.blend.hash: 0x0b8280346d3f0383
+draw.pass.blend.center_pixel: 0xff20a0ff (r 255 g 160 b 32 a 255)
+draw.typical.opaque.finished: yes
+draw.typical.opaque.pixels_not_clear: 63520 of 65536
+draw.typical.opaque.hash: 0xa797356c9d4479e8
+draw.typical.opaque.center_pixel: 0xff1d3153 (r 83 g 49 b 29 a 255)
+draw.typical.blend.finished: yes
+draw.typical.blend.pixels_not_clear: 63520 of 65536
+draw.typical.blend.hash: 0xa797356c9d4479e8
+draw.typical.blend.center_pixel: 0xff1d3153 (r 83 g 49 b 29 a 255)
+draw.typical.full_dynamic.finished: yes
+draw.typical.full_dynamic.pixels_not_clear: 63520 of 65536
+draw.typical.full_dynamic.hash: 0xa797356c9d4479e8
+draw.typical.full_dynamic.center_pixel: 0xff1d3153 (r 83 g 49 b 29 a 255)
+draw.large.opaque.finished: yes
+draw.large.opaque.pixels_not_clear: 63520 of 65536
+draw.large.opaque.hash: 0x405fe8ea10380282
+draw.large.opaque.center_pixel: 0xff849199 (r 153 g 145 b 132 a 255)
+draw.large.blend.finished: yes
+draw.large.blend.pixels_not_clear: 63520 of 65536
+draw.large.blend.hash: 0x405fe8ea10380282
+draw.large.blend.center_pixel: 0xff849199 (r 153 g 145 b 132 a 255)
+draw.large.full_dynamic.finished: yes
+draw.large.full_dynamic.pixels_not_clear: 63520 of 65536
+draw.large.full_dynamic.hash: 0x405fe8ea10380282
+draw.large.full_dynamic.center_pixel: 0xff849199 (r 153 g 145 b 132 a 255)
+draw.rewrite.typical.finished: yes
+draw.rewrite.typical.second_block_pixels_not_clear: 37456 (first block 63520)
+draw.rewrite.typical.second_block_changed_the_picture: yes
+draw.rewrite.typical.restored_matches_first: yes (0xa797356c9d4479e8 against 0xa797356c9d4479e8)
+draw.rewrite.large.finished: yes
+draw.rewrite.large.second_block_pixels_not_clear: 37456 (first block 63520)
+draw.rewrite.large.second_block_changed_the_picture: yes
+draw.rewrite.large.restored_matches_first: yes (0x405fe8ea10380282 against 0x405fe8ea10380282)
+draw.push.typical.finished: yes
+draw.push.typical.pixels_not_clear: 63520 of 65536
+draw.push.typical.hash: 0xa797356c9d4479e8
+draw.push.typical.center_pixel: 0xff1d3153 (r 83 g 49 b 29 a 255)
+draw.push.typical.matches_bound_set: yes
+step.draw: done
+step.present: start
+present.display: 2560x1600 at 165.00 Hz (SDL_GetCurrentDisplayMode)
+present.recreate: start, ok, 0.91 ms (2560x1600, transform rotate_90, 6 images)
+present.script: Watch the colour cycle, with a white square (black inside) at the top-left corner.
+present.script: Press Home and come back, ten times. Turn the device over and back.
+present.script: Press A if the picture looks right, Y if upside down or squashed, X to change the way it is cleared, B to end.
+present.mode: vkCmdClearColorImage (no render pass)
+present.audio: a one-second tone queued on the default device (the tester says if it was heard)
+present.gamepads: 0
+present.event: window shown
+present.event: window pixel size 2560x1600
+present.input: key A (scancode 4)
+present.tester: picture looks right
+present.input: key X (scancode 27)
+present.mode: dynamic rendering
+present.input: key X (scancode 27)
+present.mode: render pass
+present.input: key X (scancode 27)
+present.mode: vkCmdClearColorImage (no render pass)
+present.input: key B (scancode 5)
+present.tester: B, ending the step
+present.pacing.last_window: 1024 intervals, min 0.090 ms, median 6.051 ms (165.3 Hz), max 9.102 ms, 1 over 1.5x the median
+present.presented_frames: 1418
+present.recreations.start: 1
+present.transforms_seen: identity no, rotate_90 yes, rotate_180 no, rotate_270 no
+present.suboptimal_reported: 0 times
+present.tester_answers: right 1, wrong 0; input events 5; sdl input arrived: yes
+present.mean_interval: 6.048 ms over the whole step
+step.present: done
+validation.summary: 0 messages, 0 errors
+probe.done: yes
+driver.closed: yes
