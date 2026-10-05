@@ -914,7 +914,7 @@ static void *bitmap_build(struct halo_menu_bitmap const *source, long tag_index)
 static void conditional_add(struct ui_widget_definition *definition, long tag_index, long flags)
 {
 	struct ui_widget_conditional_reference *conditionals =
-		(struct ui_widget_conditional_reference *)definition->conditional_widgets.address;
+		(struct ui_widget_conditional_reference *)TAG_BLOCK_ADDRESS(definition->conditional_widgets);
 	struct ui_widget_conditional_reference *grown;
 	long count = definition->conditional_widgets.count, index;
 
@@ -1467,7 +1467,7 @@ static boolean tag_name_ends(long tag_index, char const *end)
 else NONE */
 static long pause_quit_button(struct ui_widget_definition const *list, long quit_function)
 {
-	struct ui_widget_child_reference const *children = list->child_widgets.address;
+	struct ui_widget_child_reference const *children = TAG_BLOCK_ADDRESS(list->child_widgets);
 	long child;
 
 	for (child = 0; child < list->child_widgets.count; child++)
@@ -1479,7 +1479,7 @@ static long pause_quit_button(struct ui_widget_definition const *list, long quit
 		if (children[child].widget_tag.index == NONE)
 			continue;
 		button = tag_get(UI_WIDGET_DEFINITION_TAG, children[child].widget_tag.index);
-		handlers = button->event_handlers.address;
+		handlers = TAG_BLOCK_ADDRESS(button->event_handlers);
 		for (handler = 0; handler < button->event_handlers.count; handler++)
 		{
 			if (handlers[handler].function == quit_function &&
@@ -1513,7 +1513,7 @@ static void *pause_button(struct cache_file_tag_instance *instances, struct ui_w
 	button->game_data_inputs.address = NULL;
 	/* (the game's memcpy asserts on a NULL source, even for nothing) */
 	if (model->event_handlers.count)
-		memcpy(handlers, model->event_handlers.address, model->event_handlers.count * sizeof(*handlers));
+		memcpy(handlers, TAG_BLOCK_ADDRESS(model->event_handlers), model->event_handlers.count * sizeof(*handlers));
 	for (handler = 0; handler < model->event_handlers.count; handler++)
 	{
 		handlers[handler].flags = FLAG(_event_handler_run_function_bit);
@@ -1535,7 +1535,7 @@ GAME (quit); returns how many were added */
 static long pause_list_patch(struct cache_file_tag_instance *instances, struct ui_widget_definition *list, long quit,
 	boolean host)
 {
-	struct ui_widget_child_reference *children = list->child_widgets.address;
+	struct ui_widget_child_reference *children = TAG_BLOCK_ADDRESS(list->child_widgets);
 	long count = list->child_widgets.count, added = host ? 2 : 1, child;
 	struct ui_widget_child_reference *grown = allocate((count + added) * sizeof(struct ui_widget_child_reference));
 	struct ui_widget_definition const *model = tag_get(UI_WIDGET_DEFINITION_TAG, children[quit].widget_tag.index);
@@ -1583,7 +1583,7 @@ static long pause_list_patch(struct cache_file_tag_instance *instances, struct u
 /* the Xbox's own box: a widget of the three pausebox2 pieces */
 static boolean pause_box_stock(struct ui_widget_definition const *box)
 {
-	struct ui_widget_child_reference const *pieces = box->child_widgets.address;
+	struct ui_widget_child_reference const *pieces = TAG_BLOCK_ADDRESS(box->child_widgets);
 
 	return box->child_widgets.count == 3 && tag_name_ends(pieces[0].widget_tag.index, "\\pausebox2_left") &&
 		tag_name_ends(pieces[1].widget_tag.index, "\\pausebox2_left_center") &&
@@ -1595,7 +1595,7 @@ the number of buttons */
 static void pause_box_redraw(struct ui_widget_definition const *box, long buttons)
 {
 	static char const *const names[] = { "pause/pausebox_left", "pause/pausebox_center", "pause/pausebox_right" };
-	struct ui_widget_child_reference const *pieces = box->child_widgets.address;
+	struct ui_widget_child_reference const *pieces = TAG_BLOCK_ADDRESS(box->child_widgets);
 	long piece;
 
 	for (piece = 0; piece < 3; piece++)
@@ -1608,7 +1608,7 @@ static void pause_box_redraw(struct ui_widget_definition const *box, long button
 		if (bitmap == NONE)
 			continue;
 		group = bitmap_group_get(build.bitmap_tags[bitmap]);
-		sequence = group->sequences.address;
+		sequence = TAG_BLOCK_ADDRESS(group->sequences);
 		/* (one frame: the one for the number of buttons) */
 		sequence->first_bitmap_index = (short)PIN(buttons - PAUSE_BOX_FIRST_BUTTONS, 0, group->bitmaps.count - 1);
 		sequence->bitmap_count = 1;
@@ -1631,7 +1631,7 @@ static void pause_patch(struct cache_file_tag_instance *instances)
 	screens = tag_get('Soul', collection);
 	for (screen = 0; screen < screens->count; screen++)
 	{
-		long screen_tag = ((struct tag_reference const *)screens->address)[screen].index;
+		long screen_tag = ((struct tag_reference const *)TAG_BLOCK_ADDRESS_AT(screens))[screen].index;
 		struct ui_widget_definition *definition;
 		struct ui_widget_child_reference *children;
 		long child, list_child = NONE, box_child = NONE;
@@ -1640,7 +1640,7 @@ static void pause_patch(struct cache_file_tag_instance *instances)
 		if (screen_tag == NONE)
 			continue;
 		definition = tag_get(UI_WIDGET_DEFINITION_TAG, screen_tag);
-		children = definition->child_widgets.address;
+		children = TAG_BLOCK_ADDRESS(definition->child_widgets);
 		for (child = 0; child < definition->child_widgets.count && list_child == NONE; child++)
 		{
 			struct ui_widget_definition *list;
