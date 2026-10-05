@@ -74,7 +74,7 @@ Taken from the deko3d plan unless the row says otherwise. Rows marked
 | Shared code with the GL ES renderer | **Copied**, not extracted, as for deko3d: `d3d8_gl.c`, `xbox_textures.c`, `nv2a_vsh.c`, `nv2a_psh.c` stay untouched so the other platforms keep working; Vulkan versions are copies under `port/android/guest/`. Files under `port/linux/src` change only by read-only accessors behind `#ifdef HALO_ANDROID_VK` (as the deko3d work added behind `HALO_SWITCH`), and by rows in `port_config.c`'s settings table. |
 | How the renderer is chosen | **Two guest images**, as on the Switch: `halo_guest.elf` (GL ES) and `halo_guest_vk.elf` (Vulkan), both in the APK. The host reads `display.renderer` before it loads the guest. Nothing in the guest chooses at run time. |
 | How the Vulkan driver is chosen | **`display.vk_driver`**: empty is the phone's own driver; otherwise the name of a driver archive (an adrenotools zip: a `meta.json` and the driver's library) left in the data folder. The host unpacks it into the app's private files (the only place Android loads a library from), reads the library's name from `meta.json`, and opens it with libadrenotools. A driver that does not load is logged and the phone's own is used; a device where Vulkan does not come up at all gets the GL ES image, logged. Phase 0, part B builds this. |
-| The GL ES renderer | **Kept, selectable for good**, and the automatic fallback. **(to confirm)** which is the default once phase 7 is done. |
+| The GL ES renderer | **Kept, selectable for good**, and the automatic fallback. **Decided (the user, after phase 1): it stays the default** (`display.renderer = "gl"`), and the phone's own Vulkan driver stays the default for the Vulkan renderer (`display.vk_driver = ""`); Vulkan and Turnip are opt-in. |
 | A shader or pipeline not compiled yet, met during play | **The draw is skipped** while it compiles on another thread, as for deko3d; it is drawn from the first frame its pipeline is ready. The compiled SPIR-V and the `VkPipelineCache` are kept on the device so that this happens once per device and driver, not once per run. |
 | Shader compiler | **glslang on the device** (phase 0 measured 2 to 4 ms for a game-sized shader, 100 ms for the first compile of a process, 3.8 MB of library). |
 | The game's memory | **Copied at the hand-over** into an upload ring, never read in place. The test device cannot import host memory, and one path on every driver is simpler to get right. Busy tracking stays (phase 3), because the game's locks need it. |
@@ -1206,7 +1206,7 @@ So this phase has two halves.
   not used), which GPUs Turnip is for.
 - The release build carries the Vulkan image, glslang and libadrenotools;
   CI builds it.
-- **(to confirm)** The default renderer and driver, from phase 7's results on the test device and from testers.
+- The default renderer and driver: decided (GL ES, and the phone's own Vulkan driver); phase 7's results may reopen it.
 
 ---
 
