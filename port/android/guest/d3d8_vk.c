@@ -28,6 +28,7 @@ host's Vulkan backend (port/android/host/host_vk.c).
 #include "sdl_platform.h"
 #include "halo_ui_pointer.h"
 #include "port_config.h"
+#include "vk_commands.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -199,6 +200,8 @@ struct vk_device
 	unsigned long immediate_capacity;
 
 	BOOL visibility_test_active;
+	/* the platform layer made a window (not debug.null_renderer): there is something to draw into */
+	BOOL video_ready;
 
 	unsigned long frame;
 	unsigned long next_vertex_shader_id;
@@ -338,6 +341,128 @@ static void surface_dimensions(const D3DSurface *surface, unsigned long *width, 
 	format = description.format;
 	*depth = format == D3DFMT_D24S8 || format == D3DFMT_F24S8 || format == D3DFMT_D16 || format == D3DFMT_F16 ||
 		format == D3DFMT_LIN_D24S8 || format == D3DFMT_LIN_F24S8 || format == D3DFMT_LIN_D16 || format == D3DFMT_LIN_F16;
+}
+
+/* ---------- the command stream (vk_commands.h)
+
+Commands are written here over a frame and handed to the host half
+(port/android/host/host_vk*.c) at its end, or sooner if the stream fills. The
+host reads them during the call and nothing later. */
+
+void host_vk_submit(unsigned int commands, unsigned int size);
+
+#define STREAM_SIZE (1024 * 1024)
+
+static uint32_t stream[STREAM_SIZE / 4];
+static unsigned long stream_used;
+
+static void stream_flush(void)
+{
+	if (stream_used)
+		host_vk_submit((unsigned int)(uintptr_t)stream, (unsigned int)stream_used);
+	stream_used = 0;
+}
+
+/* room for a command of size bytes, its header filled in */
+static void *stream_command(uint32_t type, unsigned long size)
+{
+	struct vk_command_header *header;
+
+	size = (size + 3) & ~3UL;
+	if (stream_used + size > STREAM_SIZE)
+		stream_flush();
+	header = (struct vk_command_header *)((unsigned char *)stream + stream_used);
+	header->type = type;
+	header->size = (uint32_t)size;
+	stream_used += size;
+	return header;
+}
+
+/* the pixels per unit of the bound targets: what the screen's targets are drawn at,
+as render_target_get in d3d8_gl.c works it out (a target the size of the screen gets
+the screen's scale), and what clears are scaled by (target_pixel there) */
+static float target_scale[2] = { 1.0f, 1.0f };
+
+static void target_scale_of(unsigned long width, unsigned long height, float scale[2])
+{
+	scale[0] = scale[1] = 1.0f;
+	if (width == (unsigned long)halo_screen_width() && height == SCREEN_HEIGHT)
+	{
+		scale[0] = screen_scale[0];
+		scale[1] = screen_scale[1];
+	}
+}
+
+static long target_pixel(float coordinate, int axis)
+{
+	return (long)floorf(coordinate * target_scale[axis] + 0.5f);
+}
+
+/* a surface as the host knows it; NONE for none. A surface that is not a depth format
+is not a depth buffer (d3d8_gl.c leaves it unbound) */
+static void surface_describe(const D3DSurface *surface, BOOL depth_only, struct vk_surface *out, float scale_out[2])
+{
+	unsigned long width, height;
+	float scale[2];
+	BOOL depth;
+
+	memset(out, 0, sizeof(*out));
+	scale_out[0] = scale_out[1] = 1.0f;
+	if (!surface || !surface->Data)
+		return;
+	surface_dimensions(surface, &width, &height, &depth);
+	if (depth_only && !depth)
+		return;
+	target_scale_of(width, height, scale);
+	out->data = surface->Data;
+	out->width = (uint32_t)width;
+	out->height = (uint32_t)height;
+	out->pixel_width = (uint32_t)(width * scale[0] + 0.5f);
+	out->pixel_height = (uint32_t)(height * scale[1] + 0.5f);
+	out->kind = depth ? VK_SURFACE_DEPTH : VK_SURFACE_COLOR;
+	scale_out[0] = scale[0];
+	scale_out[1] = scale[1];
+}
+
+/* the targets the host has bound, as last told it; cleared when a frame starts there anew */
+static struct vk_command_targets targets_told;
+static BOOL targets_known;
+
+/* tells the host the current targets, if they are not what it has, and sets the scale
+viewports and clears are in; FALSE if there is nothing to draw into (bind_targets in
+d3d8_gl.c) */
+static BOOL targets_bind(BOOL *has_depth)
+{
+	struct vk_command_targets targets;
+	float color_scale[2], depth_scale[2];
+
+	memset(&targets, 0, sizeof(targets));
+	surface_describe(device.render_target, FALSE, &targets.color, color_scale);
+	surface_describe(device.depth_stencil, TRUE, &targets.depth, depth_scale);
+	if (targets.color.kind == VK_SURFACE_NONE && targets.depth.kind == VK_SURFACE_NONE)
+		return FALSE;
+	if (targets.color.kind != VK_SURFACE_NONE)
+	{
+		target_scale[0] = color_scale[0];
+		target_scale[1] = color_scale[1];
+	}
+	else
+	{
+		target_scale[0] = depth_scale[0];
+		target_scale[1] = depth_scale[1];
+	}
+	if (!targets_known || memcmp(&targets.color, &targets_told.color, sizeof(targets.color)) ||
+		memcmp(&targets.depth, &targets_told.depth, sizeof(targets.depth)))
+	{
+		struct vk_command_targets *command = stream_command(VK_COMMAND_TARGETS, sizeof(*command));
+
+		command->color = targets.color;
+		command->depth = targets.depth;
+		targets_told = targets;
+		targets_known = TRUE;
+	}
+	*has_depth = targets.depth.kind != VK_SURFACE_NONE;
+	return TRUE;
 }
 
 struct xgpu_render_target *xgpu_render_target_find(unsigned long data)
@@ -490,7 +615,10 @@ HRESULT WINAPI Direct3D_CreateDevice(UINT adapter, D3DDEVTYPE device_type, void 
 		port/android/host/host.h): the platform layer's event loop runs only
 		while it has one, and its swap holds frames to the display's rate */
 		if (!config_boolean("debug.null_renderer") && platform_video_initialize(width, height))
-			platform_log("Direct3D: the Vulkan renderer (nothing is drawn yet)");
+		{
+			device.video_ready = TRUE;
+			platform_log("Direct3D: the Vulkan renderer (clears and presenting only: nothing else is drawn yet)");
+		}
 		else
 			platform_log("Direct3D: running without a window (nothing is displayed)");
 		device.created = TRUE;
@@ -1093,12 +1221,66 @@ void WINAPI D3DDevice_SetVertexDataColor(INT reg, D3DCOLOR color)
 
 void WINAPI D3DDevice_Clear(DWORD count, CONST D3DRECT *rectangles, DWORD flags, D3DCOLOR color, float z, DWORD stencil)
 {
-	(void)count;
-	(void)rectangles;
-	(void)flags;
-	(void)color;
-	(void)z;
-	(void)stencil;
+	struct vk_command_clear *command;
+	uint32_t clear_flags = 0;
+	BOOL has_depth = FALSE;
+	DWORD index, kept = 0;
+
+	if (!device.video_ready || !targets_bind(&has_depth))
+		return;
+	if (flags & D3DCLEAR_TARGET)
+	{
+		/* the Xbox clears the channels named (D3DCLEAR_TARGET_R, _G, _B, _A):
+		the fog screen clears only alpha, leaving the picture under the fog */
+		clear_flags |= ((flags & D3DCLEAR_TARGET_R) ? VK_CLEAR_RED : 0) | ((flags & D3DCLEAR_TARGET_G) ? VK_CLEAR_GREEN : 0) |
+			((flags & D3DCLEAR_TARGET_B) ? VK_CLEAR_BLUE : 0) | ((flags & D3DCLEAR_TARGET_A) ? VK_CLEAR_ALPHA : 0);
+	}
+	if (has_depth && (flags & D3DCLEAR_ZBUFFER))
+		clear_flags |= VK_CLEAR_DEPTH;
+	if (has_depth && (flags & D3DCLEAR_STENCIL))
+		clear_flags |= VK_CLEAR_STENCIL;
+	if (!clear_flags)
+		return;
+	command = stream_command(VK_COMMAND_CLEAR, sizeof(*command) + (count && rectangles ? count : 1) * 4 * sizeof(uint32_t));
+	command->flags = clear_flags;
+	color_to_vec4(color, command->color);
+	command->depth = z;
+	command->stencil = stencil;
+	if (!count || !rectangles)
+	{
+		/* the NV2A clips a viewport-less clear to the viewport, which is what
+		keeps a split-screen window's clear from wiping the other window */
+		long x0 = target_pixel((float)device.viewport.X, 0);
+		long y0 = target_pixel((float)device.viewport.Y, 1);
+
+		command->rectangles[0][0] = (uint32_t)x0;
+		command->rectangles[0][1] = (uint32_t)y0;
+		command->rectangles[0][2] = (uint32_t)(target_pixel((float)(device.viewport.X + device.viewport.Width), 0) - x0);
+		command->rectangles[0][3] = (uint32_t)(target_pixel((float)(device.viewport.Y + device.viewport.Height), 1) - y0);
+		command->rectangle_count = 1;
+		return;
+	}
+	for (index = 0; index < count; index++)
+	{
+		INT left = rectangles[index].x1 > device.viewport.X ? rectangles[index].x1 : device.viewport.X;
+		INT top = rectangles[index].y1 > device.viewport.Y ? rectangles[index].y1 : device.viewport.Y;
+		INT right = rectangles[index].x2 < device.viewport.X + device.viewport.Width ?
+			rectangles[index].x2 : device.viewport.X + device.viewport.Width;
+		INT bottom = rectangles[index].y2 < device.viewport.Y + device.viewport.Height ?
+			rectangles[index].y2 : device.viewport.Y + device.viewport.Height;
+		long x0, y0;
+
+		if (left >= right || top >= bottom)
+			continue;
+		x0 = target_pixel((float)(left + UI_OFFSET), 0);
+		y0 = target_pixel((float)top, 1);
+		command->rectangles[kept][0] = (uint32_t)x0;
+		command->rectangles[kept][1] = (uint32_t)y0;
+		command->rectangles[kept][2] = (uint32_t)(target_pixel((float)(right + UI_OFFSET), 0) - x0);
+		command->rectangles[kept][3] = (uint32_t)(target_pixel((float)bottom, 1) - y0);
+		kept++;
+	}
+	command->rectangle_count = kept;
 }
 
 /* ---------- presentation */
@@ -1110,8 +1292,18 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 	(void)destination_rectangle;
 	(void)unused;
 	(void)unused2;
-	/* the stand-in window's swap: holds the frame to the display's rate
-	until the backend's swapchain does (phase 2) */
+	if (device.video_ready)
+	{
+		struct vk_command_present *command = stream_command(VK_COMMAND_PRESENT, sizeof(*command));
+		float scale[2];
+
+		surface_describe(&device.back_buffer, FALSE, &command->back_buffer, scale);
+		stream_flush();
+		/* the host starts the next frame with nothing bound */
+		targets_known = FALSE;
+	}
+	/* the stand-in window's swap: holds the frame to the display's rate until the
+	host's swapchain presents (host_vk_presenting), after which it does */
 	platform_video_swap();
 	device.frame++;
 	platform_pump_events();

@@ -223,6 +223,7 @@ struct host_settings
 	char renderer[32]; /* display.renderer: "gl" (also when empty) or "vulkan" */
 	int vk_validation; /* debug.vk_validation */
 	int gpu_stats; /* debug.gpu_stats */
+	int vk_present_marker; /* debug.vk_present_marker */
 };
 
 static void config_read(const char *path, struct host_settings *settings)
@@ -243,6 +244,7 @@ static void config_read(const char *path, struct host_settings *settings)
 		toml_datum_t renderer = toml_seek(result.toptab, "display.renderer");
 		toml_datum_t validation = toml_seek(result.toptab, "debug.vk_validation");
 		toml_datum_t statistics = toml_seek(result.toptab, "debug.gpu_stats");
+		toml_datum_t marker = toml_seek(result.toptab, "debug.vk_present_marker");
 		double value = seconds.type == TOML_FP64 ? seconds.u.fp64 :
 			seconds.type == TOML_INT64 ? (double)seconds.u.int64 : 0.0;
 
@@ -258,6 +260,7 @@ static void config_read(const char *path, struct host_settings *settings)
 			snprintf(settings->renderer, sizeof(settings->renderer), "%s", renderer.u.s);
 		settings->vk_validation = validation.type == TOML_BOOLEAN && validation.u.boolean;
 		settings->gpu_stats = statistics.type == TOML_BOOLEAN && statistics.u.boolean;
+		settings->vk_present_marker = marker.type == TOML_BOOLEAN && marker.u.boolean;
 	}
 	toml_free(result);
 }
@@ -554,6 +557,7 @@ static void *game_main(void *unused)
 		host_debug_start_sampler(settings.sample_seconds);
 	host_debug_start_profiler(settings.profile_hz, data_root);
 	host_gl_statistics = settings.gpu_stats;
+	host_vk_present_marker = settings.vk_present_marker;
 	boot = make_boot(&environment);
 	host_logf(HOST_LOG_INFO, "data %s, saves %s", data_root, save_root);
 	host_run_guest_main(boot);

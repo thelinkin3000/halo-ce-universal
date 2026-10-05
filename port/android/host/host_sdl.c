@@ -162,7 +162,14 @@ uint32_t host_sdl_create_window(const char *title, int width, int height, int64_
 		flags &= ~(int64_t)SDL_WINDOW_OPENGL;
 		host_logf(HOST_LOG_INFO, "window: real, without an OpenGL context (a stand-in), the display being Vulkan's");
 	}
-	return handle_new(_handle_window, SDL_CreateWindow(title, width, height, (SDL_WindowFlags)flags));
+	{
+		SDL_Window *window = SDL_CreateWindow(title, width, height, (SDL_WindowFlags)flags);
+
+		/* the Vulkan backend makes its surface on the game's window: the last made (host_vk.h) */
+		if (host_renderer_vulkan && window)
+			host_vk_window = window;
+		return handle_new(_handle_window, window);
+	}
 }
 
 void host_sdl_window_size_in_pixels(uint32_t window, int *width, int *height)

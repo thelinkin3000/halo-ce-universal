@@ -63,3 +63,7 @@ host_touch_scene
 host_touch_bindings
 
 host_errno
+
+# the Vulkan renderer (port/android/guest/d3d8_vk.c, port/android/host/host_vk*.c)
+host_vk_submit
+host_vk_retired
