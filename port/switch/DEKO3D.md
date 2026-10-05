@@ -77,8 +77,9 @@ The guest's remaining GL calls (high-res HUD and text, menu art) have no
 context there, and Mesa does nothing with them, until their deko3d versions
 replace them.
 
-Config: `display.renderer = "gl"` (the default) or `"deko3d"`, under
-`[display]`.
+Config: `display.renderer = "deko3d"` (the default, since phase 6: also
+what a `config.toml` without the setting gets) or `"gl"`, the fallback,
+under `[display]`.
 
 ---
 
