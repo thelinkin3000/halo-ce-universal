@@ -2032,6 +2032,39 @@ line-for-line copies there too, but nothing has compiled those paths yet:
 run the dump and `tools/vk_shader_check.py` again on a corpus from play once
 the game draws.
 
+### Phase 5 — audit
+
+The record is true to the code: the guest's hashes are the spec's (the key
+zeroed first, so its padding hashes the same), the GLSL is copied during
+`host_vk_shader_compile`, the locks are taken in one order (the backend's,
+then the services'; the compile thread takes only the services'), and the
+`VkPipelineCache` is used from the compile thread and read for saving from
+others, which Vulkan allows (a pipeline cache is synchronized by the
+implementation unless made with `EXTERNALLY_SYNCHRONIZED`). Fixed:
+
+- **Two saves of the pipeline cache could run at once.** The game thread
+  saves (the surface's loss, five minutes, the exit) and so does the
+  activity's thread (deviation 5's watch, which fires twice when the app
+  goes away: "will" and "did"), with nothing between them: both wrote the
+  same `.tmp` file, and the one renamed last could be a mixture (the CRC
+  would then have thrown the whole cache away at the next start). One save
+  at a time now (a lock around the whole of it), and the count of pipelines
+  made since the last save is read and cleared under the services' lock,
+  less what was made while the file was written. On the device (phone's
+  driver, validation on): a cold pipeline cache, HOME after 40 s: one
+  `pipeline cache saved (the app went to the background): 90793 bytes` (the
+  second event found nothing new), and the next start `loaded from the
+  device`, no error.
+- **A compile request the host dropped was silent**: when the host could
+  not queue a shader (out of memory, or its table full), the guest asked
+  three times and stopped, and that shader's draws would have been skipped
+  for the run with nothing in the log. The host now says so (the first
+  eight times).
+
+For phase 6: the pipeline cache grows with every state the game uses and
+has no size limit (the record says so too); the placeholder pairs stay in
+it, harmlessly.
+
 ### Phase 5 — summary
 
 Worked unattended on the test device (Adreno 750, validation layer on in every run) as the `.vk` build. **Phase 5 works on both

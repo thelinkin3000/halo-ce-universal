@@ -608,6 +608,17 @@ uint32_t host_vk_shader_find(uint32_t stage, uint64_t hash, uint32_t status_out)
 	return handle;
 }
 
+/* a compile asked for and not queued: the guest asks a few times and then stops, so its draws would be skipped for the
+run with nothing in the log to say why; this says it, the first few times */
+static void compile_dropped(uint32_t stage, uint64_t hash, const char *why)
+{
+	static unsigned said;
+
+	if (said++ < 8)
+		host_logf(HOST_LOG_ERROR, "vk: the %s shader %016llx was not queued (%s); its draws are skipped",
+			stage == VK_SHADER_STAGE_VERTEX ? "vertex" : "pixel", (unsigned long long)hash, why);
+}
+
 void host_vk_shader_compile(uint32_t stage, uint64_t hash, uint32_t glsl_address, uint32_t glsl_size)
 {
 	const char *glsl = (const char *)(uintptr_t)glsl_address;
@@ -625,7 +636,10 @@ void host_vk_shader_compile(uint32_t stage, uint64_t hash, uint32_t glsl_address
 	/* copied during the call: the guest's memory is not read again */
 	copy = malloc((size_t)glsl_size + 1);
 	if (!copy)
+	{
+		compile_dropped(stage, hash, "out of memory for its GLSL");
 		return;
+	}
 	memcpy(copy, glsl, glsl_size);
 	copy[glsl_size] = 0;
 	pthread_mutex_lock(&S.lock);
@@ -642,6 +656,7 @@ void host_vk_shader_compile(uint32_t stage, uint64_t hash, uint32_t glsl_address
 	{
 		pthread_mutex_unlock(&S.lock);
 		free(copy);
+		compile_dropped(stage, hash, "the shader table is full or out of memory");
 		return;
 	}
 	shader->state = STATE_QUEUED;
@@ -1082,8 +1097,24 @@ static void pipeline_cache_load(void)
 	free(data);
 }
 
+/* Saves come from two threads: the game thread (the surface's loss, five minutes, the game's exit) and the activity's
+thread (SDL's background events, which come twice: "will" and "did"). One save at a time: two would write the same .tmp
+file at once, and the one renamed last could be a mixture of both (the CRC would then throw the whole cache away at the
+next start). */
+static pthread_mutex_t save_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void pipeline_cache_save_locked(const char *why);
+
 void host_vk_pipeline_cache_save(const char *why)
 {
+	pthread_mutex_lock(&save_lock);
+	pipeline_cache_save_locked(why);
+	pthread_mutex_unlock(&save_lock);
+}
+
+static void pipeline_cache_save_locked(const char *why)
+{
+	unsigned saving;
 	size_t size = 0;
 	void *data;
 	struct cache_header header;
@@ -1091,9 +1122,18 @@ void host_vk_pipeline_cache_save(const char *why)
 
 	if (!S.started || !B.pipeline_cache || B.dead)
 		return;
-	/* nothing new since the last save: the file is as it was */
-	if (!S.made_since_save)
-		return;
+	/* nothing new since the last save: the file is as it was. (The compile thread counts under S.lock; what is counted
+	from here on is in the next save, so the count is taken now and only that much is cleared after the write.) */
+	{
+		unsigned made;
+
+		pthread_mutex_lock(&S.lock);
+		made = S.made_since_save;
+		pthread_mutex_unlock(&S.lock);
+		if (!made)
+			return;
+		saving = made;
+	}
 	if (!HOST_VK_CHECK(vkGetPipelineCacheData(B.device, B.pipeline_cache, &size, NULL)) || !size)
 		return;
 	data = malloc(size);
@@ -1111,7 +1151,9 @@ void host_vk_pipeline_cache_save(const char *why)
 	header.crc = crc32_of(data, size);
 	if (file_write(S.cache_file, &header, sizeof(header), data, size))
 	{
-		S.made_since_save = 0;
+		pthread_mutex_lock(&S.lock);
+		S.made_since_save -= saving < S.made_since_save ? saving : S.made_since_save;
+		pthread_mutex_unlock(&S.lock);
 		S.last_save = now_ns();
 		S.pipeline_cache_size = size;
 		host_logf(HOST_LOG_INFO, "vk: pipeline cache saved (%s): %zu bytes", why, size);
@@ -1127,6 +1169,7 @@ void host_vk_services_tick(void)
 {
 	if (!S.started)
 		return;
+	/* (read without the lock: a stale count only moves the save to the next tick) */
 	if (S.made_since_save && now_ns() - S.last_save > 300ull * 1000000000ull)
 		host_vk_pipeline_cache_save("five minutes");
 }
