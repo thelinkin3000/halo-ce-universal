@@ -94,6 +94,14 @@ static const struct config_setting config_settings[] =
 	{ "display.screen_width", _config_integer, "0", "HALO_SCREEN_WIDTH", _environment_value, _platform_android,
 		"Columns of the 480-line picture: 0 for the display's shape, 640 for the\n"
 		"Xbox's 4:3." },
+#ifndef HALO_SWITCH
+	/* read by the Android host (port/android/host/host_vk_driver.c) */
+	{ "display.vk_driver", _config_string, "\"\"", "HALO_VK_DRIVER", _environment_value, _platform_android,
+		"The Vulkan driver the Vulkan renderer runs on: empty for the phone's own,\n"
+		"or the name of a driver archive (an adrenotools zip) left in the game's\n"
+		"folder, for example a Turnip build for Adreno GPUs. One that does not load\n"
+		"is logged and the phone's own is used." },
+#endif
 #ifdef HALO_SWITCH
 	/* read by the Switch host before the game starts, to choose the game
 	image built with that renderer (port/switch/DEKO3D.md) */
@@ -576,7 +584,7 @@ static const struct config_setting config_settings[] =
 	profiler has its own debug.profile_hz above */
 	{ "debug.vk_probe", _config_string, "\"\"", "HALO_VK_PROBE", _environment_value, _platform_android,
 		"Run the Vulkan probe (port/android/host/host_vk_probe.c) instead of the\n"
-		"game: \"all\", or a list of caps, memory, compile, pipelines, present;\n"
+		"game: \"all\", or a list of caps, memory, compile, pipelines, draw, present;\n"
 		"empty runs the game. It writes vk_probe.txt." },
 	{ "debug.vk_validation", _config_boolean, "false", "HALO_VK_VALIDATION", _environment_set_is_true, _platform_android,
 		"Turn on Vulkan's validation layer in the probe, when the app carries it." },

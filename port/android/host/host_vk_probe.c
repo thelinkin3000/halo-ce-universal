@@ -16,25 +16,32 @@ Steps, run in this order whatever order they are asked for in:
 	memory     whether the GPU can read the guest's kind of memory in place (3)
 	compile    glslang's cost on the device (4)
 	pipelines  pipeline creation (5)
+	draw       the game's converted shaders drawn with their descriptor sets (phase 0, part B)
 	present    a swapchain, the surface's loss, the pacing (2; it waits for a tester)
 
 A step that kills the probe is written to vk_probe_running.txt first; the next
 run finds the file and leaves that step out (vk_probe_skip.txt) and says so.
 
-Vulkan is loaded through SDL (SDL_Vulkan_LoadLibrary) into a table, and an
-entry point that is missing is reported by name, never called through a null
-pointer. The host does not link libvulkan, so the GL ES path loads nothing new.
+Vulkan is loaded through the driver module (host_vk_driver.c: the phone's own
+driver, or the archive display.vk_driver names, through libadrenotools) into a
+table, and an entry point that is missing is reported by name, never called
+through a null pointer. The host does not link libvulkan, so the GL ES path
+loads nothing new. The surface is made on the window's ANativeWindow with
+vkCreateAndroidSurfaceKHR: no SDL_Vulkan_* call is made, because SDL would load
+the phone's driver beside the chosen one.
 */
 
 #define VK_NO_PROTOTYPES
+#define VK_USE_PLATFORM_ANDROID_KHR
 #include <vulkan/vulkan.h>
 
 #include "host.h"
+#include "host_vk_driver.h"
 #include "tomlc17.h"
 
 #include <SDL3/SDL.h>
-#include <SDL3/SDL_vulkan.h>
 #include <dlfcn.h>
+#include <link.h>
 #include <errno.h>
 #include <math.h>
 #include <pthread.h>
@@ -159,7 +166,7 @@ static PFN_vkEnumerateInstanceLayerProperties vkEnumerateInstanceLayerProperties
 	X(vkGetPhysicalDeviceFeatures) X(vkGetPhysicalDeviceQueueFamilyProperties) \
 	X(vkGetPhysicalDeviceMemoryProperties) X(vkGetPhysicalDeviceFormatProperties) \
 	X(vkEnumerateDeviceExtensionProperties) X(vkCreateDevice) X(vkGetDeviceProcAddr) \
-	X(vkDestroySurfaceKHR) X(vkGetPhysicalDeviceSurfaceSupportKHR) \
+	X(vkDestroySurfaceKHR) X(vkCreateAndroidSurfaceKHR) X(vkGetPhysicalDeviceSurfaceSupportKHR) \
 	X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR) X(vkGetPhysicalDeviceSurfaceFormatsKHR) \
 	X(vkGetPhysicalDeviceSurfacePresentModesKHR) X(vkGetPhysicalDeviceFeatures2) \
 	X(vkGetPhysicalDeviceProperties2) X(vkGetPhysicalDeviceExternalBufferProperties)
@@ -226,7 +233,8 @@ version is there, and found under the core name first */
 	X(vkCmdSetColorWriteMaskEXT, , "VK_EXT_extended_dynamic_state3", 99) \
 	X(vkCmdSetVertexInputEXT, , "VK_EXT_vertex_input_dynamic_state", 99) \
 	X(vkGetMemoryHostPointerPropertiesEXT, , "VK_EXT_external_memory_host", 99) \
-	X(vkGetMemoryFdKHR, , "VK_KHR_external_memory_fd", 99)
+	X(vkGetMemoryFdKHR, , "VK_KHR_external_memory_fd", 99) \
+	X(vkCmdPushDescriptorSetKHR, , "VK_KHR_push_descriptor", 99)
 
 #define X(name) static PFN_##name name;
 INSTANCE_FUNCTIONS(X)
@@ -251,6 +259,8 @@ struct probe
 	VkQueue queue;
 	uint32_t family;
 	VkSurfaceKHR surface;
+	char driver_setting[256];     /* display.vk_driver */
+	char driver_description[512]; /* what the driver module opened */
 	uint32_t instance_api;  /* what the instance was made for */
 	uint32_t device_api;    /* the device's own */
 	uint32_t api;           /* the lesser: what the code may call as core */
@@ -422,8 +432,6 @@ static int load_device_functions(void)
 static int create_instance(void)
 {
 	uint32_t loader_version = VK_API_VERSION_1_0, count = 0, index;
-	Uint32 sdl_count = 0;
-	const char *const *sdl_extensions;
 	const char *extensions[16];
 	uint32_t extension_count = 0;
 	VkApplicationInfo application = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
@@ -436,15 +444,12 @@ static int create_instance(void)
 	uint32_t count_available;
 	int has_debug_utils = 0;
 
-	if (!SDL_Vulkan_LoadLibrary(NULL))
-	{
-		rep("caps.vulkan_library: failed to load (%s)", SDL_GetError());
-		return 0;
-	}
-	vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr();
+	rep("driver.setting: \"%s\"", P.driver_setting);
+	vkGetInstanceProcAddr = host_vk_driver_open(P.driver_setting, P.driver_description, sizeof(P.driver_description));
+	rep("driver.opened: %s", P.driver_description);
 	if (!vkGetInstanceProcAddr)
 	{
-		rep("caps.vulkan_library: no vkGetInstanceProcAddr (%s)", SDL_GetError());
+		rep("caps.vulkan_library: no driver could be opened");
 		return 0;
 	}
 	vkCreateInstance = (PFN_vkCreateInstance)vkGetInstanceProcAddr(NULL, "vkCreateInstance");
@@ -494,24 +499,20 @@ static int create_instance(void)
 	rep("validation.requested: %s", yesno(want_validation));
 	rep("validation.layer_found: %s", yesno(layer_found));
 
-	/* what SDL's surface needs, then what the plan asks for besides: the
-	surface, the Android surface and (listed by the loader) properties2 */
-	sdl_extensions = SDL_Vulkan_GetInstanceExtensions(&sdl_count);
-	for (index = 0; sdl_extensions && index < sdl_count && extension_count < 12; index++)
-		extensions[extension_count++] = sdl_extensions[index];
+	/* the surface, the Android surface and (listed by the loader) properties2, each only if offered */
 	{
-		static const char *const wanted[] = { VK_KHR_SURFACE_EXTENSION_NAME, "VK_KHR_android_surface",
+		static const char *const wanted[] = { VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_ANDROID_SURFACE_EXTENSION_NAME,
 			VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME };
-		uint32_t w, k, a;
+		uint32_t w, a;
 
 		for (w = 0; w < 3; w++)
 		{
-			for (k = 0; k < extension_count && strcmp(extensions[k], wanted[w]); k++)
-				;
 			for (a = 0; a < count_available && strcmp(available[a].extensionName, wanted[w]); a++)
 				;
-			if (k == extension_count && a < count_available)
+			if (a < count_available)
 				extensions[extension_count++] = wanted[w];
+			else
+				rep("error: the instance does not offer %s", wanted[w]);
 		}
 	}
 	free(available);
@@ -555,20 +556,37 @@ static int create_instance(void)
 	return 1;
 }
 
+/* a surface on the window's current ANativeWindow (after the app was away it is a new one, so it is read
+again each time); no SDL_Vulkan_* call, which would load the phone's driver beside the chosen one */
+static int make_surface(int quiet)
+{
+	VkAndroidSurfaceCreateInfoKHR info = { VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR };
+	struct ANativeWindow *native = (struct ANativeWindow *)SDL_GetPointerProperty(SDL_GetWindowProperties(P.window),
+		SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL);
+
+	if (!native)
+	{
+		if (!quiet)
+			rep("error: the window has no ANativeWindow (%s)", SDL_GetError());
+		return 0;
+	}
+	info.window = native;
+	if (quiet)
+		return vkCreateAndroidSurfaceKHR(P.instance, &info, NULL, &P.surface) == VK_SUCCESS;
+	return CHECK_RESULT(vkCreateAndroidSurfaceKHR(P.instance, &info, NULL, &P.surface));
+}
+
+/* the window is made without SDL_WINDOW_VULKAN, which makes SDL load the system loader, and without
+SDL_WINDOW_OPENGL, so SDL makes no EGL surface on it either */
 static int create_surface(void)
 {
-	P.window = SDL_CreateWindow("Halo Vulkan probe", 0, 0, SDL_WINDOW_VULKAN | SDL_WINDOW_FULLSCREEN);
+	P.window = SDL_CreateWindow("Halo Vulkan probe", 0, 0, SDL_WINDOW_FULLSCREEN);
 	if (!P.window)
 	{
 		rep("error: SDL_CreateWindow failed: %s", SDL_GetError());
 		return 0;
 	}
-	if (!SDL_Vulkan_CreateSurface(P.window, P.instance, NULL, &P.surface))
-	{
-		rep("error: SDL_Vulkan_CreateSurface failed: %s", SDL_GetError());
-		return 0;
-	}
-	return 1;
+	return make_surface(0);
 }
 
 /* appends a structure to a pNext chain whose last structure is *tail */
@@ -1130,6 +1148,11 @@ static int create_device(void)
 			enable_extension("VK_KHR_external_memory");
 		P.host_import = 1;
 	}
+	/* step draw's push-descriptor case */
+	if (have_extension("VK_KHR_push_descriptor"))
+		enable_extension("VK_KHR_push_descriptor");
+	/* BC1 textures for step draw, where the device has them */
+	features.features.textureCompressionBC = P.features2.features.textureCompressionBC;
 	/* the beyond-the-plan export case of step 3 */
 	if (have_extension("VK_KHR_external_memory_fd"))
 	{
@@ -2659,6 +2682,7 @@ static void memory_import_cases(void)
 			/* an index buffer in imported memory of its own: {0,1,2}, then rewritten to {3,4,5} */
 			{
 				void *index_cpu = low_range(alignment, alignment);
+				VkResult index_result;
 
 				if (index_cpu)
 				{
@@ -2668,7 +2692,8 @@ static void memory_import_cases(void)
 					words[1] = 1;
 					words[2] = 2;
 					fill_triangle(vertices, 255, 0, 0);
-					if (import_range(index_cpu, alignment, import_usage(), &index_buffer) == VK_SUCCESS)
+					index_result = import_range(index_cpu, alignment, import_usage(), &index_buffer);
+					if (index_result == VK_SUCCESS)
 					{
 						index_imported = 1;
 						index_ok = draw_and_check(imported.buffer, index_buffer.buffer, color_word(255, 0, 0), &seen);
@@ -2682,7 +2707,7 @@ static void memory_import_cases(void)
 					}
 					else
 					{
-						rep("%s.index_fetch: the index range was not imported (%s returned %d)", key, import_stage, (int)result);
+						rep("%s.index_fetch: the index range was not imported (%s returned %d)", key, import_stage, (int)index_result);
 						import_free(&index_buffer);
 					}
 					host_low_unmap(index_cpu, alignment);
@@ -2706,12 +2731,17 @@ static void memory_import_cases(void)
 			struct imported first, second;
 			VkResult a, b;
 
-			a = import_range(cpu, size, import_usage(), &first);
-			b = import_range(cpu, size, import_usage(), &second);
-			rep("memory.import.same_pages_twice: first %d, second %d (%s)", (int)a, (int)b,
-				a == VK_SUCCESS && b == VK_SUCCESS ? "both allowed" : "refused");
-			import_free(&second);
-			import_free(&first);
+			/* importing the same pages twice is not forbidden, and a driver may not expect it */
+			if (guard_begin("memory.same_pages"))
+			{
+				a = import_range(cpu, size, import_usage(), &first);
+				b = import_range(cpu, size, import_usage(), &second);
+				rep("memory.import.same_pages_twice: first %d, second %d (%s)", (int)a, (int)b,
+					a == VK_SUCCESS && b == VK_SUCCESS ? "both allowed" : "refused");
+				import_free(&second);
+				import_free(&first);
+				guard_end();
+			}
 			if (guard_begin("memory.negative"))
 			{
 				struct imported bad;
@@ -3960,6 +3990,850 @@ static void step_pipelines(void)
 	rep("step.pipelines: done");
 }
 
+/* ---------- step 5b: the game's shaders, drawn (draw) */
+
+/* The draw the earlier attempt's Turnip crashed on, and the one part A never made: the converted
+shaders of the game (the typical and the large pair, and the pass-through pair as the control), with the
+descriptor set they declare (the vertex block at binding 0, the pixel block at 1, four combined image
+samplers at 2 to 5), drawn into a 256x256 target and read back. Every sub-step that touches the driver in a
+new way is guarded, so that a crash names itself on the next run: the descriptor update, each variant's
+pipeline and draw, the rewrite of the set after a draw, push descriptors. */
+
+#define DRAW_SIZE 256
+
+/* the blocks as std140 lays them out (the shaders' declarations, in the shaders of port/android/probe): asserted, because
+a C structure that disagrees with the block from some byte on draws wrong without a word */
+struct vs_block
+{
+	float c[192][4];
+	float viewport_scale[4];
+	float viewport_offset[4];
+	float point_size;
+	float screen_offset;
+	float pad[2];
+};
+
+struct ps_block
+{
+	float ps_c0[8][4];
+	float ps_c1[8][4];
+	float ps_final_c0[4];
+	float ps_final_c1[4];
+	float fog_color[4];
+	float fog_parameters[4];
+	float alpha_reference;
+	float pad[3];
+	float bump_matrix[4][4];
+	float bump_luminance[4][4];
+	float texture_scale[4][4];
+	float texture_lod_bias[4];
+};
+
+_Static_assert(offsetof(struct vs_block, viewport_scale) == 3072, "std140: viewport_scale");
+_Static_assert(offsetof(struct vs_block, viewport_offset) == 3088, "std140: viewport_offset");
+_Static_assert(offsetof(struct vs_block, point_size) == 3104, "std140: point_size");
+_Static_assert(offsetof(struct vs_block, screen_offset) == 3108, "std140: screen_offset");
+_Static_assert(offsetof(struct ps_block, ps_c1) == 128, "std140: ps_c1");
+_Static_assert(offsetof(struct ps_block, ps_final_c0) == 256, "std140: ps_final_c0");
+_Static_assert(offsetof(struct ps_block, fog_parameters) == 304, "std140: fog_parameters");
+_Static_assert(offsetof(struct ps_block, alpha_reference) == 320, "std140: alpha_reference");
+_Static_assert(offsetof(struct ps_block, bump_matrix) == 336, "std140: bump_matrix");
+_Static_assert(offsetof(struct ps_block, bump_luminance) == 400, "std140: bump_luminance");
+_Static_assert(offsetof(struct ps_block, texture_scale) == 464, "std140: texture_scale");
+_Static_assert(offsetof(struct ps_block, texture_lod_bias) == 528, "std140: texture_lod_bias");
+
+/* a 64x64 texture, or a cube of six, with its sampler */
+struct texture
+{
+	VkImage image;
+	VkDeviceMemory memory;
+	VkImageView view;
+	VkSampler sampler;
+	VkFormat format;
+	int cube;
+};
+
+#define TEXTURE_SIZE 64
+
+static void texture_free(struct texture *texture)
+{
+	if (texture->sampler)
+		vkDestroySampler(P.device, texture->sampler, NULL);
+	if (texture->view)
+		vkDestroyImageView(P.device, texture->view, NULL);
+	if (texture->image)
+		vkDestroyImage(P.device, texture->image, NULL);
+	if (texture->memory)
+		vkFreeMemory(P.device, texture->memory, NULL);
+	memset(texture, 0, sizeof(*texture));
+}
+
+/* the pixels of one layer: a checker over a gradient, a colour of its own per layer */
+static void texture_fill_rgba(uint8_t *out, int layer)
+{
+	int x, y;
+
+	for (y = 0; y < TEXTURE_SIZE; y++)
+	{
+		for (x = 0; x < TEXTURE_SIZE; x++)
+		{
+			int checker = ((x >> 3) ^ (y >> 3)) & 1;
+
+			out[(y * TEXTURE_SIZE + x) * 4 + 0] = (uint8_t)(x * 4);
+			out[(y * TEXTURE_SIZE + x) * 4 + 1] = (uint8_t)(y * 4);
+			out[(y * TEXTURE_SIZE + x) * 4 + 2] = (uint8_t)(layer * 40 + (checker ? 100 : 0));
+			out[(y * TEXTURE_SIZE + x) * 4 + 3] = 255;
+		}
+	}
+}
+
+/* BC1 blocks (8 bytes each, 16x16 of them): two 5:6:5 colours that change with the block, four-colour mode */
+static void texture_fill_bc1(uint8_t *out, int layer)
+{
+	int block;
+
+	for (block = 0; block < 256; block++)
+	{
+		int bx = block % 16, by = block / 16;
+		uint16_t c0 = (uint16_t)(((16 + bx) << 11) | ((by * 4) << 5) | (layer * 4 + 8));
+		uint16_t c1 = (uint16_t)(((15 - bx) << 11) | (((15 - by) * 2) << 5) | (layer * 2));
+		uint8_t *p = out + block * 8;
+
+		p[0] = (uint8_t)c0;
+		p[1] = (uint8_t)(c0 >> 8);
+		p[2] = (uint8_t)c1;
+		p[3] = (uint8_t)(c1 >> 8);
+		p[4] = p[5] = p[6] = p[7] = (uint8_t)(block & 1 ? 0xE4 : 0x1B);
+	}
+}
+
+static int format_samples(VkFormat format)
+{
+	VkFormatProperties properties;
+
+	vkGetPhysicalDeviceFormatProperties(P.physical, format, &properties);
+	return (properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) &&
+		(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) &&
+		(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_TRANSFER_DST_BIT);
+}
+
+/* a texture of the given kind, filled and ready to be sampled; 0 (and a report) if it cannot be made */
+static int texture_make(struct texture *texture, int cube, int compressed, VkSamplerAddressMode address)
+{
+	VkImageCreateInfo info = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+	VkImageViewCreateInfo view = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+	VkSamplerCreateInfo sampler = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+	VkMemoryRequirements requirements;
+	VkMemoryAllocateInfo allocate = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+	VkImageMemoryBarrier barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+	VkBufferImageCopy copies[6];
+	struct buffer staging;
+	VkCommandBuffer command;
+	uint32_t layers = cube ? 6 : 1, layer;
+	size_t layer_bytes = compressed ? 256 * 8 : TEXTURE_SIZE * TEXTURE_SIZE * 4;
+
+	memset(texture, 0, sizeof(*texture));
+	texture->format = compressed ? VK_FORMAT_BC1_RGBA_UNORM_BLOCK : VK_FORMAT_R8G8B8A8_UNORM;
+	texture->cube = cube;
+	if (!make_buffer(&staging, layer_bytes * layers, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0, 1))
+		return 0;
+	for (layer = 0; layer < layers; layer++)
+	{
+		if (compressed)
+			texture_fill_bc1((uint8_t *)staging.map + layer * layer_bytes, (int)layer);
+		else
+			texture_fill_rgba((uint8_t *)staging.map + layer * layer_bytes, (int)layer);
+	}
+	info.flags = cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
+	info.imageType = VK_IMAGE_TYPE_2D;
+	info.format = texture->format;
+	info.extent.width = TEXTURE_SIZE;
+	info.extent.height = TEXTURE_SIZE;
+	info.extent.depth = 1;
+	info.mipLevels = 1;
+	info.arrayLayers = layers;
+	info.samples = VK_SAMPLE_COUNT_1_BIT;
+	info.tiling = VK_IMAGE_TILING_OPTIMAL;
+	info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	if (!CHECK_RESULT(vkCreateImage(P.device, &info, NULL, &texture->image)))
+		goto fail;
+	vkGetImageMemoryRequirements(P.device, texture->image, &requirements);
+	allocate.allocationSize = requirements.size;
+	allocate.memoryTypeIndex = find_memory_type(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
+	if (allocate.memoryTypeIndex == UINT32_MAX)
+		allocate.memoryTypeIndex = find_memory_type(requirements.memoryTypeBits, 0, 0);
+	if (!CHECK_RESULT(vkAllocateMemory(P.device, &allocate, NULL, &texture->memory)) ||
+		!CHECK_RESULT(vkBindImageMemory(P.device, texture->image, texture->memory, 0)))
+		goto fail;
+	view.image = texture->image;
+	view.viewType = cube ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D;
+	view.format = texture->format;
+	view.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	view.subresourceRange.levelCount = 1;
+	view.subresourceRange.layerCount = layers;
+	if (!CHECK_RESULT(vkCreateImageView(P.device, &view, NULL, &texture->view)))
+		goto fail;
+	sampler.magFilter = VK_FILTER_LINEAR;
+	sampler.minFilter = VK_FILTER_LINEAR;
+	sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+	sampler.addressModeU = sampler.addressModeV = sampler.addressModeW = address;
+	sampler.maxLod = 0.0f;
+	sampler.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+	if (!CHECK_RESULT(vkCreateSampler(P.device, &sampler, NULL, &texture->sampler)))
+		goto fail;
+
+	command = command_begin();
+	barrier.srcAccessMask = 0;
+	barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.image = texture->image;
+	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barrier.subresourceRange.levelCount = 1;
+	barrier.subresourceRange.layerCount = layers;
+	vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+	memset(copies, 0, sizeof(copies));
+	for (layer = 0; layer < layers; layer++)
+	{
+		copies[layer].bufferOffset = layer * layer_bytes;
+		copies[layer].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		copies[layer].imageSubresource.baseArrayLayer = layer;
+		copies[layer].imageSubresource.layerCount = 1;
+		copies[layer].imageExtent.width = TEXTURE_SIZE;
+		copies[layer].imageExtent.height = TEXTURE_SIZE;
+		copies[layer].imageExtent.depth = 1;
+	}
+	vkCmdCopyBufferToImage(command, staging.buffer, texture->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, layers, copies);
+	barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+	if (!command_submit_wait(command))
+		goto fail;
+	free_buffer(&staging);
+	return 1;
+fail:
+	free_buffer(&staging);
+	texture_free(texture);
+	return 0;
+}
+
+/* ---- the draw's resources, made once */
+
+enum { _draw_pass, _draw_typical, _draw_large, _draw_pairs };
+
+struct draw_context
+{
+	struct target target;
+	struct buffer readback;
+	struct buffer vs_block[2], ps_block;  /* the second vertex block moves the triangle (the rewrite test) */
+	struct buffer vertices[_draw_pairs];
+	/* rgba 2d, bc1 2d, rgba cube, bc1 cube (RGBA8 stands in for BC1 where the device cannot sample it) */
+	struct texture textures[4];
+	VkDescriptorPool pool;
+	VkDescriptorSet set[_draw_pairs];
+	int ready;
+	uint32_t clear_word;
+};
+
+static struct draw_context W;
+
+/* where the picture of the draw is: the pixels, and what to say of them */
+struct draw_result
+{
+	int finished;
+	uint32_t not_clear;
+	uint64_t hash;
+	uint32_t center;
+};
+
+static const float draw_clear[4] = { 0.2f, 0.4f, 0.6f, 1.0f };
+
+static uint64_t fnv1a(const void *data, size_t size)
+{
+	const uint8_t *bytes = data;
+	uint64_t hash = 1469598103934665603ull;
+	size_t index;
+
+	for (index = 0; index < size; index++)
+		hash = (hash ^ bytes[index]) * 1099511628211ull;
+	return hash;
+}
+
+/* the picture as a portable pixmap in the data folder, for looking at off the device */
+static void draw_write_picture(const char *name, const uint32_t *pixels)
+{
+	char path[760];
+	FILE *file;
+	int index;
+
+	snprintf(path, sizeof(path), "%s/vk_probe_draw_%s.ppm", P.data_root, name);
+	file = fopen(path, "wb");
+	if (!file)
+		return;
+	fprintf(file, "P6\n%d %d\n255\n", DRAW_SIZE, DRAW_SIZE);
+	for (index = 0; index < DRAW_SIZE * DRAW_SIZE; index++)
+	{
+		uint8_t rgb[3] = { (uint8_t)pixels[index], (uint8_t)(pixels[index] >> 8), (uint8_t)(pixels[index] >> 16) };
+
+		fwrite(rgb, 1, 3, file);
+	}
+	fclose(file);
+}
+
+static void draw_analyze(const char *name, struct draw_result *result)
+{
+	const uint32_t *pixels = W.readback.map;
+	int index;
+
+	result->finished = 1;
+	result->not_clear = 0;
+	for (index = 0; index < DRAW_SIZE * DRAW_SIZE; index++)
+		if (pixels[index] != W.clear_word)
+			result->not_clear++;
+	result->hash = fnv1a(pixels, DRAW_SIZE * DRAW_SIZE * 4);
+	result->center = pixels[DRAW_SIZE / 2 * DRAW_SIZE + DRAW_SIZE / 2];
+	if (name)
+		draw_write_picture(name, pixels);
+}
+
+static void draw_context_free(void)
+{
+	int index;
+
+	if (!P.device)
+		return;
+	for (index = 0; index < 4; index++)
+		texture_free(&W.textures[index]);
+	for (index = 0; index < _draw_pairs; index++)
+		free_buffer(&W.vertices[index]);
+	free_buffer(&W.vs_block[0]);
+	free_buffer(&W.vs_block[1]);
+	free_buffer(&W.ps_block);
+	free_buffer(&W.readback);
+	if (W.pool)
+		vkDestroyDescriptorPool(P.device, W.pool, NULL);
+	target_free(&W.target);
+	memset(&W, 0, sizeof(W));
+}
+
+/* the constants that put the vertices on the screen: an identity transform where each shader reads its
+matrix (the typical vertex shader's c[28] to c[31]; the large one's c[0] to c[3], with the skinning matrices at
+c[60] to c[62] and the index scale c[7].w), c[58] and c[59] for the viewport, and viewport_scale and
+viewport_offset that make the vertices' pixel coordinates cover a 256x256 target */
+static void draw_fill_vs(struct vs_block *block, float scale)
+{
+	int index, k;
+
+	memset(block, 0, sizeof(*block));
+	for (index = 0; index < 192; index++)
+		for (k = 0; k < 4; k++)
+			block->c[index][k] = 0.5f;
+	for (index = 0; index < 4; index++)
+	{
+		memset(block->c[index], 0, 16);
+		memset(block->c[28 + index], 0, 16);
+		block->c[index][index] = 1.0f;
+		block->c[28 + index][index] = 1.0f;
+	}
+	for (index = 0; index < 3; index++)
+	{
+		memset(block->c[60 + index], 0, 16);
+		block->c[60 + index][index] = 1.0f;
+	}
+	memset(block->c[7], 0, 16);
+	block->c[7][3] = 1.0f;
+	block->c[58][0] = block->c[58][1] = block->c[58][2] = 1.0f;
+	block->c[58][3] = 0.0f;
+	memset(block->c[59], 0, 16);
+	block->viewport_scale[0] = scale;
+	block->viewport_scale[1] = scale;
+	block->viewport_scale[2] = 1.0f;
+	block->viewport_scale[3] = 1.0f;
+	block->viewport_offset[0] = (float)DRAW_SIZE / 2.0f;
+	block->viewport_offset[1] = (float)DRAW_SIZE / 2.0f;
+	block->point_size = 1.0f;
+}
+
+static void draw_fill_ps(struct ps_block *block)
+{
+	int index, k;
+
+	memset(block, 0, sizeof(*block));
+	for (index = 0; index < 8; index++)
+	{
+		for (k = 0; k < 4; k++)
+		{
+			block->ps_c0[index][k] = 0.5f;
+			block->ps_c1[index][k] = 0.25f;
+		}
+	}
+	for (k = 0; k < 4; k++)
+	{
+		block->ps_final_c0[k] = 1.0f;
+		block->ps_final_c1[k] = 0.5f;
+		block->fog_color[k] = 0.2f;
+	}
+	block->fog_parameters[0] = 0.0f;
+	block->alpha_reference = 0.0f;
+	for (index = 0; index < 4; index++)
+	{
+		block->bump_matrix[index][index] = 1.0f;
+		block->bump_luminance[index][0] = 1.0f;
+		for (k = 0; k < 4; k++)
+			block->texture_scale[index][k] = 1.0f;
+	}
+}
+
+/* three vertices of a triangle that covers the target, in pixel coordinates */
+static const float draw_corners[3][2] = { { -64.0f, -64.0f }, { 512.0f, -64.0f }, { -64.0f, 512.0f } };
+
+static void put_floats(uint8_t *at, float a, float b, float c, float d)
+{
+	float values[4] = { a, b, c, d };
+
+	memcpy(at, values, sizeof(values));
+}
+
+static int draw_fill_vertices(int pair)
+{
+	uint8_t *map = W.vertices[pair].map;
+	int vertex, attribute;
+
+	if (pair == _draw_pass)
+	{
+		struct color_vertex vertices[3];
+
+		fill_triangle(vertices, 255, 160, 32);
+		memcpy(map, vertices, sizeof(vertices));
+		return 1;
+	}
+	for (vertex = 0; vertex < 3; vertex++)
+	{
+		float x = draw_corners[vertex][0], y = draw_corners[vertex][1];
+		uint8_t *at = map + vertex * pairs[pair].layout.stride;
+
+		if (pair == _draw_typical)
+		{
+			for (attribute = 0; attribute < 16; attribute++)
+				put_floats(at + attribute * 16, 0.5f, 0.5f, 0.5f, 1.0f);
+			put_floats(at + 0 * 16, x, y, 0.5f, 1.0f);                         /* position */
+			put_floats(at + 4 * 16, x / DRAW_SIZE, y / DRAW_SIZE, 0.0f, 1.0f); /* texture coordinates */
+			put_floats(at + 9 * 16, 1.0f, 0.6f, 0.2f, 1.0f);                   /* diffuse */
+		}
+		else
+		{
+			uint32_t packed = 0x20000000u | 0x00000400u; /* a unit-ish normal in the 11:11:10 form */
+
+			put_floats(at, x, y, 0.5f, 1.0f);
+			memcpy(at + 16, &packed, 4);
+			memcpy(at + 20, &packed, 4);
+			memcpy(at + 24, &packed, 4);
+			for (attribute = 4; attribute < 16; attribute++)
+				put_floats(at + 28 + (attribute - 4) * 16, 0.5f, 0.5f, 0.5f, 1.0f);
+			put_floats(at + 28 + 0 * 16, x / DRAW_SIZE, y / DRAW_SIZE, 0.0f, 1.0f); /* attribute 4: texture coordinates */
+			put_floats(at + 28 + 1 * 16, 0.0f, 0.0f, 0.0f, 0.0f);                   /* attribute 5: blend indices */
+			put_floats(at + 28 + 2 * 16, 1.0f, 0.0f, 0.0f, 1.0f);                   /* attribute 6: blend weights */
+		}
+	}
+	return 1;
+}
+
+static int draw_context_init(void)
+{
+	VkDescriptorPoolSize sizes[2];
+	VkDescriptorPoolCreateInfo pool = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+	int bc = P.features2.features.textureCompressionBC && format_samples(VK_FORMAT_BC1_RGBA_UNORM_BLOCK);
+	VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+	int pair;
+
+	if (W.ready)
+		return 1;
+	if (!pipe_context_init())
+		return 0;
+	if (!target_make(&W.target, DRAW_SIZE, DRAW_SIZE, PROBE_COLOR_FORMAT, X.depth) ||
+		!make_buffer(&W.readback, DRAW_SIZE * DRAW_SIZE * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, host, 0, 1))
+		return 0;
+	if (!make_buffer(&W.vs_block[0], 4096, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, host, 0, 1) ||
+		!make_buffer(&W.vs_block[1], 4096, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, host, 0, 1) ||
+		!make_buffer(&W.ps_block, 4096, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, host, 0, 1))
+		return 0;
+	/* the first block puts one pixel unit on one 128th of the half-width; the second halves the triangle's size */
+	draw_fill_vs(W.vs_block[0].map, (float)DRAW_SIZE / 2.0f);
+	draw_fill_vs(W.vs_block[1].map, (float)DRAW_SIZE);
+	draw_fill_ps(W.ps_block.map);
+	for (pair = 0; pair < _draw_pairs; pair++)
+	{
+		if (!make_buffer(&W.vertices[pair], 4096, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, host, 0, 1))
+			return 0;
+		draw_fill_vertices(pair);
+	}
+	if (!texture_make(&W.textures[0], 0, 0, VK_SAMPLER_ADDRESS_MODE_REPEAT) ||
+		!texture_make(&W.textures[1], 0, bc, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE) ||
+		!texture_make(&W.textures[2], 1, 0, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE) ||
+		!texture_make(&W.textures[3], 1, bc, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE))
+		return 0;
+	rep("draw.textures: 64x64 R8G8B8A8, %s, and cubes of both", bc ? "BC1" : "R8G8B8A8 standing in for BC1 (the device cannot sample it)");
+	sizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	sizes[0].descriptorCount = 16;
+	sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	sizes[1].descriptorCount = 32;
+	pool.maxSets = 8;
+	pool.poolSizeCount = 2;
+	pool.pPoolSizes = sizes;
+	if (!CHECK_RESULT(vkCreateDescriptorPool(P.device, &pool, NULL, &W.pool)))
+		return 0;
+	W.ready = 1;
+	return 1;
+}
+
+/* the descriptors of a pair: the vertex block at binding 0 (block 0 or 1), the pixel block at 1, four textures at 2 to 5.
+The typical pixel shader's first sampler is a cube map and the large one's last is (the shaders say so). */
+static void draw_descriptors(int pair, int vs_block, VkDescriptorBufferInfo buffers[2], VkDescriptorImageInfo images[4],
+	VkWriteDescriptorSet writes[6], VkDescriptorSet set)
+{
+	/* typical: cube, bc1, rgba, bc1.  large: rgba, bc1, rgba, cube */
+	static const int typical_textures[4] = { 2, 1, 0, 1 };
+	static const int large_textures[4] = { 0, 1, 0, 3 };
+	const int *which = pair == _draw_large ? large_textures : typical_textures;
+	int index;
+
+	buffers[0].buffer = W.vs_block[vs_block].buffer;
+	buffers[0].offset = 0;
+	buffers[0].range = sizeof(struct vs_block);
+	buffers[1].buffer = W.ps_block.buffer;
+	buffers[1].offset = 0;
+	buffers[1].range = sizeof(struct ps_block);
+	memset(writes, 0, sizeof(VkWriteDescriptorSet) * 6);
+	for (index = 0; index < 2; index++)
+	{
+		writes[index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[index].dstSet = set;
+		writes[index].dstBinding = (uint32_t)index;
+		writes[index].descriptorCount = 1;
+		writes[index].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		writes[index].pBufferInfo = &buffers[index];
+	}
+	for (index = 0; index < 4; index++)
+	{
+		const struct texture *texture = &W.textures[which[index]];
+
+		images[index].sampler = texture->sampler;
+		images[index].imageView = texture->view;
+		images[index].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		writes[2 + index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[2 + index].dstSet = set;
+		writes[2 + index].dstBinding = (uint32_t)(2 + index);
+		writes[2 + index].descriptorCount = 1;
+		writes[2 + index].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		writes[2 + index].pImageInfo = &images[index];
+	}
+}
+
+/* one draw of a pair into the cleared target and its readback; push is the layout of a push-descriptor
+draw (the pair's descriptors are pushed instead of bound); set may be NULL (the pass-through pair uses none) */
+static int draw_submit(int pair, VkPipeline pipeline, const struct dynamic_set *dynamic, VkDescriptorSet set,
+	VkPipelineLayout push_layout, struct draw_result *result, const char *picture)
+{
+	VkCommandBuffer command = command_begin();
+	VkBufferImageCopy copy;
+	VkDeviceSize offset = 0;
+
+	memset(result, 0, sizeof(*result));
+	pass_begin(command, &W.target, draw_clear);
+	vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+	dynamic_record(command, dynamic, &pairs[pair].layout, DRAW_SIZE, DRAW_SIZE);
+	bind_vertex_buffer(command, dynamic, &pairs[pair].layout, W.vertices[pair].buffer, offset);
+	if (push_layout)
+	{
+		VkDescriptorBufferInfo buffers[2];
+		VkDescriptorImageInfo images[4];
+		VkWriteDescriptorSet writes[6];
+
+		draw_descriptors(pair, 0, buffers, images, writes, VK_NULL_HANDLE);
+		vkCmdPushDescriptorSetKHR(command, VK_PIPELINE_BIND_POINT_GRAPHICS, push_layout, 0, 6, writes);
+	}
+	else if (set)
+	{
+		vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, X.layout, 0, 1, &set, 0, NULL);
+	}
+	vkCmdDraw(command, 3, 1, 0, 0);
+	pass_end(command);
+	image_barrier(command, W.target.color.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+	memset(&copy, 0, sizeof(copy));
+	copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	copy.imageSubresource.layerCount = 1;
+	copy.imageExtent.width = DRAW_SIZE;
+	copy.imageExtent.height = DRAW_SIZE;
+	copy.imageExtent.depth = 1;
+	vkCmdCopyImageToBuffer(command, W.target.color.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, W.readback.buffer, 1, &copy);
+	host_barrier(command);
+	if (!command_submit_wait(command))
+		return 0;
+	draw_analyze(picture, result);
+	return 1;
+}
+
+static void draw_report(const char *key, const struct draw_result *result)
+{
+	rep("%s.finished: %s", key, yesno(result->finished));
+	if (result->finished)
+	{
+		rep("%s.pixels_not_clear: %u of %d", key, result->not_clear, DRAW_SIZE * DRAW_SIZE);
+		rep("%s.hash: 0x%016llx", key, (unsigned long long)result->hash);
+		rep("%s.center_pixel: 0x%08x (r %u g %u b %u a %u)", key, result->center, result->center & 255,
+			(result->center >> 8) & 255, (result->center >> 16) & 255, result->center >> 24);
+	}
+}
+
+/* a pipeline of a pair for the draw: no specialization, depth test on */
+static VkPipeline draw_pipeline(int pair, const struct dynamic_set *dynamic, int blend, VkPipelineLayout layout)
+{
+	struct pipeline_request request;
+	VkShaderModule vertex = make_shader_module(&shader_spirv[pairs[pair].vertex]);
+	VkShaderModule fragment = make_shader_module(&shader_spirv[pairs[pair].fragment]);
+	VkPipeline pipeline = VK_NULL_HANDLE;
+
+	if (vertex && fragment)
+	{
+		memset(&request, 0, sizeof(request));
+		request.vertex = vertex;
+		request.fragment = fragment;
+		request.layout = &pairs[pair].layout;
+		request.pipeline_layout = layout;
+		request.color = PROBE_COLOR_FORMAT;
+		request.depth = X.depth;
+		request.depth_test = 1;
+		request.blend = blend;
+		request.dynamic = dynamic;
+		request.salt = -1;
+		pipeline = create_pipeline(&request, NULL, NULL);
+	}
+	if (vertex)
+		vkDestroyShaderModule(P.device, vertex, NULL);
+	if (fragment)
+		vkDestroyShaderModule(P.device, fragment, NULL);
+	return pipeline;
+}
+
+static void step_draw(void)
+{
+	struct variant { const char *name; int pair; int blend; int full; };
+	static const struct variant variants[] = {
+		{ "pass.opaque", _draw_pass, 0, 0 },
+		{ "pass.blend", _draw_pass, 1, 0 },
+		{ "typical.opaque", _draw_typical, 0, 0 },
+		{ "typical.blend", _draw_typical, 1, 0 },
+		{ "typical.full_dynamic", _draw_typical, 0, 1 },
+		{ "large.opaque", _draw_large, 0, 0 },
+		{ "large.blend", _draw_large, 1, 0 },
+		{ "large.full_dynamic", _draw_large, 0, 1 },
+	};
+	struct draw_result result, first[_draw_pairs];
+	VkDescriptorSet *sets = W.set;
+	int updated[_draw_pairs] = { 1, 0, 0 };
+	char key[96];
+	size_t index;
+	int pair;
+
+	rep("step.draw: start");
+	if (!ensure_shaders())
+	{
+		rep("step.draw: failed (the shaders did not compile)");
+		return;
+	}
+	if (!guard_begin("draw.setup"))
+		return;
+	if (!draw_context_init())
+	{
+		guard_end();
+		rep("step.draw: failed (setup)");
+		return;
+	}
+	guard_end();
+	memset(first, 0, sizeof(first));
+
+	/* the clear colour as the target holds it, to count what a draw changed */
+	{
+		VkCommandBuffer command = command_begin();
+		VkBufferImageCopy copy;
+
+		pass_begin(command, &W.target, draw_clear);
+		pass_end(command);
+		image_barrier(command, W.target.color.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		memset(&copy, 0, sizeof(copy));
+		copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		copy.imageSubresource.layerCount = 1;
+		copy.imageExtent.width = DRAW_SIZE;
+		copy.imageExtent.height = DRAW_SIZE;
+		copy.imageExtent.depth = 1;
+		vkCmdCopyImageToBuffer(command, W.target.color.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, W.readback.buffer, 1, &copy);
+		host_barrier(command);
+		if (!command_submit_wait(command))
+		{
+			rep("step.draw: failed (the clear)");
+			return;
+		}
+		W.clear_word = ((const uint32_t *)W.readback.map)[0];
+		rep("draw.clear_word: 0x%08x", W.clear_word);
+	}
+
+	/* the descriptor sets: allocated, then written with vkUpdateDescriptorSets, which the earlier attempt's Turnip died in */
+	for (pair = _draw_typical; pair < _draw_pairs; pair++)
+	{
+		VkDescriptorSetAllocateInfo allocate = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+		VkDescriptorBufferInfo buffers[2];
+		VkDescriptorImageInfo images[4];
+		VkWriteDescriptorSet writes[6];
+
+		snprintf(key, sizeof(key), "draw.update.%s", pairs[pair].name);
+		allocate.descriptorPool = W.pool;
+		allocate.descriptorSetCount = 1;
+		allocate.pSetLayouts = &X.set_layout;
+		if (!CHECK_RESULT(vkAllocateDescriptorSets(P.device, &allocate, &sets[pair])))
+			continue;
+		if (!guard_begin(key))
+			continue;
+		draw_descriptors(pair, 0, buffers, images, writes, sets[pair]);
+		vkUpdateDescriptorSets(P.device, 6, writes, 0, NULL);
+		guard_end();
+		updated[pair] = 1;
+		rep("draw.%s.descriptors_written: yes (2 uniform buffers, 4 combined image samplers)", pairs[pair].name);
+	}
+
+	/* each variant: its pipeline, the draw, the picture */
+	for (index = 0; index < sizeof(variants) / sizeof(variants[0]); index++)
+	{
+		const struct variant *v = &variants[index];
+		VkPipeline pipeline;
+		int ok;
+
+		snprintf(key, sizeof(key), "draw.%s", v->name);
+		if (!updated[v->pair])
+		{
+			rep("%s: skipped (its descriptor set was not written)", key);
+			continue;
+		}
+		if (!guard_begin(key))
+			continue;
+		pipeline = draw_pipeline(v->pair, v->full ? &X.full : &X.plain, v->blend, X.layout);
+		if (!pipeline)
+		{
+			guard_end();
+			rep("%s.finished: no (the pipeline was not made)", key);
+			continue;
+		}
+		ok = draw_submit(v->pair, pipeline, v->full ? &X.full : &X.plain, v->pair == _draw_pass ? VK_NULL_HANDLE : sets[v->pair],
+			VK_NULL_HANDLE, &result, v->name);
+		vkDestroyPipeline(P.device, pipeline, NULL);
+		guard_end();
+		if (!ok)
+		{
+			rep("%s.finished: no (the draw did not complete)", key);
+			continue;
+		}
+		draw_report(key, &result);
+		if (!strcmp(v->name + strlen(v->name) - 6, "opaque"))
+			first[v->pair] = result;
+	}
+
+	/* the descriptor set written again, after the first draw was submitted and waited for: the vertex block
+	swapped for one that halves the triangle (fewer pixels), then back (the first picture again) */
+	for (pair = _draw_typical; pair < _draw_pairs; pair++)
+	{
+		VkDescriptorBufferInfo buffers[2];
+		VkDescriptorImageInfo images[4];
+		VkWriteDescriptorSet writes[6];
+		struct draw_result moved, restored;
+		VkPipeline pipeline;
+		int ok;
+
+		snprintf(key, sizeof(key), "draw.rewrite.%s", pairs[pair].name);
+		if (!first[pair].finished)
+		{
+			rep("%s: skipped (no first draw to compare with)", key);
+			continue;
+		}
+		if (!guard_begin(key))
+			continue;
+		pipeline = draw_pipeline(pair, &X.plain, 0, X.layout);
+		draw_descriptors(pair, 1, buffers, images, writes, sets[pair]);
+		vkUpdateDescriptorSets(P.device, 6, writes, 0, NULL);
+		ok = pipeline && draw_submit(pair, pipeline, &X.plain, sets[pair], VK_NULL_HANDLE, &moved, NULL);
+		draw_descriptors(pair, 0, buffers, images, writes, sets[pair]);
+		vkUpdateDescriptorSets(P.device, 6, writes, 0, NULL);
+		ok = ok && draw_submit(pair, pipeline, &X.plain, sets[pair], VK_NULL_HANDLE, &restored, NULL);
+		if (pipeline)
+			vkDestroyPipeline(P.device, pipeline, NULL);
+		guard_end();
+		if (!ok)
+		{
+			rep("%s.finished: no", key);
+			continue;
+		}
+		rep("%s.finished: yes", key);
+		rep("%s.second_block_pixels_not_clear: %u (first block %u)", key, moved.not_clear, first[pair].not_clear);
+		rep("%s.second_block_changed_the_picture: %s", key, yesno(moved.hash != first[pair].hash));
+		rep("%s.restored_matches_first: %s (0x%016llx against 0x%016llx)", key, yesno(restored.hash == first[pair].hash),
+			(unsigned long long)restored.hash, (unsigned long long)first[pair].hash);
+	}
+
+	/* push descriptors: the same draw as the typical pair's first, with the descriptors pushed */
+	if (!extension_enabled("VK_KHR_push_descriptor") || !vkCmdPushDescriptorSetKHR)
+	{
+		rep("draw.push: not possible (VK_KHR_push_descriptor is not offered by this device)");
+	}
+	else if (updated[_draw_typical] && guard_begin("draw.push"))
+	{
+		VkDescriptorSetLayoutBinding bindings[6];
+		VkDescriptorSetLayoutCreateInfo layout_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+		VkDescriptorSetLayout push_set = VK_NULL_HANDLE;
+		VkPipelineLayout push_layout = VK_NULL_HANDLE;
+		VkPipeline pipeline = VK_NULL_HANDLE;
+		int index2;
+
+		memset(bindings, 0, sizeof(bindings));
+		for (index2 = 0; index2 < 6; index2++)
+		{
+			bindings[index2].binding = (uint32_t)index2;
+			bindings[index2].descriptorType = index2 < 2 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			bindings[index2].descriptorCount = 1;
+			bindings[index2].stageFlags = index2 == 0 ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT;
+		}
+		layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
+		layout_info.bindingCount = 6;
+		layout_info.pBindings = bindings;
+		if (CHECK_RESULT(vkCreateDescriptorSetLayout(P.device, &layout_info, NULL, &push_set)))
+			push_layout = make_pipeline_layout(push_set);
+		if (push_layout)
+			pipeline = draw_pipeline(_draw_typical, &X.plain, 0, push_layout);
+		if (pipeline && draw_submit(_draw_typical, pipeline, &X.plain, VK_NULL_HANDLE, push_layout, &result, "typical.push"))
+		{
+			draw_report("draw.push.typical", &result);
+			rep("draw.push.typical.matches_bound_set: %s", yesno(first[_draw_typical].finished && result.hash == first[_draw_typical].hash));
+		}
+		else
+		{
+			rep("draw.push.typical.finished: no");
+		}
+		if (pipeline)
+			vkDestroyPipeline(P.device, pipeline, NULL);
+		if (push_layout)
+			vkDestroyPipelineLayout(P.device, push_layout, NULL);
+		if (push_set)
+			vkDestroyDescriptorSetLayout(P.device, push_set, NULL);
+		guard_end();
+	}
+	rep("step.draw: done");
+}
+
 /* ---------- step 2: a frame on the screen (present) */
 
 #define FRAMES_IN_FLIGHT 2
@@ -3995,6 +4869,9 @@ struct present_state
 	int suboptimal_seen;
 	int orientation_ok, orientation_wrong;
 	uint64_t last_input;
+	/* a loss of the surface, from its detection until a surface and swapchain are made again */
+	uint64_t lost_at;
+	int lost_attempts;
 };
 
 static struct present_state V;
@@ -4151,6 +5028,9 @@ static int present_recreate(int reason, int new_surface)
 	uint64_t start = now_ns();
 	VkSwapchainKHR old = V.chain.handle;
 	struct swapchain made;
+	/* while the app is away there is no window to make a surface on: the attempts are repeated by the
+	loop, without a line each, and the loss is counted and logged once, when it is over */
+	int lost = reason == _recreate_surface_lost;
 	int ok;
 
 	vkDeviceWaitIdle(P.device);
@@ -4161,9 +5041,12 @@ static int present_recreate(int reason, int new_surface)
 		if (P.surface)
 			vkDestroySurfaceKHR(P.instance, P.surface, NULL);
 		P.surface = VK_NULL_HANDLE;
-		if (!SDL_Vulkan_CreateSurface(P.window, P.instance, NULL, &P.surface))
+		if (lost)
+			V.lost_attempts++;
+		if (!make_surface(lost))
 		{
-			rep("present.recreate: %s: SDL_Vulkan_CreateSurface failed: %s", recreate_names[reason], SDL_GetError());
+			if (!lost)
+				rep("present.recreate: %s: no surface", recreate_names[reason]);
 			return 0;
 		}
 	}
@@ -4180,11 +5063,34 @@ static int present_recreate(int reason, int new_surface)
 	if (ok)
 		V.chain = made;
 	V.recreations[reason]++;
-	rep("present.recreate: %s%s, %s, %.2f ms%s%s (%ux%u, transform %s, %u images)", recreate_names[reason],
-		new_surface ? " with a new surface" : "", ok ? "ok" : "failed", (double)(now_ns() - start) / 1e6,
-		"", "", ok ? V.chain.extent.width : 0, ok ? V.chain.extent.height : 0, ok ? transform_name(V.chain.transform) : "-",
-		ok ? V.chain.count : 0);
+	{
+		char lost_text[96] = "";
+
+		if (lost && V.lost_at)
+		{
+			snprintf(lost_text, sizeof(lost_text), ", %.1f ms after the loss, %d attempts", (double)(now_ns() - V.lost_at) / 1e6,
+				V.lost_attempts);
+			if (ok)
+				V.lost_at = 0;
+		}
+		rep("present.recreate: %s%s, %s, %.2f ms%s (%ux%u, transform %s, %u images)", recreate_names[reason],
+			new_surface ? " with a new surface" : "", ok ? "ok" : "failed", (double)(now_ns() - start) / 1e6, lost_text,
+			ok ? V.chain.extent.width : 0, ok ? V.chain.extent.height : 0, ok ? transform_name(V.chain.transform) : "-",
+			ok ? V.chain.count : 0);
+	}
 	return ok;
+}
+
+/* the surface is gone (found by acquire or by present): counted and logged once, however many tries it takes */
+static void surface_lost(const char *where)
+{
+	if (!V.lost_at)
+	{
+		V.lost_at = now_ns();
+		V.lost_attempts = 0;
+		rep("present.surface_lost: %s", where);
+	}
+	present_recreate(_recreate_surface_lost, 1);
 }
 
 static void hue_to_color(double hue, float *rgb)
@@ -4526,8 +5432,8 @@ static void step_present(void)
 			struct timespec wait = { 0, 50 * 1000000 };
 
 			nanosleep(&wait, NULL);
-			if (!background && !V.chain.handle && !present_recreate(_recreate_surface_lost, 1))
-				continue;
+			if (!background && !V.chain.handle)
+				surface_lost("no swapchain");
 			continue;
 		}
 		/* the surface as it is: a transform or a size that is not the swapchain's means a new one */
@@ -4565,7 +5471,7 @@ static void step_present(void)
 		}
 		if (result == VK_ERROR_SURFACE_LOST_KHR)
 		{
-			present_recreate(_recreate_surface_lost, 1);
+			surface_lost("vkAcquireNextImageKHR");
 			continue;
 		}
 		if (result == VK_SUBOPTIMAL_KHR)
@@ -4633,7 +5539,7 @@ static void step_present(void)
 		}
 		else if (result == VK_ERROR_SURFACE_LOST_KHR)
 		{
-			present_recreate(_recreate_surface_lost, 1);
+			surface_lost("vkQueuePresentKHR");
 			last_present = 0;
 		}
 		else
@@ -4692,6 +5598,7 @@ static const struct { const char *name; void (*run)(void); } step_table[] = {
 	{ "memory", step_memory },
 	{ "compile", step_compile },
 	{ "pipelines", step_pipelines },
+	{ "draw", step_draw },
 	{ "present", step_present },
 };
 #define STEP_COUNT ((int)(sizeof(step_table) / sizeof(step_table[0])))
@@ -4734,6 +5641,10 @@ static char *read_file_text(const char *path)
 	return text;
 }
 
+/* the step being run, which the running marker goes back to when a sub-step's guard ends: a crash
+later in the same step must still name the step */
+static char current_step[64];
+
 /* what is being done, for a run that dies in it; empty when nothing is */
 static void mark_running(const char *name)
 {
@@ -4771,7 +5682,30 @@ static int guard_begin(const char *name)
 
 static void guard_end(void)
 {
-	mark_running(NULL);
+	mark_running(current_step[0] ? current_step : NULL);
+}
+
+/* which GPU-related libraries the process has loaded, to show that only the chosen driver is in it (the system
+loader is one only with the phone's own driver, or through libadrenotools' private copy of it) */
+static int report_library(struct dl_phdr_info *info, size_t size, void *data)
+{
+	static const char *const interesting[] = { "vulkan", "adreno", "vk_", "EGL", "GLES", "adrenotools", "_hook",
+		"hook_impl", "VkLayer", "turnip", "freedreno", "gsl", "kgsl", "libmain", "libglslang" };
+	size_t index;
+
+	(void)size;
+	(void)data;
+	if (!info->dlpi_name || !info->dlpi_name[0])
+		return 0;
+	for (index = 0; index < sizeof(interesting) / sizeof(interesting[0]); index++)
+	{
+		if (strstr(info->dlpi_name, interesting[index]))
+		{
+			rep("driver.loaded_library: %s", info->dlpi_name);
+			break;
+		}
+	}
+	return 0;
 }
 
 static void probe_teardown(void)
@@ -4782,6 +5716,7 @@ static void probe_teardown(void)
 
 		vkDeviceWaitIdle(P.device);
 		draw_check_free();
+		draw_context_free();
 		simple_free();
 		pipe_context_free();
 		for (index = 0; index < 4; index++)
@@ -4804,12 +5739,13 @@ static void probe_teardown(void)
 	glslang_unload();
 }
 
-void host_vk_probe_run(const char *steps, const char *data_root)
+void host_vk_probe_run(const char *steps, const char *data_root, const char *vk_driver)
 {
 	char *crashed, *skipped;
 	int index, setup = 0;
 
 	snprintf(P.data_root, sizeof(P.data_root), "%s", data_root);
+	snprintf(P.driver_setting, sizeof(P.driver_setting), "%s", vk_driver ? vk_driver : "");
 	snprintf(report_path, sizeof(report_path), "%s/vk_probe.txt", data_root);
 	snprintf(skip_path, sizeof(skip_path), "%s/vk_probe_skip.txt", data_root);
 	snprintf(running_path, sizeof(running_path), "%s/vk_probe_running.txt", data_root);
@@ -4851,6 +5787,7 @@ void host_vk_probe_run(const char *steps, const char *data_root)
 	{
 		skipped = read_file_text(skip_path);
 		rep("probe.setup: ok");
+		dl_iterate_phdr(report_library, NULL);
 		for (index = 0; index < STEP_COUNT; index++)
 		{
 			int asked = !strcmp(steps, "all") || in_list(steps, step_table[index].name);
@@ -4864,8 +5801,10 @@ void host_vk_probe_run(const char *steps, const char *data_root)
 					step_table[index].name);
 				continue;
 			}
-			mark_running(step_table[index].name);
+			snprintf(current_step, sizeof(current_step), "%s", step_table[index].name);
+			mark_running(current_step);
 			step_table[index].run();
+			current_step[0] = 0;
 			mark_running(NULL);
 		}
 		free(skipped);
@@ -4873,6 +5812,14 @@ void host_vk_probe_run(const char *steps, const char *data_root)
 	probe_teardown();
 	rep("validation.summary: %d messages, %d errors", validation_messages, validation_errors);
 	rep("probe.done: %s", setup ? "yes" : "no");
+	/* last, and guarded: unloading a driver is one more thing that can go wrong */
+	if (guard_begin("driver_close"))
+	{
+		host_vk_driver_close();
+		guard_end();
+		rep("driver.closed: yes");
+	}
+	mark_running(NULL);
 	if (report_file)
 		fclose(report_file);
 	host_exit(0);
