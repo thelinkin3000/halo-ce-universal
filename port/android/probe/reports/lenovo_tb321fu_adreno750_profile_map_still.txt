@@ -1,0 +1,24 @@
+# GL ES build 2d2a322e+changes, profile_hz 1000, gpu_stats, test_input look:1, first campaign map standing still (cryo-tube), seconds 580 to 650 of the run
+487971 samples at 1000 Hz; frames per second: 110.8
+thread                   samples      game  renderer  boundary    driver     other  cpu ms/s  cpu ms/frame
+Thread-2 (1444)            69999     18.5%      5.0%      1.9%     51.4%     23.2%     715.0          6.45
+Thread-2 (1453)            69999      0.0%      0.0%    100.0%      0.0%      0.0%      43.7          0.39
+Thread-2 (1454)            69990      0.0%      0.0%    100.0%      0.0%      0.0%      40.4          0.36
+Thread-2 (1455)            69978      0.0%      0.0%     99.3%      0.0%      0.7%      66.8          0.60
+Thread-2 (1462)            69937      0.0%      0.0%     99.8%      0.0%      0.2%      42.0          0.38
+Thread-2 (1463)            69752      0.1%      0.0%      0.0%      0.0%     99.9%      73.5          0.66
+Thread-2 (1465)            68316      0.0%      0.0%      0.0%      0.0%    100.0%      77.8          0.70
+
+Thread-2 (1444): most sampled
+   30.7%  libc.so
+   23.7%  ??
+   22.5%  (in a system call: blocked)
+   20.2%  libGLESv2_adreno.so
+    0.9%  base.apk
+    0.4%  libgui.so
+    0.3%  libGLESv3.so
+    0.3%  libgsl.so
+Thread-2 (1453): most sampled
+  100.0%  libc.so
+Thread-2 (1454): most sampled
+  100.0%  libc.so
