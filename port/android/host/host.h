@@ -105,6 +105,16 @@ void host_debug_thread_exited(void);
 /* config.toml's debug.sample_seconds: seconds between samples of the guest
 threads, as text */
 void host_debug_start_sampler(const char *setting);
+/* config.toml's debug.profile_hz: samples of every guest thread a second, into
+profile.bin in data_root; 0 does nothing */
+void host_debug_start_profiler(int hz, const char *data_root);
+
+/* ---------- the Vulkan probe (host_vk_probe.c; port/android/VULKAN.md, phase 0) */
+
+/* runs the steps named in steps ("all", or a comma list of caps, memory,
+compile, pipelines, present) instead of the game, writes vk_probe.txt in
+data_root and ends the app */
+void host_vk_probe_run(const char *steps, const char *data_root) __attribute__((noreturn));
 
 /* ---------- import table (host_imports.c) */
 
