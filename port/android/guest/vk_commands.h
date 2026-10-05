@@ -27,6 +27,8 @@ enum
 	VK_COMMAND_TARGETS = 1,
 	VK_COMMAND_CLEAR,
 	VK_COMMAND_PRESENT,
+	VK_COMMAND_DATA,
+	VK_COMMAND_TEST_DRAW,
 };
 
 /* a surface's kind, as the host makes its image */
@@ -96,6 +98,54 @@ struct vk_command_present
 {
 	struct vk_command_header header;
 	struct vk_surface back_buffer;
+};
+
+/* ---------- data (phase 3)
+
+What a draw reads is copied into the stream by the guest at the draw
+(vk_data_put in d3d8_vk.c), and by the host into an upload ring at the hand-over;
+later commands name it by the id vk_data_put returned and an offset in it. An id is
+the frame's running number of the data put, from 1, and is reset at each PRESENT
+(and at a TEST_DRAW that says so) */
+
+/* a place in the data of this frame */
+struct vk_data_ref
+{
+	uint32_t id;
+	uint32_t offset;
+};
+
+/* part of the data of an id: parts of one id come in order (part_offset 0, then the
+next, until total_size), possibly in different hand-overs, and the host places all of
+an id's parts contiguously. Followed by part_size bytes, the record padded to a
+multiple of 4 */
+struct vk_command_data
+{
+	struct vk_command_header header;
+	uint32_t id;
+	uint32_t part_offset;
+	uint32_t total_size;
+	uint32_t part_size;
+	uint32_t payload[];
+};
+
+/* the self-test's vertex: a position and a colour */
+struct vk_test_vertex
+{
+	float position[3];
+	float color[4];
+};
+
+/* only for debug.vk_self_test: draws the three vertices (struct vk_test_vertex) at offset
+in the data of id into a 16x16 target of the host's own, reads it back and logs the
+colour seen against the one in expected (R, G, B, 0 to 255). With last set, the frame's
+data is let go afterwards, as PRESENT does */
+struct vk_command_test_draw
+{
+	struct vk_command_header header;
+	struct vk_data_ref data;
+	uint32_t expected[3];
+	uint32_t last;
 };
 
 #endif

@@ -30,6 +30,7 @@ image is transitioned from the layout it is tracked in, with a full barrier
 struct host_vk_backend host_vkb;
 void *host_vk_window;
 int host_vk_present_marker;
+int host_vk_self_test;
 
 #define B host_vkb
 
@@ -275,6 +276,22 @@ static void frame_submit(uint32_t wait_image)
 	frame->submitted = 1;
 }
 
+/* submits the frame as it is and waits for it: for the self-tests, which read what the GPU wrote back; 0 if it
+could not be submitted */
+static int frame_submit_and_wait(const char *what)
+{
+	struct host_vk_frame *frame = &B.frames[B.frame];
+
+	frame_submit(UINT32_MAX);
+	if (!frame->submitted)
+		return 0;
+	host_vk_wait_fence(frame->fence, what, frame->number);
+	retire(frame->number);
+	HOST_VK_CHECK(vkResetFences(B.device, 1, &frame->fence));
+	frame->submitted = 0;
+	return !B.dead;
+}
+
 /* the highest submission number whose fence has signalled; B.lock is held */
 static uint32_t retired_locked(void)
 {
@@ -339,7 +356,7 @@ static unsigned bucket_of(uint32_t data)
 	return (data >> 4) % HOST_VK_TARGET_BUCKETS;
 }
 
-static uint32_t memory_type(uint32_t bits, VkMemoryPropertyFlags preferred)
+uint32_t host_vk_memory_type(uint32_t bits, VkMemoryPropertyFlags preferred)
 {
 	uint32_t index, fallback = UINT32_MAX;
 
@@ -443,7 +460,7 @@ struct host_vk_target *host_vk_target_get(const struct vk_surface *surface)
 		goto fail;
 	vkGetImageMemoryRequirements(B.device, target->image, &requirements);
 	allocation.allocationSize = requirements.size;
-	allocation.memoryTypeIndex = memory_type(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	allocation.memoryTypeIndex = host_vk_memory_type(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 	if (allocation.memoryTypeIndex == UINT32_MAX)
 	{
 		host_logf(HOST_LOG_ERROR, "vk: no memory type for the %ux%u target at %08x", (unsigned)surface->pixel_width,
@@ -819,7 +836,6 @@ static void clears_selftest(void)
 	VkBufferImageCopy copy;
 	VkCommandBuffer command;
 	struct host_vk_target *color;
-	struct host_vk_frame *frame = &B.frames[B.frame];
 	unsigned char *pixels = NULL;
 	int bad = 0, x, y;
 	uint32_t type;
@@ -868,7 +884,7 @@ static void clears_selftest(void)
 	if (!HOST_VK_CHECK(vkCreateBuffer(B.device, &buffer_info, NULL, &buffer)))
 		goto done;
 	vkGetBufferMemoryRequirements(B.device, buffer, &requirements);
-	type = memory_type(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	type = host_vk_memory_type(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 	if (type == UINT32_MAX || !(B.memory.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
 	{
 		host_logf(HOST_LOG_ERROR, "vk: clears self-test: no host-visible memory");
@@ -894,11 +910,8 @@ static void clears_selftest(void)
 		barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
 		vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, NULL, 0, NULL);
 	}
-	frame_submit(UINT32_MAX);
-	host_vk_wait_fence(frame->fence, "the clears self-test", frame->number);
-	retire(frame->number);
-	vkResetFences(B.device, 1, &frame->fence);
-	frame->submitted = 0;
+	if (!frame_submit_and_wait("the clears self-test"))
+		goto done;
 	if (!HOST_VK_CHECK(vkMapMemory(B.device, memory, 0, VK_WHOLE_SIZE, 0, (void **)&pixels)))
 		goto done;
 	for (y = 0; y < 8; y++)
@@ -928,17 +941,239 @@ done:
 	memset(&B.counts, 0, sizeof(B.counts));
 }
 
+/* ---------- the data self-test (with debug.vk_self_test): VK_COMMAND_TEST_DRAW draws three vertices of the frame's data
+into a 16x16 target of the host's own with a built-in pipeline (a position and a colour), reads it back, and says whether
+every texel is the colour expected. The guest puts a buffer, rewrites it in place and puts it again, and then a third
+larger than its stream: the first two coming out red and green prove the copies were made at the puts, the third that parts
+of one id land contiguously across a hand-over. Phase 6's draws replace this as the way data is drawn. */
+
+static struct
+{
+	VkPipelineLayout layout;
+	VkShaderModule vertex, fragment;
+	VkPipeline pipeline;
+	int tried;
+} T;
+
+static const char *const test_vertex_source =
+	"#version 450\n"
+	"layout(location = 0) in vec3 position;\n"
+	"layout(location = 1) in vec4 colour;\n"
+	"layout(location = 0) out vec4 v_colour;\n"
+	"void main()\n"
+	"{\n"
+	"\tv_colour = colour;\n"
+	"\tgl_Position = vec4(position, 1.0);\n"
+	"}\n";
+
+static const char *const test_fragment_source =
+	"#version 450\n"
+	"layout(location = 0) in vec4 v_colour;\n"
+	"layout(location = 0) out vec4 out_colour;\n"
+	"void main()\n"
+	"{\n"
+	"\tout_colour = v_colour;\n"
+	"}\n";
+
+#define TEST_SIZE 16
+
+static VkPipeline test_pipeline(void)
+{
+	VkPipelineShaderStageCreateInfo stages[2] = { { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO },
+		{ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO } };
+	VkVertexInputBindingDescription binding;
+	VkVertexInputAttributeDescription attributes[2];
+	VkPipelineVertexInputStateCreateInfo vertex_input = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+	VkPipelineInputAssemblyStateCreateInfo assembly = { VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+	VkPipelineViewportStateCreateInfo viewport = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+	VkPipelineRasterizationStateCreateInfo raster = { VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+	VkPipelineMultisampleStateCreateInfo multisample = { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+	VkPipelineColorBlendAttachmentState blend_attachment;
+	VkPipelineColorBlendStateCreateInfo blend = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+	VkDynamicState dynamic_states[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+	VkPipelineDynamicStateCreateInfo dynamic = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+	VkPipelineRenderingCreateInfo rendering = { VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+	VkGraphicsPipelineCreateInfo info = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+	VkPipelineLayoutCreateInfo layout = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+
+	if (T.pipeline || T.tried)
+		return T.pipeline;
+	T.tried = 1;
+	T.vertex = shader_module(test_vertex_source, GLSLANG_STAGE_VERTEX, "self-test vertex shader");
+	T.fragment = shader_module(test_fragment_source, GLSLANG_STAGE_FRAGMENT, "self-test fragment shader");
+	if (!T.vertex || !T.fragment || !HOST_VK_CHECK(vkCreatePipelineLayout(B.device, &layout, NULL, &T.layout)))
+		return VK_NULL_HANDLE;
+	stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+	stages[0].module = T.vertex;
+	stages[0].pName = "main";
+	stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+	stages[1].module = T.fragment;
+	stages[1].pName = "main";
+	binding.binding = 0;
+	binding.stride = sizeof(struct vk_test_vertex);
+	binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+	attributes[0].location = 0;
+	attributes[0].binding = 0;
+	attributes[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+	attributes[0].offset = offsetof(struct vk_test_vertex, position);
+	attributes[1].location = 1;
+	attributes[1].binding = 0;
+	attributes[1].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+	attributes[1].offset = offsetof(struct vk_test_vertex, color);
+	vertex_input.vertexBindingDescriptionCount = 1;
+	vertex_input.pVertexBindingDescriptions = &binding;
+	vertex_input.vertexAttributeDescriptionCount = 2;
+	vertex_input.pVertexAttributeDescriptions = attributes;
+	assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	viewport.viewportCount = 1;
+	viewport.scissorCount = 1;
+	raster.polygonMode = VK_POLYGON_MODE_FILL;
+	raster.cullMode = VK_CULL_MODE_NONE;
+	raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+	raster.lineWidth = 1.0f;
+	multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+	memset(&blend_attachment, 0, sizeof(blend_attachment));
+	blend_attachment.colorWriteMask = 0xf;
+	blend.attachmentCount = 1;
+	blend.pAttachments = &blend_attachment;
+	dynamic.dynamicStateCount = 2;
+	dynamic.pDynamicStates = dynamic_states;
+	rendering.colorAttachmentCount = 1;
+	rendering.pColorAttachmentFormats = &B.color_format;
+	info.pNext = &rendering;
+	info.stageCount = 2;
+	info.pStages = stages;
+	info.pVertexInputState = &vertex_input;
+	info.pInputAssemblyState = &assembly;
+	info.pViewportState = &viewport;
+	info.pRasterizationState = &raster;
+	info.pMultisampleState = &multisample;
+	info.pColorBlendState = &blend;
+	info.pDynamicState = &dynamic;
+	info.layout = T.layout;
+	info.basePipelineIndex = -1;
+	if (!HOST_VK_CHECK(vkCreateGraphicsPipelines(B.device, VK_NULL_HANDLE, 1, &info, NULL, &T.pipeline)))
+		T.pipeline = VK_NULL_HANDLE;
+	return T.pipeline;
+}
+
+static void command_test_draw(const struct vk_command_test_draw *command)
+{
+	struct vk_surface surface = { 0xffffffe0u, TEST_SIZE, TEST_SIZE, TEST_SIZE, TEST_SIZE, VK_SURFACE_COLOR };
+	struct host_vk_target *target;
+	VkBuffer vertices, readback = VK_NULL_HANDLE;
+	VkDeviceSize vertices_offset;
+	VkDeviceMemory readback_memory = VK_NULL_HANDLE;
+	VkCommandBuffer cmd;
+	VkRenderingAttachmentInfo attachment = { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+	VkRenderingInfo rendering = { VK_STRUCTURE_TYPE_RENDERING_INFO };
+	VkViewport viewport = { 0.0f, 0.0f, TEST_SIZE, TEST_SIZE, 0.0f, 1.0f };
+	VkRect2D scissor = { { 0, 0 }, { TEST_SIZE, TEST_SIZE } };
+	VkBufferImageCopy copy;
+	VkMemoryBarrier barrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+	unsigned char *pixels = NULL, first[4] = { 0, 0, 0, 0 };
+	int bad = 0, index;
+	const char *failure = NULL;
+
+	if (!host_vk_data_find(command->data.id, command->data.offset, 3 * sizeof(struct vk_test_vertex), &vertices,
+		&vertices_offset))
+	{
+		failure = "the data is not there";
+		goto done;
+	}
+	if (!test_pipeline())
+	{
+		failure = "no pipeline";
+		goto done;
+	}
+	target = host_vk_target_get(&surface);
+	if (!target)
+	{
+		failure = "no target";
+		goto done;
+	}
+	host_vk_rendering_end();
+	cmd = host_vk_frame_command();
+	host_vk_target_transition(cmd, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	attachment.imageView = target->view;
+	attachment.imageLayout = target->layout;
+	attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	rendering.renderArea.extent.width = TEST_SIZE;
+	rendering.renderArea.extent.height = TEST_SIZE;
+	rendering.layerCount = 1;
+	rendering.colorAttachmentCount = 1;
+	rendering.pColorAttachments = &attachment;
+	host_vk_cmd_begin_rendering(cmd, &rendering);
+	vkCmdSetViewport(cmd, 0, 1, &viewport);
+	vkCmdSetScissor(cmd, 0, 1, &scissor);
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, T.pipeline);
+	vkCmdBindVertexBuffers(cmd, 0, 1, &vertices, &vertices_offset);
+	vkCmdDraw(cmd, 3, 1, 0, 0);
+	host_vk_cmd_end_rendering(cmd);
+	if (!host_vk_buffer_make(TEST_SIZE * TEST_SIZE * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, &readback, &readback_memory,
+		(void **)&pixels))
+	{
+		failure = "no readback buffer";
+		goto done;
+	}
+	host_vk_target_transition(cmd, target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+	memset(&copy, 0, sizeof(copy));
+	copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	copy.imageSubresource.layerCount = 1;
+	copy.imageExtent.width = TEST_SIZE;
+	copy.imageExtent.height = TEST_SIZE;
+	copy.imageExtent.depth = 1;
+	vkCmdCopyImageToBuffer(cmd, target->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1, &copy);
+	barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, NULL, 0, NULL);
+	if (!frame_submit_and_wait("the data self-test"))
+	{
+		failure = "the frame could not be submitted";
+		goto done;
+	}
+	memcpy(first, pixels, 4);
+	for (index = 0; index < TEST_SIZE * TEST_SIZE; index++)
+	{
+		const unsigned char *texel = pixels + index * 4; /* B, G, R, A */
+
+		if (!near(texel[2], (int)command->expected[0]) || !near(texel[1], (int)command->expected[1]) ||
+			!near(texel[0], (int)command->expected[2]) || !near(texel[3], 255))
+			bad++;
+	}
+	if (bad)
+		failure = "texels differ";
+done:
+	if (failure)
+		host_logf(HOST_LOG_ERROR, "vk: data self-test: id %u FAILED (%s; wanted R%u G%u B%u, first texel R%u G%u B%u A%u, %d of %d texels differ)",
+			(unsigned)command->data.id, failure, (unsigned)command->expected[0], (unsigned)command->expected[1],
+			(unsigned)command->expected[2], first[2], first[1], first[0], first[3], bad, TEST_SIZE * TEST_SIZE);
+	else
+		host_logf(HOST_LOG_INFO, "vk: data self-test: id %u ok (wanted R%u G%u B%u, seen R%u G%u B%u)", (unsigned)command->data.id,
+			(unsigned)command->expected[0], (unsigned)command->expected[1], (unsigned)command->expected[2], first[2], first[1],
+			first[0]);
+	if (readback)
+		vkDestroyBuffer(B.device, readback, NULL);
+	if (readback_memory)
+		vkFreeMemory(B.device, readback_memory, NULL);
+	if (command->last)
+		host_vk_data_frame_end();
+}
+
 static void log_statistics(void)
 {
 	struct host_vk_counts *c = &B.counts;
 
 	host_logf(HOST_LOG_INFO, "vk: %u frames: %u hand-overs; commands: %u targets, %u clears, %u presents; clears: %u drawn, "
 		"%u by vkCmdClearAttachments; %u target changes; %u images; submissions %llu, retired %u; %u swapchain "
-		"re-creations; validation errors %u", c->frames, c->hand_overs, c->targets, c->clears, c->presents,
-		c->clears_drawn, c->clears_attachments, c->target_changes, B.images, (unsigned long long)B.submission,
-		retired_locked(), c->recreations, host_vk_validation_errors());
+		"re-creations; validation errors %u; data: %u records, %u KB a frame, %u ring buffers", c->frames, c->hand_overs,
+		c->targets, c->clears, c->presents, c->clears_drawn, c->clears_attachments, c->target_changes, B.images,
+		(unsigned long long)B.submission, retired_locked(), c->recreations, host_vk_validation_errors(), c->data_records,
+		c->data_bytes / 1024 / (c->frames ? c->frames : 1), host_vk_data_buffers());
 	c->frames = c->hand_overs = c->targets = c->clears = c->presents = c->clears_drawn = c->clears_attachments = 0;
 	c->target_changes = 0;
+	c->data_records = c->data_bytes = 0;
 }
 
 static void backend_unavailable(const char *format, ...) __attribute__((format(printf, 1, 2)));
@@ -996,6 +1231,7 @@ static void command_present(const struct vk_command_present *command)
 		present_unsubmitted(image);
 	else if (image != UINT32_MAX && !B.dead)
 		host_vk_present_queue(image);
+	host_vk_data_frame_end();
 	B.frame = (B.frame + 1) % HOST_VK_FRAMES;
 	B.counts.presents++;
 	if (++B.counts.frames == 60)
@@ -1244,7 +1480,7 @@ static int device_create(void)
 			host_logf(HOST_LOG_ERROR, "vk: clears of some channels only (the fog's alpha clear) will be skipped");
 	}
 	B.state = 1;
-	if (host_vk_present_marker)
+	if (host_vk_self_test)
 		clears_selftest();
 	host_logf(HOST_LOG_INFO, "vk: device ready: queue family %u, colour targets %s, depth targets %s, blit filter %s, "
 		"dynamic rendering from %s", B.family, "B8G8R8A8_UNORM",
@@ -1301,6 +1537,15 @@ void host_vk_submit(uint32_t commands, uint32_t size)
 		case VK_COMMAND_PRESENT:
 			if (header->size >= sizeof(struct vk_command_present))
 				command_present((const struct vk_command_present *)header);
+			break;
+		case VK_COMMAND_DATA:
+			if (header->size >= sizeof(struct vk_command_data) && host_vk_data_command((const struct vk_command_data *)header, header->size))
+				break;
+			at = end;
+			continue;
+		case VK_COMMAND_TEST_DRAW:
+			if (header->size >= sizeof(struct vk_command_test_draw))
+				command_test_draw((const struct vk_command_test_draw *)header);
 			break;
 		default:
 			if (!said_unknown)
