@@ -24,7 +24,7 @@ the phone's driver; the results are in "Progress". Not tried: a second GPU
 family (a Mali). **Phase 1 is done on the test device and committed** (the
 Vulkan image, the host's choice and its decision, the stand-ins: the game
 runs under `display.renderer = "vulkan"` on the phone's driver and on
-Turnip, with a black screen as the phase says). **Phase 2 is done on the test device and committed** (the command stream, the device, the swapchain, the targets, clears and present: the game's clears are on the screen through Vulkan on both drivers). **Phase 3 is next.** The
+Turnip, with a black screen as the phase says). **Phase 2 is done on the test device and committed** (the command stream, the device, the swapchain, the targets, clears and present: the game's clears are on the screen through Vulkan on both drivers). **Phase 3 is written out and next.** The
 work is on the `vulkan-backend` branch, which starts again from `main`. An
 earlier attempt, kept on the `vulkan-backend-old` branch, is not the base of
 this work and nothing here builds on it; see "Lessons from the earlier
@@ -77,7 +77,7 @@ Taken from the deko3d plan unless the row says otherwise. Rows marked
 | The GL ES renderer | **Kept, selectable for good**, and the automatic fallback. **Decided (the user, after phase 1): it stays the default** (`display.renderer = "gl"`), and the phone's own Vulkan driver stays the default for the Vulkan renderer (`display.vk_driver = ""`); Vulkan and Turnip are opt-in. |
 | A shader or pipeline not compiled yet, met during play | **The draw is skipped** while it compiles on another thread, as for deko3d; it is drawn from the first frame its pipeline is ready. The compiled SPIR-V and the `VkPipelineCache` are kept on the device so that this happens once per device and driver, not once per run. |
 | Shader compiler | **glslang on the device** (phase 0 measured 2 to 4 ms for a game-sized shader, 100 ms for the first compile of a process, 3.8 MB of library). |
-| The game's memory | **Copied at the hand-over** into an upload ring, never read in place. The test device cannot import host memory, and one path on every driver is simpler to get right. Busy tracking stays (phase 3), because the game's locks need it. |
+| The game's memory | **Copied by the guest at each draw** into the command stream, and by the host into an upload ring at the hand-over; never read in place. The test device cannot import host memory, and one path on every driver is simpler to get right. The copy is made at the draw, not at the hand-over, because the game rewrites buffers between draws of a frame (phase 3). Since the GPU then never reads the game's memory, **no busy tracking**: `IsBusy` stays false and locks never wait, as under `d3d8_gl.c`, which also copied at the draw (decided in phase 3's write-up; deko3d needed it because its GPU read the window in place). |
 | Pipeline state | Dynamic rendering is required (Vulkan 1.3, or 1.1 with `VK_KHR_dynamic_rendering`); only Vulkan 1.0's core dynamic states are dynamic (viewport, scissor, depth bias, blend constants, stencil masks and reference), and everything else is in the pipeline key. More pipelines, but the oldest and most tested paths in every driver, and the same code on both drivers. Extended dynamic state can be added later if the number of pipelines becomes a problem. |
 | Validation | `VK_LAYER_KHRONOS_validation` in debug builds from phase 2 on, run at the end of every step, on the phone's driver and, if the loader finds the layer with a custom driver loaded (phase 0 B finds out), on Turnip. |
 | What players share | **Nothing.** No key files and no collection of keys (deko3d's phase 8): each device compiles what it meets and keeps it. |
@@ -108,14 +108,17 @@ in a 32-bit field** - the deko3d work faulted once on exactly that.
 
 ### The one rule about guest memory
 
-**The host reads what a command names when it processes the command, at the
-hand-over, never later.** The game rewrites vertex buffers, index buffers and
-constants within a frame, and frees and reuses memory between draws; a
-backend that names guest memory and reads it at the end of the frame draws
-every draw with the frame's last bytes. Everything the GPU reads after the
-hand-over is copied at the hand-over, into an upload ring or into an image;
-and a resource the game locks while the GPU still needs it makes the game
-wait - which deko3d does through the Xbox's own `Lock` field.
+**What a draw reads is copied when the draw is made, by the guest, into the
+command stream; the host copies it out of the stream when the stream is
+handed over, and never reads the game's memory for a draw.** The game
+rewrites vertex buffers, index buffers and constants within a frame, and
+frees and reuses memory between draws, and a frame's commands are handed over
+once, at its end: a host that read the game's memory at the hand-over would
+draw every draw with the frame's last bytes (the earlier attempt did). The
+guest's copy is the bytes as they were at the draw, which is what
+`d3d8_gl.c` uploads to GL at the draw too. Since the GPU reads only those
+copies, a resource the game locks or reuses is never in use by the GPU, and
+nothing waits for it.
 
 ### Both renderers in one Android build
 
@@ -1165,7 +1168,7 @@ present does not spin.
 
 Each submit is numbered from 1. `host_vk_retired()` returns the highest
 number whose fence has signalled (checked with `vkGetFenceStatus`, not
-waited on), for phase 3's locks. In this phase a frame is one submission.
+waited on), for the diagnostics and for phase 6's visibility tests (phase 3 found the locks need no waiting). In this phase a frame is one submission.
 
 ### The surface's loss and return
 
@@ -1234,33 +1237,145 @@ Move `config.toml` with `adb pull` and `adb push` only (phase 1's audit:
 
 ## Phase 3 — reading the game's memory
 
-Everything a draw reads from the game's memory is copied at the hand-over
-(the rule in "Where the renderer lives"):
+How a draw's data gets from the game to the GPU, before any draw exists:
+phase 6 makes the draws, and they use what this phase builds. The deko3d
+plan's phase 3 read the game's memory in place and needed busy tracking for
+it; this one copies (Decisions), and what it builds is the copy and the proof
+that it is made at the right moment.
 
-- **Vertex, index and constant data** into an upload ring: a host-visible,
-  host-coherent buffer per frame in flight, written as each command is
-  processed, the draw's offsets pointing into it. A frame that needs more
-  than the ring holds grows it for the next frame and, for this one, ends
-  the command buffer early and starts another (never drops the draw). Phase
-  0 found 4.2 to 6.8 MB a frame in the first map.
-- **Textures** are copied into images when the guest uploads them (phase 6),
-  through the same ring as a staging area.
+### What this phase is, and is not
 
-**Per-resource busy tracking**, as deko3d's: a draw marks each resource it
-reads with the submission it is in (the Xbox's `D3DResource.Lock`, as
-`d3d8_dk.c`'s `resource_used`); `IsBusy`, `BlockUntilNotBusy` and the locks
-wait for the GPU to pass it (`halo_resource_busy`/`halo_resource_wait`). With
-everything copied at the hand-over the GPU never reads the game's memory, so
-a lock waits only where the Xbox would have (the game relies on that timing
-for its own buffers). A `Lock` higher than the submission being written was
-not written by this device - map files carry headers with stale bytes there -
-and counts as not busy (deko3d's first level load waited forever on one). A
-wait longer than two seconds says so in the log.
+- **It is** a way for the guest to put bytes into the command stream at a
+  draw (data records), the host's upload rings those bytes land in, a way
+  for later commands to name them, and a self-test that a buffer rewritten
+  between two draws is drawn with both of its contents.
+- **It is not** the game's draws (phase 6), its vertex formats, or textures;
+  nor busy tracking: with every draw's data copied at the draw, the GPU never
+  reads the game's memory, and `IsBusy`, `BlockUntilNotBusy` and the locks
+  keep answering as they do now (not busy, return at once), as under
+  `d3d8_gl.c`. This is a change from the plan as first written (and from
+  deko3d's phase 3), recorded in "Decisions".
 
-**Acceptance:** a test draw reads vertices from the game's memory correctly
-after the game rewrote them mid-frame (two draws from one rewritten buffer
-show two different pictures); a lock of a buffer the GPU still reads waits,
-and returns; on both drivers.
+### Why the copy is the guest's, at the draw
+
+The guest's command stream is handed over at `Present` (and when it fills).
+Between two draws of a frame the game rewrites buffers - dynamic vertex
+buffers reused within a frame, the grass rebuilt in a locked buffer, immediate
+mode's vertices, constants - and it writes some of them without locking them
+at all (`d3d8_gl.c`'s mirror watches its pages for that, `memory_watch.c`). A
+copy made at the hand-over would give every draw of a frame the last bytes
+written. So the guest copies the bytes a draw reads at the moment of the draw,
+as `d3d8_gl.c`'s `stream_upload` and `mirror_range` upload them to GL at the
+draw. Phase 0's measure of what that is: 4.2 to 6.8 MB a frame "mirrored" and
+0.2 to 0.7 MB "streamed" in the first map, under `d3d8_gl.c` - the bytes its
+draws referenced. Copying them twice a frame (into the stream, then into the
+ring) is a few milliseconds; speed is not a goal, and the mirror's
+write-protection and generations (`memory_watch.c`) are not needed to be
+right, only to be fast. They can come later if the game is too slow.
+
+### Files
+
+| File | What |
+|---|---|
+| `port/android/guest/vk_commands.h` | `VK_COMMAND_DATA` (below), and the data reference later commands carry |
+| `port/android/guest/d3d8_vk.c` | `vk_data_put`, the guest's side (below); the stream grows to 4 MB |
+| `port/android/host/host_vk_render.c` (or a new `host_vk_data.c`) | the upload rings, the data table of the current frame, the self-test |
+| `port/linux/src/port_config.c` | `debug.vk_self_test` (below), `_platform_android` |
+| `port/android/README.md` | the setting |
+
+### Data records
+
+`VK_COMMAND_DATA`: a header, then `id`, `part_offset`, `total_size`,
+`part_size`, and `part_size` bytes of payload (the record padded to a
+multiple of 4).
+
+- **`id`** is the frame's running number of the data the guest put, from 1,
+  reset at each `PRESENT`. Later commands of the same frame name data by its
+  id and an offset in it; nothing names data of another frame.
+- **Parts.** Data larger than what is left in the stream is split: parts of
+  one id come in order (`part_offset` 0, then the next, until `total_size`),
+  possibly in different hand-overs, and the host places all of an id's parts
+  contiguously in its ring. A command naming an id comes after all its parts.
+- **The guest's function**, `uint32_t vk_data_put(const void *bytes,
+  unsigned long size)`: copies the bytes into the stream (flushing it when
+  full, splitting as above) and returns the id. Called at the draw, for every
+  range the draw reads (phase 6); the bytes are the game's as they are at
+  that moment.
+- **The stream** grows to 4 MB (a busy frame fills it two or three times;
+  each fill is a hand-over, which is cheap).
+
+### The upload rings (host)
+
+- One per frame in flight: a list of host-visible, host-coherent buffers
+  (16 MB each to start), usage vertex, index, uniform buffer and transfer
+  source (phase 6 stages textures through it), mapped once.
+- At a `DATA` record, the host copies the part to the place its id was
+  given: the first part of an id takes `total_size` bytes from the frame's
+  ring, at an offset aligned to 256 or the device's
+  `minUniformBufferOffsetAlignment`, whichever is larger (a uniform block can
+  then be any data; an index buffer's offset is aligned too). A frame that
+  needs more than its buffers hold gets another (never moves what is placed:
+  commands already recorded name it); a single id larger than a buffer gets a
+  buffer of its own size. The ring's buffers are reused when the frame's fence
+  has passed (phase 2's frames), the extra ones kept for the next time.
+- The frame's **data table**: id to buffer and offset, kept until `PRESENT`,
+  for the commands that name data (`host_vk_data_find(id, offset, size)`:
+  the buffer and the offset, or none if the id or the range is unknown, which
+  is logged once and the command skipped).
+- Bad records (a part out of order, past its total, an id reused) are
+  logged once, and the rest of the hand-over is dropped, as phase 2's
+  unknown commands are.
+- The statistics line (phase 2) gains: data records, bytes of data a frame,
+  ring buffers alive.
+
+### The self-test (`debug.vk_self_test`)
+
+`debug.vk_self_test` (false by default) runs the backend's self-tests once,
+at the device's creation: phase 2's clears self-test (which phase 2 ran with
+`debug.vk_present_marker`: the marker then only draws the marker) and this
+phase's:
+
+1. **In the guest**, at the device's creation (`Direct3D_CreateDevice`, after
+   the window is up, when the setting is on): a buffer of three vertices in
+   the game's own memory (a red triangle covering the target), put with
+   `vk_data_put`; then the same buffer rewritten in place (green); put
+   again; then a third time, larger than what is left in the stream (blue,
+   padded with unused bytes past 1 MB, so it is split into parts across a
+   hand-over); then a `VK_COMMAND_TEST_DRAW` naming each id in turn, and a
+   hand-over.
+2. **In the host**, `VK_COMMAND_TEST_DRAW` (an id): draws the three vertices
+   of that data into a small target of its own (16x16) with a built-in
+   pipeline (position and colour, as the probe's pass-through shaders; phase
+   2's glslang loader), reads it back, and logs `data self-test: id N
+   ok/FAILED (expected colour, seen colour)`. The three ids must show red,
+   green and blue: the first two prove the copy was made at the put and not
+   at the hand-over; the third proves parts land contiguously across a
+   hand-over.
+3. The test's commands and target are not the game's and draw nothing on the
+   screen.
+
+`VK_COMMAND_TEST_DRAW` exists only for this; phase 6's draws replace it as
+the way data is drawn.
+
+### Testing on the device
+
+On both drivers:
+
+1. `debug.vk_self_test = true`: the clears self-test and the data
+   self-test each say `ok` for every case.
+2. The game as in phase 2 (menus, a new game's map): unchanged on the
+   screen; the statistics line shows the data counts (zero until phase 6,
+   except in the self-test's frame).
+3. Validation on: no new message.
+4. `renderer = "gl"`: unchanged.
+
+### Acceptance
+
+- The self-tests `ok` on both drivers, the log lines in "Progress".
+- `IsBusy`, `BlockUntilNotBusy` and the locks unchanged (read in the audit:
+  nothing in the Vulkan device waits on the GPU for a resource).
+- The code audited against the source and the Vulkan specification, then
+  committed.
 
 ## Phase 4 — GLSL for Vulkan
 
