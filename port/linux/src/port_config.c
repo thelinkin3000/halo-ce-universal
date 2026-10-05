@@ -459,6 +459,14 @@ static const struct config_setting config_settings[] =
 	{ "debug.sample_seconds", _config_real, "0.0", "HALO_SAMPLE", _environment_value, _platform_android,
 		"Log where every game thread is this often, in seconds (read by the\n"
 		"app, port/android/host/host_debug.c); 0 never." },
+#ifdef HALO_SWITCH
+	{ "debug.profiler", _config_boolean, "false", "HALO_PROFILER", _environment_set_is_true, _platform_android,
+		"Profile the game: sample where its threads are (debug.profile_hz times a\n"
+		"second) and write the counts to the profile folder every 20 s, for\n"
+		"tools/switch_profile.py. Takes effect the next start." },
+	{ "debug.profile_hz", _config_integer, "500", "HALO_PROFILE_HZ", _environment_value, _platform_android,
+		"The profiler's samples a second, when debug.profiler is true." },
+#endif
 };
 
 #define NUMBER_OF_CONFIG_SETTINGS (sizeof(config_settings) / sizeof(config_settings[0]))

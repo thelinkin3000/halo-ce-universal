@@ -4,7 +4,7 @@ A second renderer for the Switch build that drives the GPU through
 [deko3d](https://github.com/devkitPro/deko3d) instead of Mesa, with compiled
 shaders cached on the SD card.
 
-Status: phases 0 to 5 done, phase 6 done but for split screen, which is yet to be tried on the console; see "Progress" at the end.
+Status: phases 0 to 6 done (split screen yet to be tried on the console); phase 7, the game thread measured, under way; see "Progress" at the end.
 
 ---
 
@@ -631,7 +631,7 @@ are), with what it needs from `d3d8_dk.c`:
   that blob. `DK_SHADER_GENERATOR_VERSION` in `guest/dk_shaders.h`, starting
   at 1, to be raised by any change to what `nv2a_vsh_dk.c` or
   `nv2a_psh_dk.c` write - say so in a comment at the top of both.
-- **Key files** - what players share (see "Decisions" and phase 8). In
+- **Key files** - what players share (see "Decisions" and phase 11). In
   `z:\shader_keys\` (the save folder: `/switch/halo/save/z/shader_keys/` on
   the card), every file there read at start. Format: a header (magic
   `"DKK1"`, a format version, the record size) and fixed-size records:
@@ -753,7 +753,7 @@ Adds: draws (indexed, not, immediate mode, quads), the draw state, vertex
 constants and the other uniforms, textures, samplers, render-to-texture and
 the mip composite, visibility tests, the high-res HUD and text, and the
 menus' art. At the end the game looks under deko3d as it does under OpenGL,
-the menus and a map, at the CPU cost phase 7 then measures.
+the menus and a map; phases 7 to 10 then take work off the game thread.
 
 ### The order, each step tried on the console before the next
 
@@ -864,7 +864,7 @@ For each, the log's draw statistics (`gpu_stats`, every 60 frames) and the
    missing until step 5 (the visibility tests answer 0); the high-res HUD and
    text are missing until step 6 (the map's own HUD bitmaps draw).
 10. **Performance, measured, not tuned.** The game thread's ms a frame in
-    each scene against the OpenGL image's. Two costs to watch, for phase 7:
+    each scene against the OpenGL image's. Two costs to watch, for later phases:
     each indexed draw scans its whole index list for its vertex range
     (`d3d8_gl.c` cached that), and a texture written after draws puts a full
     barrier first.
@@ -1065,14 +1065,121 @@ test; say which scene to go to and what to look for.
 
 Don't commit; the review does that.
 
-## Phase 7 — parity and performance
+## The game thread
 
-- Every map's scenes compared against the Mesa renderer on the Switch with
-  `debug.screenshot_every`; especially split screen, water, lens flares,
-  decals (z bias), fog, the HUD's meters and the PC menus.
-- CPU frame time against Mesa; no hitches with a warm cache.
+With phase 6 the game plays under deko3d, and much faster than over Mesa (the
+comparison phase the plan first had here was dropped: the user's verdict was
+enough). What limits it now is the game thread. In a busy online match
+(34 players, about 1,950 draws a frame) it was busy 90-96% of the time at
+25-39 ms a frame; in the single-player maps it is 5-6 ms. The Switch gives a
+homebrew program three cores; the game thread keeps one to itself, and the
+other two carry the audio mixer, the shader compiler, the vertical blank
+thread and little else. Phases 7 to 10 move work to them, measured first and
+in the order the measurements give.
 
-## Phase 8 — collecting keys
+What cannot move: the game's own simulation (AI, physics, objects, scripts,
+the network game). It is single-threaded code that assumes nothing else
+touches its state, and nothing here changes that.
+
+## Phase 7 — the game thread, measured
+
+### Step 1: the key file written off the game thread (done in the tree)
+Every key a draw met for the first time was appended to `console.dkk` on the
+game thread - two opens and a write on the card each - and a first match on
+a new map hitched for its first minute (frames of 200-400 ms with the game
+thread mostly waiting: about 250 opens in the slow stretch, none after). The
+draw now queues the record; a writer thread appends what has queued in one
+open, at most once a second (`console_append`, `console_writer` in
+`dk_shaders.c`). A queue that fills (the import at the first start) is
+written by whoever fills it.
+
+### Step 2: a sampling profiler (done in the tree)
+`debug.profiler = true` (`host_debug.c`; `debug.profile_hz` the rate, 500
+by default): a thread that, that many times a second,
+pauses each guest thread (`svcSetThreadActivity`), reads its registers
+(`svcGetThreadContext3`, which needs no debugger) and its frame chain, lets
+it go on, and counts each stack; every 20 s the counts go to
+`/switch/halo/profile/profile_NNN.txt`, written by the profiler's thread.
+While a thread is paused the profiler takes no lock and allocates nothing;
+the frame walk stays inside the stack's own memory region.
+`tools/switch_profile.py` fetches the files, symbolizes them against the
+build (the guest's image as linked, the host's by an anchor function's
+address, since the host moves from run to run) and prints self and inclusive
+time per function, per thread, and collapsed stacks for a flame graph.
+
+### Step 3: a profile of a busy match
+A busy online match, two minutes, the profiler at 500 Hz. The game thread's time
+split: the game's own simulation and network game; the renderer's guest half
+(`draw_prepare`, keys, `dk_texture_get` and its decoding); the host half
+(`host_dk_submit` and below: recording, `window_read`'s cache cleans,
+staging); sound (`sound_idle`, `sound_render`, obstruction); waits (files,
+locks, the GPU).
+
+**Acceptance:** that split in "Progress", with the profiler's own cost (the
+frame time with it off and on), and the order phases 8 to 10 are done in.
+
+## Phase 8 — a render thread for the host half
+
+`host_dk_submit` processes the command stream inside the guest's call, on
+the game thread: every draw's deko3d recording, the cache cleans, the
+texture staging. Instead, the stream is handed to a render thread on a
+helper core and the call returns.
+
+### What has to change
+- **The rule about guest memory** ("Where the renderer lives"): the host
+  reads what a command names when it processes it. Processed later, a
+  command may name memory the game has rewritten since. Each kind of
+  command's data is sorted into: read by the GPU in place under the
+  `Lock` busy tracking (vertex and index buffers in the window, compressed
+  textures - unchanged); and guest memory that is reused at once (the
+  immediate-mode vertices, the quad list's indices, `device.immediate_*`,
+  decoded texels, the rows of the high-res images), which is copied into
+  the hand-over's own memory, or kept alive until the render thread is done
+  with it.
+- **The guest's frees after hand-over** (`dk_stream_free_after_handover`)
+  wait for the render thread to have processed that stream, not for the call
+  to return.
+- **The submission numbers**: the guest numbers a hand-over when it hands it
+  over, as now; `host_dk_retired` answers from the fences as now, and a
+  busy check of the submission being written hands it over as now. A
+  hand-over not yet processed is a submission not yet retired, which is
+  already what the numbers say.
+- **Two streams in flight at most**: the guest writes the next while the
+  render thread processes the last; a third waits.
+- **What else touches the host's deko3d state from the game thread**: the
+  shader service's tables (`host_dk_shader`), the window chunks
+  (`chunks_map`), the first submission's `initialize`, the screenshot's
+  wait. Each goes behind the render thread or a lock.
+
+### Steps, each tried on the console
+1. The render thread, processing exactly what the call processed, with the
+   game thread waiting for it after each hand-over (no overlap yet): the
+   plumbing, proved by the game looking and running as before.
+2. The copies and the deferred frees, then the overlap.
+3. The busy match again, with the profiler.
+
+**Acceptance:** the menus, a map, a busy match look as before; the game
+thread's share of the host half (phase 7's profile) gone from it; the
+frame time of the busy match in "Progress".
+
+## Phase 9 — textures decoded on a worker
+
+The texture cache decodes every non-compressed texture to BGRA on the game
+thread the first time a draw uses it (`dk_texture_get`), which costs most at
+a map's start and on first sight of new areas. A worker thread decodes
+instead; a draw whose texture is not decoded yet draws with the dummy, the
+rule shaders already follow. Done if phase 7's profile shows the decoding,
+or the load hitches, worth it.
+
+## Phase 10 — what the profile ranks next
+
+Decided by phase 7's profile, one at a time: file reads the game waits for
+during play (the sound and texture caches stream from the map file), read
+ahead on another thread; sound obstruction (`compute_sound_obstruction`,
+a collision test per sound source per frame), tested less often rather
+than threaded; and whatever else the profile shows.
+
+## Phase 11 — collecting keys
 
 - Builds record keys into the SD folder; testers send the files in.
 - A PC tool merges them, drops duplicates and reports what each submission
@@ -1089,12 +1196,96 @@ Don't commit; the review does that.
 | SDL2's input and audio without its EGL window | phase 0 |
 | The GPU reading guest memory: alignment, CPU cache coherence | phase 0 |
 | UAM's compile time on the console, at startup and for misses | phase 0 |
-| Behaviour of Mesa that the GL renderer relies on without saying so | phase 7 |
+| Behaviour of Mesa that the GL renderer relies on without saying so | found by play, the parity phase having been dropped |
+| A render thread reading guest memory the game has rewritten | phase 8 |
 | Two copies of the shared code drifting apart until they are merged | ongoing |
 
 ---
 
 ## Progress
+
+### Phase 7 (under way)
+
+**After the measurements: the game thread's waits gone; a match held at 60.**
+The GPU, timed (timestamps around each submission, `gpu_timing_*` in
+`host_dk.c`, logged every 60 frames): 5-8 ms a frame on average in a
+match, 9-12 ms the longest - far from the 16.7 a frame has. So the limit
+was the CPU and its waits, and these went in, measured together on the same
+server's match as the profile before them:
+
+- The host's log written by a thread of its own (`host_main.c`): a line was
+  a synchronous write to the card, fsynced if a warning (every line of the
+  guest's), on whatever thread logged it, under the lock every guest file
+  call takes. Errors and worse are still written and synced where they are
+  logged, after what is buffered.
+- The draws' comparisons of what the host was told made a word at a time
+  (`words_equal` in `d3d8_dk.c`): musl's memcmp goes byte by byte (7.3%).
+- `dk_shader_for_draw` keeps each stage's last key and handle: draws in a
+  row mostly share them, and the copy and hash are a byte at a time (3.8%,
+  now 1.9%).
+- A texture entry keeps its menu art's answer until the art registered
+  changes (`menu_art_serial` in `menu_files.c`), where every lookup of every
+  draw searched the list (1.3%).
+- A vertex buffer's ring of storage (`vertex_buffer_rename` in
+  `d3d8_resources.c`, behind `HALO_SWITCH`): the first lock a frame of a
+  dynamic vertex buffer waited for the GPU to finish the last frame's draws
+  from it, which under deko3d (a frame submitted at its end) was most of the
+  GPU's time on that frame. A lock that would wait now gives the buffer
+  storage the GPU is done with, or a new one, up to four, and the GPU reads
+  the old; the game writes every range it draws after that first lock. The
+  storage's addresses go through `PLATFORM_*_TO_*` as `CreateVertexBuffer`'s
+  do, so they follow the window wherever it is. 13% to 0.
+- Three swapchain images, not two: a frame that missed the display's
+  refresh waited for the next one.
+- Shaders on the card read and loaded by a loader thread
+  (`loader_thread` in `host_dk_shaders.c`), the draws skipped meanwhile as
+  for one compiling (about 3%, now 0).
+
+The match: 60 frames a second almost throughout (one stretch at 57), where
+the one before dipped to 50-58; the game thread at 8-14 ms a frame. In the
+profile (114-180 s, 29,468 samples) the vertex buffers' wait and the loads
+are 0, the sprites 0.9% (14.3% before), and the wait for a swapchain image
+25.6% - which at a steady 60 is the frame's slack, not a frame that missed.
+
+The phases after 6 were redrawn here: the parity and performance phase
+(once phase 7) was dropped, and phases 7 to 10 take work off the game
+thread; collecting keys is now phase 11. Entries below that say "phase 7"
+mean the old one.
+
+**Steps 1 to 3: the profiler works, and the first profile of a match says
+the game thread waits more than it works.** The SVCs are allowed. The first
+run counted nothing: the thread bookkeeping (`current_thread_id`) passed
+`0xFFFFFFFF` for the current thread where libnx's pseudo-handle is
+`CUR_THREAD_HANDLE` (`0xFFFF8000`), so every thread was registered as id 0,
+which the profiler takes for an empty slot; fixed.
+
+An online match (not one of the 34-player ones; the game thread busy
+63-94% at 11-23 ms a frame, 36-60 frames a second), the 40 seconds that
+were heaviest, 19,645 samples of the game thread at 500 Hz:
+
+| Where | Share |
+|---|---|
+| Waiting for a swapchain image (`present` → `dkQueueAcquireImage` → `nwindowDequeueBuffer`) | 16.5% |
+| Waiting for the GPU in a lock: the first lock a frame of a dynamic vertex buffer (`_rasterizer_dynamic_vertices_lock` → `halo_resource_wait`, sleeping 500 µs at a time; `build_sprite` and `flag_render_proper`) | 11.0% |
+| The game tick (`game_time_update`: objects, physics, the network game) | about 11% |
+| `draw_prepare` and below (keys, textures, state) | 11.6% |
+| `memcmp` called from the draws (most from `_rasterizer_decals_draw` → `DrawVertices`) | 7.3% |
+| `dk_shader_for_draw` itself | 3.8% |
+| The host's log, written to the card on the game thread (`__android_log_write` → `fsdev_write`) | 2.8% |
+| `recv` on the network socket | 2.4% |
+| `menu_art_name`, looked up for every texture of every draw (step 6's code) | 1.3% |
+| The host half without the acquire (`host_dk_submit` 22.3% less 16.5%) | about 6% |
+
+What it changes: the two waits, a quarter of the game thread, are waits for
+the GPU or the display. If the GPU is what limits a heavy frame, taking
+CPU work off the game thread (phase 8's render thread, worth about 6%)
+moves the wait rather than the frame rate. So next: the GPU's time a frame,
+measured (timestamps around each submission, `DkCounter_Timestamp`), beside
+the fps line. Cheap CPU work regardless: the log written by a thread of its
+own, `menu_art_name` not searched for every texture, and the `memcmp` in the
+draws found and avoided. If the GPU has room to spare, the dynamic vertex
+buffers' wait goes by giving each a ring of copies (a lock that would wait
+takes the next copy instead, as `D3DLOCK_DISCARD` does elsewhere).
 
 ### Phase 6 (under way)
 

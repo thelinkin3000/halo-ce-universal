@@ -29,6 +29,9 @@ unsigned int menu_art_texture(unsigned long data, unsigned long *levels);
 pixels are at data (NULL if none), and that file's contents (NULL if it
 cannot be read) */
 const char *menu_art_name(unsigned long data);
+/* a number that changes whenever the art registered does, so an answer of
+menu_art_name's can be kept until it changes */
+unsigned long menu_art_serial(void);
 const unsigned char *menu_art_png(const char *name, unsigned long *size);
 #endif
 

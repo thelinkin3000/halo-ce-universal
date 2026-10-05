@@ -496,6 +496,10 @@ struct texture_entry
 	unsigned long last_used_frame;
 	/* the high-res HUD bitmap that stands for it (hud_hires.h), or -1 */
 	long override;
+	/* its menu art's image and levels (0: none), as of menu_art_serial */
+	unsigned long menu_serial;
+	uint32_t menu_id;
+	unsigned long menu_levels;
 };
 
 #define TEXTURE_BUCKET_COUNT 4096
@@ -814,7 +818,16 @@ static uint32_t texture_entry_result(struct texture_entry *entry, int *kind, str
 		description->levels = 1;
 		return id;
 	}
-	if ((id = menu_image(entry->data, &levels)) != 0)
+	/* (looked up again only when the art registered has changed: the search
+	was 1.3% of the game thread, for every texture of every draw) */
+	if (entry->menu_serial != menu_art_serial())
+	{
+		entry->menu_serial = menu_art_serial();
+		entry->menu_levels = 1;
+		entry->menu_id = menu_image(entry->data, &entry->menu_levels);
+	}
+	levels = entry->menu_levels;
+	if ((id = entry->menu_id) != 0)
 	{
 		*kind = DK_TEXTURE_2D;
 		description->levels = levels;

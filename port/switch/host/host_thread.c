@@ -244,7 +244,7 @@ static void *thread_main(void *context)
 
 	free(context);
 	place_thread(start.is_game);
-	host_debug_thread_started();
+	host_debug_thread_started(start.is_game);
 	/* on the stack below 4 GB the port mapped, and back (guest_stack.S) */
 	guest_stack_call(start.stack_top, start.function, start.argument);
 	host_debug_thread_exited();

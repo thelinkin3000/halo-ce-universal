@@ -215,11 +215,15 @@ const void *host_dk_shader(uint32_t handle);
 
 /* ---------- debugging (host_debug.c) */
 
-void host_debug_thread_started(void);
+void host_debug_thread_started(int is_game);
 void host_debug_thread_exited(void);
 /* config.toml's debug.sample_seconds: seconds between samples of the guest
 threads, as text */
 void host_debug_start_sampler(const char *setting);
+/* config.toml's debug.profiler (and debug.profile_hz): samples a second of the guest's threads,
+counted and written to the profile folder (0 none); image names the guest
+image running, for tools/switch_profile.py */
+void host_debug_start_profiler(unsigned hz, const char *image);
 
 /* The host's own stack, at the moment it decides it cannot continue. Called
  * from host_fatal and anywhere else that has a failure worth attributing. */
