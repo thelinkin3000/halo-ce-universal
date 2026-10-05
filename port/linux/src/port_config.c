@@ -100,6 +100,12 @@ static const struct config_setting config_settings[] =
 		"or the name of a driver archive (an adrenotools zip) left in the game's\n"
 		"folder, for example a Turnip build for Adreno GPUs. One that does not load\n"
 		"is logged and the phone's own is used." },
+	/* read by the Android host before the game starts, to choose the game
+	image built with that renderer (port/android/VULKAN.md) */
+	{ "display.renderer", _config_string, "\"gl\"", "HALO_RENDERER", _environment_value, _platform_android,
+		"How the game draws: \"gl\" (OpenGL ES over the phone's driver) or \"vulkan\"\n"
+		"(in development: nothing is drawn yet). Takes effect the next time the game\n"
+		"starts." },
 #endif
 #ifdef HALO_SWITCH
 	/* read by the Switch host before the game starts, to choose the game
@@ -477,7 +483,8 @@ static const struct config_setting config_settings[] =
 		"game: \"all\", or a list of caps, memory, compile, pipelines, draw, present;\n"
 		"empty runs the game. It writes vk_probe.txt." },
 	{ "debug.vk_validation", _config_boolean, "false", "HALO_VK_VALIDATION", _environment_set_is_true, _platform_android,
-		"Turn on Vulkan's validation layer in the probe, when the app carries it." },
+		"Turn on Vulkan's validation layer in the probe and in the Vulkan renderer,\n"
+		"when the app carries it." },
 	{ "debug.profile_hz", _config_integer, "0", "HALO_PROFILE_HZ", _environment_value, _platform_android,
 		"Sample every game thread this many times a second into profile.bin\n"
 		"(port/android/host/host_debug.c); 0 off." },
