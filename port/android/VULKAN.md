@@ -1858,6 +1858,40 @@ an offset a command adds inside a piece is the command's to align: an index
 buffer's offset must be a multiple of its index size, and a draw's vertex and
 index ranges should start at offsets the formats are aligned for.
 
+### Phase 4 — audit
+
+The record is true to the code, and the proof holds. Read: the generator
+copies differ from `nv2a_vsh.c` and `nv2a_psh.c` only by what the spec lists
+(version, blocks with explicit offsets and bindings, locations, no ES
+branches, `point_and_screen`, `alpha_reference.x`, no LOD bias or counter);
+`vk_shaders.h` pins every offset once, checked against the structures at
+compile time, and carries a generator version for phase 5's cache;
+`pixel_key_make` is `prepare_draw`'s key without GL; every draw entry point
+the game has (`DrawVertices`, `DrawIndexedVertices`, immediate mode's `End`)
+notes its draw. Re-run on the PC from the committed script, on the corpus
+in `build/shaders`: 308 shaders, 0 failed, `spirv-val` on every module, the
+same key-field counts; the GL ES run's keys (`build/shaders_gl`) share 213
+hashes with the Vulkan run's, the 5 each side has alone being the GL
+renderer's `count_samples` keys and their zero twins.
+
+Fixed: a stray `frag.spv` (a hand-run `glslangValidator` writes one into the
+current folder) was committed at the repository's root; removed, and `/*.spv`
+is ignored there.
+
+Open, outside this branch: deviation 4's finding is a bug in the Switch's
+deko3d renderer. `port/switch/guest/nv2a_vsh_dk.c` was copied before
+`nv2a_vsh.c` gained the camera-plane guard (commit `3d2c04d6`, "Fix
+vertices exploding to the screen centre near the camera plane"), and copies
+do not follow their originals, so the Switch's deko3d image still draws
+vertices out to the screen's centre where its OpenGL image no longer does.
+For the user, on the Switch's branch.
+
+For phase 6: the corpus has no fog, colour-signed textures or alpha kill on
+stages 1 to 3 (none met in the menus and the opening). The generators are
+line-for-line copies there too, but nothing has compiled those paths yet:
+run the dump and `tools/vk_shader_check.py` again on a corpus from play once
+the game draws.
+
 ### Phase 4 — summary
 
 Worked unattended on the test device (Adreno 750) and the PC. **Phase 4 works**: every shader the game met in the corpus compiles with
