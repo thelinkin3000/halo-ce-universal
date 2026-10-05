@@ -347,10 +347,15 @@ static void *game_main(void *unused)
 	wherever there is room, image_base), and the other image's data is freed once the
 	choice is made */
 	span = host_image_span(image, image_size);
+	if (want_vulkan && !host_image_span(vk_image, vk_image_size))
+	{
+		host_logf(HOST_LOG_WARN, "renderer: GL ES (Vulkan was asked for: halo_guest_vk.elf is not a guest image)");
+		want_vulkan = 0;
+		SDL_free(vk_image);
+		vk_image = NULL;
+	}
 	if (want_vulkan && host_image_span(vk_image, vk_image_size) > span)
 		span = host_image_span(vk_image, vk_image_size);
-	if (want_vulkan && !host_image_span(vk_image, vk_image_size))
-		host_fatal("cannot load the Vulkan game image; see logcat (tag \"halo\") for details");
 	if (!span || host_memory_initialize(HALO_GUEST_IMAGE_BASE, span, &image_base) != 0)
 		host_fatal("cannot load the game image; see logcat (tag \"halo\") for details");
 
