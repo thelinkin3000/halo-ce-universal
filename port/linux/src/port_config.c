@@ -482,6 +482,9 @@ static const struct config_setting config_settings[] =
 		"The profiler's samples a second, when debug.profiler is true." },
 #endif
 #ifndef HALO_SWITCH
+	{ "debug.vk_present_marker", _config_boolean, "false", "HALO_VK_PRESENT_MARKER", _environment_set_is_true, _platform_android,
+		"Under the Vulkan renderer, draw a red square at the top left and a green one\n"
+		"at the top right of the picture, so that a screenshot shows which way up it is." },
 	/* the Android app's Vulkan probe and profiler (port/android/host); the Switch's
 	profiler has its own debug.profile_hz above */
 	{ "debug.vk_probe", _config_string, "\"\"", "HALO_VK_PROBE", _environment_value, _platform_android,
