@@ -313,6 +313,7 @@ static void *game_main(void *unused)
 	size_t image_size = 0, vk_image_size = 0, image_used_size;
 	void *image, *vk_image = NULL, *image_used;
 	uint32_t span, image_base = 0;
+	char vulkan_refused[300] = ""; /* why Vulkan, asked for, cannot be tried */
 	int want_vulkan = 0;
 	uint32_t boot;
 	struct host_settings settings;
@@ -369,23 +370,21 @@ static void *game_main(void *unused)
 		vk_image = SDL_LoadFile("halo_guest_vk.elf", &vk_image_size);
 		if (!vk_image)
 		{
-			host_logf(HOST_LOG_WARN, "renderer: GL ES (Vulkan was asked for: the APK has no halo_guest_vk.elf: %s)",
-				SDL_GetError());
+			snprintf(vulkan_refused, sizeof(vulkan_refused), "the APK has no halo_guest_vk.elf: %s", SDL_GetError());
 			want_vulkan = 0;
 		}
 	}
 
 	/* the image's range is reserved before anything else is brought up: bringing the
-	display and Vulkan up map memory of their own, and on a device where one of those
-	mappings lands on the image's address there is nowhere else to put it, because the
-	image's pointers would have to be moved after the fact (host_loader.c). Both images
-	are linked to run at the same address; the larger one's span is reserved (there, or
-	wherever there is room, image_base), and the other image's data is freed once the
-	choice is made */
+	display and Vulkan up map memory of their own, which could take the address the
+	image is linked at and make it move when it need not (host_loader.c moves it only
+	where the address was already taken). Both images are linked to run at the same
+	address; the larger one's span is reserved (there, or wherever there is room:
+	image_base), and the other image's data is freed once the choice is made */
 	span = host_image_span(image, image_size);
 	if (want_vulkan && !host_image_span(vk_image, vk_image_size))
 	{
-		host_logf(HOST_LOG_WARN, "renderer: GL ES (Vulkan was asked for: halo_guest_vk.elf is not a guest image)");
+		snprintf(vulkan_refused, sizeof(vulkan_refused), "halo_guest_vk.elf is not a guest image");
 		want_vulkan = 0;
 		SDL_free(vk_image);
 		vk_image = NULL;
@@ -423,7 +422,11 @@ static void *game_main(void *unused)
 	}
 	else
 	{
-		host_logf(HOST_LOG_INFO, "renderer: GL ES");
+		/* one line either way: a reason found before Vulkan was tried goes in it */
+		if (vulkan_refused[0])
+			host_logf(HOST_LOG_WARN, "renderer: GL ES (Vulkan was asked for: %s)", vulkan_refused);
+		else
+			host_logf(HOST_LOG_INFO, "renderer: GL ES");
 	}
 	if (host_renderer_vulkan)
 	{
