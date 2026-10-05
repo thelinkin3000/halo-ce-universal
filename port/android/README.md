@@ -229,6 +229,7 @@ These settings are only for Android:
 | `debug.sample_seconds` | Refer to "Find problems". |
 | `debug.memory_watch` | `true` (the default): the app notices the game's writes to textures and vertices by page protection. `false`: it compares page contents once a frame instead, which is slower. Refer to "Limits". |
 | `debug.profile_hz` | Refer to "Find problems". |
+| `display.vk_driver` | The Vulkan driver of the Vulkan probe (and, later, of the Vulkan renderer). Empty (the default): the phone's own. Otherwise the name of a driver archive left in the game's data folder (see "Find problems"). |
 | `debug.vk_probe` | Refer to "Find problems". |
 | `debug.vk_validation` | Refer to "Find problems". |
 
@@ -487,7 +488,7 @@ assembly of the port is necessary:
   for the frames per second.
 - Set `vk_probe = "all"` in `[debug]` of `config.toml` to run the Vulkan
   probe (port/android/VULKAN.md, phase 0) instead of the game. The value
-  can be a list of `caps`, `memory`, `compile`, `pipelines` and `present`.
+  can be a list of `caps`, `memory`, `compile`, `pipelines`, `draw` and `present`.
   The probe writes `vk_probe.txt` in the data folder and ends the app. The
   `present` step waits for a person: it shows a colour that changes, and it
   accepts the buttons A (the picture is right), Y (it is upside down), X
@@ -495,6 +496,16 @@ assembly of the port is necessary:
   the next run (`vk_probe_skip.txt`; delete the file to try it again).
   `vk_validation = true` turns on the Vulkan validation layer, which is in
   the app only if `python configure.py --android-vulkan-validation` made it.
+- To run the probe on another Vulkan driver (Turnip, for an Adreno GPU), copy
+  an adrenotools archive (a zip with a `meta.json` and the driver's library,
+  for example `Turnip_v26.0.0_R8.zip` from the K11MCH1/AdrenoToolsDrivers
+  releases) into the data folder and set `display.vk_driver = "<the file's
+  name>"`. The app unpacks it into its private storage (Android loads a library
+  only from there) and opens it with libadrenotools; the report's `driver.*`
+  lines say which driver is running (`driver.check` says if the archive's
+  library was really loaded). An archive that does not work is logged
+  (tag `halo`, and `hook_impl` for the loader's reason) and the phone's driver
+  is used. The app is packaged with its libraries extracted for this.
 - To install a debug build beside the app from GitHub Actions (another
   signing key stops it from replacing that app), set
   `HALO_APPLICATION_ID_SUFFIX=.vk` when you run `ninja android_apk`. The

@@ -17,9 +17,11 @@ choice, and says so where it differs. Where deko3d's choice is also the
 right one here (a draw whose pipeline is still compiling is left out until
 it is ready), it is kept.
 
-Status: phase 0, part A (the probe, on the phone's own driver) is done and
-committed; its results are in "Progress". Phase 0, part B (the probe on a
-driver loaded by the app, Turnip first) is written out and next. The work is
+Status: phase 0 is done on the test device (Adreno 750) and committed, parts A
+and B: the probe runs on the phone's own driver and on Turnip, loaded by the
+app, and Turnip draws the game's shaders with descriptor sets, identically to
+the phone's driver; the results are in "Progress". Not done: a second GPU
+family (a Mali), and the user's decisions marked (to confirm). Phase 1 is next. The work is
 on the `vulkan-backend` branch, which starts again from `main`. An earlier
 attempt, kept on the `vulkan-backend-old` branch, is not the base of this
 work and nothing here builds on it; see "Lessons from the earlier attempt".
@@ -168,13 +170,13 @@ Two parts:
   has, a frame on the screen and the surface's loss, the cost of copying the
   game's data, glslang on the device, pipelines. Specified below as it was
   worked, with its results and every deviation in "Progress".
-- **Part B — the probe on a driver the app loads. Next.** Turnip first.
+- **Part B — the probe on a driver the app loads. Done.** Turnip first.
 
 Part A's step 6 (profiling the GL ES path) belonged to the speed plan and is
 not part of this one: its results stay in "Progress" as a record, and the
 profiling mode stays in `host_debug.c` (off unless set) as a tool.
 
-### Part B — a driver the app loads (next)
+### Part B — a driver the app loads (done)
 
 **The question:** does Turnip, loaded by this app through libadrenotools,
 run here - with the guest's memory reserved below 4 GB, the app's signal
@@ -1105,6 +1107,114 @@ is kept:
 Phase 0 was worked on the test device (Lenovo TB321FU, Adreno 750, Android 16,
 API 36, the phone's own driver). The reports are in `port/android/probe/reports/`.
 Newest first.
+
+### Phase 0, part B — summary
+
+Worked unattended on the test device (Lenovo TB321FU, Adreno 750, Android 16) as the
+`.vk` build. Reports are in `port/android/probe/reports/` (`..._qualcomm_all_{validation,cold,warm}.txt`,
+`..._turnip_all_{validation,cold,warm}.txt`).
+
+**Turnip runs in this app, and the draw that crashed the earlier attempt does not crash.** Turnip
+(Mesa 26.0.0, loaded through libadrenotools) did setup, `caps`, `memory`, `compile`, `pipelines`, `draw`
+and `present` (ten backgroundings, rotation, three clearing modes), with the validation layer on
+(it loads with the custom driver: 0 errors, the only 2 messages are about the layer's own cache file). The
+`vkUpdateDescriptorSets` crash of the earlier attempt was not reproduced in any form (written once, written
+again after a draw, pushed): it was that attempt's own bug, not a conflict with this app.
+
+**The pictures of `draw` are the same on both drivers, bit for bit**: every variant has the same 64-bit hash
+on the phone's driver and on Turnip (the control pair, the typical and large game shaders, each opaque and
+blended, static and dynamic state, a bound set and pushed descriptors). Not one pixel differs, so the shaders
+as converted say nothing about a driver fault on these inputs (they are small inputs: one triangle).
+
+**What each driver did**
+
+| | Phone's driver (Qualcomm 512.762.40) | Turnip v26.0.0 R8 (Mesa 26.0.0-devel, git 5ac41be677) |
+|---|---|---|
+| Archive | – | `Turnip_v26.0.0_R8.zip`, sha256 `e634db0f929e2205e95511c769071817d0390180ec72c8e690bc76375e813715`, "Mesa Turnip driver v26.0.0 - R8" by KIMCHI (K11MCH1/AdrenoToolsDrivers release `v26.0.0-rc08`), library `vulkan.ad07xx.so`, reports Vulkan 1.4.335 |
+| Versions | instance 1.4.0, device 1.3.128, driver id 8, conformance 1.3.6.0 | device 1.4.335, driver id 18 (`VK_DRIVER_ID_MESA_TURNIP`), conformance 1.4.0.0 |
+| Setup, `caps`, `compile`, `pipelines`, `draw`, `present` | all finish | all finish |
+| Validation layer | clean (2 messages: the layer's cache file) | loads with the custom driver, clean (the same 2 messages) |
+| Dynamic rendering, extended dynamic state 1 and 2, vertex input dynamic state, push descriptors, custom border colour, 4444, pipeline cache control, maintenance4 | yes | yes |
+| Extended dynamic state 3 | no | **yes (all of it)** |
+| Maintenance5, graphics pipeline library (+ pipeline library) | no, no | **yes, yes** |
+| `VK_EXT_external_memory_host` | no | no (the plan's copy-at-hand-over is right for both) |
+| Memory | heap 0 11,273 MB + a 4,095 MB protected heap; plain device-local types exist | **one 8,454 MB heap, every type host-visible** (no device-only type a buffer can use; the probe's device-local-buffer variant says "no memory type" and is left out) |
+| Formats the plan needs (BC1/2/3, the 16-bit colours, depth formats) | all present | all present; Turnip also reports colour-attachment and blend bits on its depth formats (the driver's claim, unverified) |
+| Limits that differ | vertex attribute offset 4096, uniform alignment 256, non-coherent atom 1, copy offset alignment 64 | **vertex attribute offset 4095**, uniform alignment 64, non-coherent atom 64, copy offset/row alignment 128 |
+| Presenting | FIFO, 6 images, 165 Hz, 6.04 ms median interval | the same, 6.04 ms |
+| Surface lost on backgrounding | 10 of 10 remade, 4 to 8 ms | 10 of 10 remade, 3.5 to 8.6 ms |
+| Rotation | `SUBOPTIMAL` each time, remade in 5 to 17 ms | the same, 5 to 11 ms |
+| Pipeline creation, cold (pass / typical / large), min | 1.08 / 5.19 / 12.0 ms | **0.31 / 3.24 / 12.3 ms** |
+| From our saved cache | 0.097 / 0.091 / 0.120 ms (cache 94 KB) | 0.006 / 0.004 / 0.004 ms (cache 260 KB) |
+| Driver's own cache only (ours empty) | 1.8 / 7.9 / 17.9 ms | 0.38 / 3.3 / 12.4 ms (the driver's own cache is a hit only for the small ones) |
+| Static state against dynamic (typical, large) | 7.2 / 16.9 against 5.2 / 12.0 ms (dynamic cheaper) | 3.25 / 12.36 against 3.24 / 12.35 ms (no difference) |
+| Pipelines made on a second thread while a frame loop runs | no stall (0 of 12 frames over twice the median) | no stall (0 of 10) |
+| `draw`: pixels changed by the typical / large shader | 63,520 of 65,536 (the triangle's corner is off the target by construction) | the same 63,520 |
+| `draw`: rewrite of the set after a draw (the triangle halved, then restored) | picture changed (37,456 pixels), restored picture equals the first | the same |
+
+Differences that matter for the plan: Turnip has extended dynamic state 3 and the pipeline library, which would
+let phase 5 make fewer pipelines on Turnip (the plan's decision is the same code on both, so unused for
+now); it creates pipelines faster; and its attribute offset limit is 4095, below the Xbox's vertex layouts'
+needs only if an offset reaches 4096 (none does in the game's declarations).
+
+**Deviations from the spec**: the next section. **Left for the user**: the (to confirm) decisions; a second GPU
+family (a Mali) is not tried; the tester's part of `present` (the picture's orientation, the tone) was answered
+by key events only (the screenshot of the Turnip run shows the cycling colour and the corner marker as on the
+phone's driver); a Turnip release is the user's choice (this one was the newest plain release).
+
+### Phase 0, part B: deviations from the spec
+
+1. **libadrenotools**: Eden's fork at `8ba23b42d742545b709064d6e2523cdb86de68f5`, its submodule `lib/linkernsbypass`
+   at `aa3975893d83ef1bc84c321ec60c65fbf1287887`; fetched with `git clone` + `checkout` + `submodule update`
+   + `git apply port/android/probe/adrenotools.patch` (one line: `log` in the library's link line). Five
+   libraries are staged, not three hooks: `libadrenotools.so` and `libhook_impl.so`, `libmain_hook.so`,
+   `libfile_redirect_hook.so`, `libgsl_alloc_hook.so` (the first hook needs `libhook_impl.so` beside it). It is
+   `dlopen`ed by full path from the native library folder (not linked); `-lz` is linked into `libmain.so` for the zip reader
+   (the NDK's zlib, a system library).
+2. **The window is made without `SDL_WINDOW_VULKAN`** straight away, as the spec says to do if the flag loads
+   the system loader; I did not measure whether it does. `/system/lib64/libvulkan.so` is in the process anyway
+   (in both runs, from something other than the probe's own code), but with Turnip the phone's
+   `vulkan.adreno.so` is **not** loaded (`driver.loaded_library` lists the process's libraries) and the loader
+   copy that libadrenotools makes (`memfd:/system/lib64/libvulkan.so`) serves.
+3. **The driver module also verifies** (`host_vk_driver_verify`, not in the spec), and refuses a library that is
+   not an ELF file: libadrenotools returns the system loader for any input and its hook falls back to the phone's
+   own driver without a word when the library will not load, so without this a junk archive was reported as
+   opened while the Adreno driver ran. The probe reports `driver.check` (ok / FAILED). Tried: a text file named
+   `.so` (refused by the ELF check, falls back), a truncated ELF (hook falls back: `driver.check: FAILED`, the
+   reason is in logcat tag `hook_impl`), an ELF that is not a driver (the loader is left with no driver:
+   `probe.setup: failed`; the **module cannot recover from that one**, since the loader is already bound to the
+   hook, so phase 1's choice must treat "no Vulkan device after opening a custom driver" as a reason to start
+   the GL ES image).
+4. **Zip reader**: stored and deflated entries, CRC checked, sizes bounded (256 MB a file or archive, 256 entries),
+   encrypted, zip64 and multi-part archives refused, a name containing `..` anywhere or starting with `/` is
+   refused (stricter than the spec's wording). The `.unpacked` stamp is the archive's size and modification
+   time. Files of an older unpacking of the same archive name are not removed.
+5. **`draw`**: the typical pixel shader's first sampler and the large one's last are **cube maps** (`samplerCube`),
+   so two of the four textures per pair are not 2D: a cube of six 64x64 layers (RGBA8, and BC1 for the large pair's)
+   instead of four 2D textures. BC1 is used where the device samples it (`textureCompressionBC` is enabled on the
+   device now). A pass-through pair is drawn first as a control; each pair is drawn opaque and blended, static
+   ("plain": only viewport and scissor dynamic, as the Decisions say) and with every dynamic state the device
+   has. The constants are set by hand from reading the shaders (identity at `c[28..31]` / `c[0..3]`, the
+   skinning matrices at `c[60..62]`, `c[7].w = 1`, `c[58]`, `c[59]`, `viewport_*` for pixel coordinates on a
+   256x256 target, every other constant 0.5), the vertices are in pixel coordinates. The pictures are written as
+   `vk_probe_draw_*.ppm` in the data folder and were looked at (shaded and textured, as expected).
+   The rewrite test writes a second vertex block (halving the triangle) and writes the first back, rather than
+   changing a texture. `VK_KHR_push_descriptor` is now enabled on the device when offered.
+6. **Sub-step guards added**: `draw.setup`, `draw.update.<pair>`, `draw.<variant>`, `draw.rewrite.<pair>`,
+   `draw.push`, `memory.same_pages` (part A's fix) and `driver_close`. No guard fired: nothing crashed.
+7. **Part A's fixes**: done as listed. `guard_end` returns the marker to the running step; a surface lost while the
+   app is away is logged and counted once, with the attempts and the time it took (the loop retries without a line each).
+   The memory step's fixes are in the code but **not exercised**: neither driver offers `VK_EXT_external_memory_host`.
+8. **Settings**: `display.vk_driver` is a row in `port_config.c` (not under `HALO_SWITCH`); the host reads it from
+   `config.toml`; `host_vk_probe_run` has a third argument for it. After the game's own start the file still
+   showed my row without the comment the other rows have, because the game only adds the keys that are missing;
+   I did not get the game to rewrite the file (quitting by adb key events did not confirm the dialog).
+9. **Not done / different**: `TU_DEBUG` was not needed (the layer loads with Turnip). No second thread of
+   frames used game pipelines (as in part A). The reports' names carry `qualcomm` / `turnip` as asked; part A's
+   reports keep their names. Each release other than R8 was not tried, since R8 worked on the first try.
+10. **The GL ES game** ran with the legacy-packaged build both with and without the validation layer in the
+    APK (main menu reached, the quit dialog shown, frames drawn; the user's own release build was not touched).
+    The build without `--android-vulkan-validation` has no `libVkLayer_khronos_validation.so`.
 
 ### Phase 0, part A — summary
 
