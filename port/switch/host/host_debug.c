@@ -21,12 +21,11 @@ ids are still tracked, which costs nothing and is what a future mechanism
 would need - but the sampler records only that it was asked for and did not
 start.
 
-The way back, if it is wanted, is not a signal. The console can read and
-write another thread's context directly, through svcGetDebugThreadContext
-and svcSetDebugThreadContext, which libnx uses itself. A sampler built on
-that would read each guest thread's registers on a timer without involving
-the thread at all, which is arguably better than the signal version because
-it cannot disturb what it is watching.
+What the console does have is a profiler's way in: a process may pause one
+of its own threads (svcSetThreadActivity) and read its registers while it is
+paused (svcGetThreadContext3), with no debugger attached - the debug SVCs need
+a debug handle, which a process cannot take on itself. The profiler below
+(debug.profiler) is built on that.
 */
 
 #include "host.h"
@@ -37,6 +36,8 @@ it cannot disturb what it is watching.
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <sys/stat.h>
 
 #include <switch.h>
 
@@ -84,23 +85,28 @@ void host_backtrace(const char *reason)
 		host_logf(HOST_LOG_WARN, "  no frames: the host was built without frame pointers");
 }
 
-/* the guest's thread ids, so that a mechanism which can reach them knows
-which ones to reach */
+/* the guest's threads, by id and handle, for the profiler to reach; is_game
+names the game thread */
 #define MAXIMUM_THREADS 64
 
-static pid_t guest_threads[MAXIMUM_THREADS];
+static struct
+{
+	pid_t id;
+	Handle handle;
+	int is_game;
+} guest_threads[MAXIMUM_THREADS];
 static pthread_mutex_t threads_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static pid_t current_thread_id(void)
 {
 	u64 id = 0;
 
-	if (R_FAILED(svcGetThreadId(&id, 0xFFFFFFFF)))
+	if (R_FAILED(svcGetThreadId(&id, CUR_THREAD_HANDLE)))
 		return 0;
 	return (pid_t)id;
 }
 
-void host_debug_thread_started(void)
+void host_debug_thread_started(int is_game)
 {
 	pid_t self = current_thread_id();
 	int index;
@@ -108,9 +114,11 @@ void host_debug_thread_started(void)
 	pthread_mutex_lock(&threads_lock);
 	for (index = 0; index < MAXIMUM_THREADS; index++)
 	{
-		if (!guest_threads[index])
+		if (!guest_threads[index].id)
 		{
-			guest_threads[index] = self;
+			guest_threads[index].id = self;
+			guest_threads[index].handle = threadGetCurHandle();
+			guest_threads[index].is_game = is_game;
 			break;
 		}
 	}
@@ -125,8 +133,8 @@ void host_debug_thread_exited(void)
 	pthread_mutex_lock(&threads_lock);
 	for (index = 0; index < MAXIMUM_THREADS; index++)
 	{
-		if (guest_threads[index] == self)
-			guest_threads[index] = 0;
+		if (guest_threads[index].id == self)
+			guest_threads[index].id = 0;
 	}
 	pthread_mutex_unlock(&threads_lock);
 }
@@ -140,4 +148,245 @@ void host_debug_start_sampler(const char *setting)
 	host_logf(HOST_LOG_WARN,
 		"debug.sample_seconds is %u, but the thread sampler needs a signal handler, "
 		"which the Switch has no way to install; not starting it", seconds);
+}
+
+/* ------------------------------------------------------------------ profiler
+
+config.toml's debug.profiler starts a thread that, debug.profile_hz (500)
+times a second,
+pauses each of the guest's threads in turn, reads where it is - its program
+counter and the return addresses of its frame chain - and lets it go on. Each
+distinct stack is counted, per thread, and every PROFILE_WINDOW_SECONDS the
+counts go to a file of their own in the profile folder beside the game
+(profile_NNN.txt), written by the profiler's thread, never the game's.
+tools/switch_profile.py turns the addresses into functions.
+
+A sample is taken whatever the thread is doing, waiting included, so a thread
+stuck on the card or a lock shows as such. While a thread is paused the
+profiler only reads: it takes no lock, allocates nothing and logs nothing,
+since the paused thread may hold the lock it would need. The frame chain is
+followed only inside the memory region the stack pointer is in, increasing,
+so a corrupt chain ends the walk rather than faulting the profiler.
+
+The host's addresses move from run to run; the file says where one of its
+functions was (the anchor) so the tool can find the rest. The guest's image
+is linked where it runs. */
+
+#define PROFILE_DEPTH 24
+#define PROFILE_ENTRIES 8192
+#define PROFILE_WINDOW_SECONDS 20
+
+struct profile_entry
+{
+	uint32_t count;
+	uint8_t slot;
+	uint8_t depth;
+	uint64_t addresses[PROFILE_DEPTH];
+};
+
+static struct
+{
+	struct profile_entry *entries;
+	uint32_t used;
+	uint32_t dropped;
+	uint32_t samples[MAXIMUM_THREADS];
+	uint32_t failed[MAXIMUM_THREADS];
+	pid_t ids[MAXIMUM_THREADS];
+	int is_game[MAXIMUM_THREADS];
+	unsigned hz;
+	char image[64];
+} profile;
+
+static int profile_walk(const ThreadContext *context, uint64_t *addresses)
+{
+	MemoryInfo info;
+	u32 page_info;
+	uint64_t frame = context->fp, low, high;
+	int depth = 0;
+
+	addresses[depth++] = context->pc.x;
+	if (R_FAILED(svcQueryMemory(&info, &page_info, context->sp)) || !(info.perm & Perm_R))
+		return depth;
+	low = info.addr;
+	high = info.addr + info.size;
+	while (depth < PROFILE_DEPTH && !(frame & 7) && frame >= low && frame + 16 <= high)
+	{
+		const uint64_t *record = (const uint64_t *)(uintptr_t)frame;
+		uint64_t next = record[0], back = record[1];
+
+		if (!back)
+			break;
+		addresses[depth++] = back;
+		if (next <= frame)
+			break;
+		frame = next;
+	}
+	return depth;
+}
+
+static void profile_count(int slot, const uint64_t *addresses, int depth)
+{
+	uint64_t hash = 1469598103934665603ULL ^ (uint64_t)slot;
+	uint32_t index, probe;
+	int at;
+
+	for (at = 0; at < depth; at++)
+		hash = (hash ^ addresses[at]) * 1099511628211ULL;
+	index = (uint32_t)(hash % PROFILE_ENTRIES);
+	for (probe = 0; probe < PROFILE_ENTRIES; probe++)
+	{
+		struct profile_entry *entry = &profile.entries[(index + probe) % PROFILE_ENTRIES];
+
+		if (!entry->count)
+		{
+			if (profile.used >= PROFILE_ENTRIES * 3 / 4)
+				break;
+			entry->count = 1;
+			entry->slot = (uint8_t)slot;
+			entry->depth = (uint8_t)depth;
+			memcpy(entry->addresses, addresses, (size_t)depth * sizeof(*addresses));
+			profile.used++;
+			return;
+		}
+		if (entry->slot == slot && entry->depth == depth &&
+			!memcmp(entry->addresses, addresses, (size_t)depth * sizeof(*addresses)))
+		{
+			entry->count++;
+			return;
+		}
+	}
+	profile.dropped++;
+}
+
+static void profile_write(unsigned window, double seconds)
+{
+	char path[PATH_MAX];
+	FILE *file;
+	uint32_t index;
+	int slot, at;
+
+	snprintf(path, sizeof(path), "%s/profile", host_executable_root());
+	mkdir(path, 0777);
+	snprintf(path, sizeof(path), "%s/profile/profile_%03u.txt", host_executable_root(), window);
+	file = fopen(path, "w");
+	if (!file)
+	{
+		host_logf(HOST_LOG_WARN, "profiler: cannot write %s", path);
+		return;
+	}
+	fprintf(file, "halo profile 1\nwindow %u seconds %.1f hz %u\nimage %s\nanchor host_debug_start_profiler 0x%llx\n",
+		window, seconds, profile.hz, profile.image, (unsigned long long)(uintptr_t)host_debug_start_profiler);
+	fprintf(file, "dropped %u\n", (unsigned)profile.dropped);
+	for (slot = 0; slot < MAXIMUM_THREADS; slot++)
+	{
+		if (profile.samples[slot] || profile.failed[slot])
+			fprintf(file, "thread %d %s id %d samples %u failed %u\n", slot, profile.is_game[slot] ? "game" : "other",
+				(int)profile.ids[slot], (unsigned)profile.samples[slot], (unsigned)profile.failed[slot]);
+	}
+	for (index = 0; index < PROFILE_ENTRIES; index++)
+	{
+		const struct profile_entry *entry = &profile.entries[index];
+
+		if (!entry->count)
+			continue;
+		fprintf(file, "stack %u %d", (unsigned)entry->count, entry->slot);
+		for (at = 0; at < entry->depth; at++)
+			fprintf(file, " %llx", (unsigned long long)entry->addresses[at]);
+		fputc('\n', file);
+	}
+	fclose(file);
+	host_logf(HOST_LOG_INFO, "profiler: %s written (%u stacks)", path, (unsigned)profile.used);
+}
+
+static void *profile_thread(void *unused)
+{
+	u64 interval = 1000000000ULL / profile.hz;
+	u64 window_start = armGetSystemTick();
+	unsigned window = 0;
+	int failed_said = 0;
+
+	(void)unused;
+	for (;;)
+	{
+		int slot;
+
+		svcSleepThread((s64)interval);
+		pthread_mutex_lock(&threads_lock);
+		for (slot = 0; slot < MAXIMUM_THREADS; slot++)
+		{
+			ThreadContext context;
+			uint64_t addresses[PROFILE_DEPTH];
+			Handle handle = guest_threads[slot].handle;
+			Result result;
+			int depth = 0;
+
+			if (!guest_threads[slot].id)
+				continue;
+			if (profile.ids[slot] != guest_threads[slot].id)
+			{
+				profile.ids[slot] = guest_threads[slot].id;
+				profile.is_game[slot] = guest_threads[slot].is_game;
+			}
+			/* (paused: nothing below takes a lock or allocates) */
+			result = svcSetThreadActivity(handle, ThreadActivity_Paused);
+			if (R_SUCCEEDED(result))
+			{
+				result = svcGetThreadContext3(&context, handle);
+				if (R_SUCCEEDED(result))
+					depth = profile_walk(&context, addresses);
+				svcSetThreadActivity(handle, ThreadActivity_Runnable);
+			}
+			if (!depth)
+			{
+				profile.failed[slot]++;
+				if (!failed_said)
+				{
+					failed_said = 1;
+					pthread_mutex_unlock(&threads_lock);
+					host_logf(HOST_LOG_WARN, "profiler: a thread could not be sampled: 0x%x", (unsigned)result);
+					pthread_mutex_lock(&threads_lock);
+				}
+				continue;
+			}
+			profile.samples[slot]++;
+			profile_count(slot, addresses, depth);
+		}
+		pthread_mutex_unlock(&threads_lock);
+		if (armTicksToNs(armGetSystemTick() - window_start) >= PROFILE_WINDOW_SECONDS * 1000000000ULL)
+		{
+			profile_write(window++, armTicksToNs(armGetSystemTick() - window_start) / 1e9);
+			memset(profile.entries, 0, PROFILE_ENTRIES * sizeof(*profile.entries));
+			memset(profile.samples, 0, sizeof(profile.samples));
+			memset(profile.failed, 0, sizeof(profile.failed));
+			profile.used = profile.dropped = 0;
+			window_start = armGetSystemTick();
+		}
+	}
+	return NULL;
+}
+
+void host_debug_start_profiler(unsigned hz, const char *image)
+{
+	pthread_t thread;
+
+	if (!hz)
+		return;
+	if (hz > 2000)
+		hz = 2000;
+	profile.entries = calloc(PROFILE_ENTRIES, sizeof(*profile.entries));
+	if (!profile.entries)
+	{
+		host_logf(HOST_LOG_WARN, "profiler: no memory for its table; not starting it");
+		return;
+	}
+	profile.hz = hz;
+	snprintf(profile.image, sizeof(profile.image), "%s", image);
+	if (pthread_create(&thread, NULL, profile_thread, NULL) != 0)
+	{
+		host_logf(HOST_LOG_WARN, "profiler: cannot start its thread");
+		return;
+	}
+	pthread_detach(thread);
+	host_logf(HOST_LOG_WARN, "profiler: sampling the guest's threads %u times a second; a file every %d s in "
+		"%s/profile (tools/switch_profile.py reads them)", hz, PROFILE_WINDOW_SECONDS, host_executable_root());
 }
