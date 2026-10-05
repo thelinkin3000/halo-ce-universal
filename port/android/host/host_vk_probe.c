@@ -5779,6 +5779,15 @@ void host_vk_probe_run(const char *steps, const char *data_root, const char *vk_
 			make_fence(&main_fence, 0))
 			setup = 1;
 	}
+	{
+		/* the system loader loads the driver only at the instance; a custom one that the hook refused is silently
+		the phone's, and a file that is no driver leaves the loader with none */
+		char check[256];
+		int check_ok = host_vk_driver_verify(check, sizeof(check));
+
+		rep("driver.check: %s (%s)", check_ok ? "ok" : "FAILED", check);
+		dl_iterate_phdr(report_library, NULL);
+	}
 	if (!setup)
 	{
 		rep("probe.setup: failed");
@@ -5787,7 +5796,6 @@ void host_vk_probe_run(const char *steps, const char *data_root, const char *vk_
 	{
 		skipped = read_file_text(skip_path);
 		rep("probe.setup: ok");
-		dl_iterate_phdr(report_library, NULL);
 		for (index = 0; index < STEP_COUNT; index++)
 		{
 			int asked = !strcmp(steps, "all") || in_list(steps, step_table[index].name);
