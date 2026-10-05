@@ -48,7 +48,7 @@ give.
 #include <string.h>
 
 #define FRAMES 3
-#define COMMAND_MEMORY_SIZE (4 * 1024 * 1024)
+#define COMMAND_MEMORY_SIZE (8 * 1024 * 1024)
 #define IMAGE_BLOCK_SIZE (32 * 1024 * 1024)
 #define IMAGE_BLOCK_LIMIT 16
 #define TARGET_LIMIT 256
@@ -68,6 +68,16 @@ vertices, quad lists' indices); one slice per ring frame */
 /* the window ranges a submission's draws read, cleaned from the CPU's cache
 once each (window_read); past this many, a range is cleaned but not kept */
 #define CLEANED_LIMIT 256
+
+/* the uniform buffers the shaders read (dk_shaders.h's blocks), in one block
+of memory: each at an offset aligned as deko3d wants uniform buffers. Their
+contents are written by the command stream (dkCmdBufPushConstants), in order
+with the draws that read them, so one copy of each does for every frame in
+flight. */
+#define UNIFORM_VERTEX_CONSTANTS 0x000
+#define UNIFORM_VERTEX_PARAMETERS 0xc00
+#define UNIFORM_PIXEL_PARAMETERS 0xd00
+#define UNIFORM_MEMORY_SIZE 0x1000
 
 int host_dk_presenting;
 
@@ -150,6 +160,46 @@ static struct
 	/* the targets bound now (NULL: none) */
 	struct target *color, *depth;
 	unsigned long frames_presented;
+
+	/* ---------- draws: what the guest has told the host (dk_commands.h), which
+	the host holds until it says otherwise and puts into the queue at the next
+	draw whenever it needs to (a frame's start, a clear and a change of targets
+	all leave the queue's own state not what the draws were told) */
+	DkMemBlock uniform_memory;
+	DkGpuAddr uniform_gpu;
+	struct dk_draw_state state;
+	int state_valid;
+	int state_dirty;
+	uint32_t vertex_shader, pixel_shader;
+	int shaders_dirty;
+	struct dk_vertex_format format;
+	int format_valid;
+	int format_dirty;
+	/* the format as deko3d takes it: the streams the registers read are
+	numbered from 0 in the order of their numbers, then the constants' */
+	struct
+	{
+		DkVtxAttribState attributes[DK_ATTRIBUTE_COUNT];
+		DkVtxBufferState buffers[DK_STREAM_COUNT];
+		uint32_t buffer_count;
+		int has_constants;
+	} vertex;
+	/* the constants block's place in the upload buffer, good for the
+	upload generation (a frame's) it was copied in */
+	DkGpuAddr constants_gpu;
+	uint32_t constants_generation;
+	uint32_t upload_generation;
+	int uniforms_bound;
+	int said_draw_problem;
+
+	/* a screenshot's readback: CPU-visible memory the size of the back
+	buffer's pixels */
+	DkMemBlock readback_memory;
+	uint32_t readback_size;
+	/* the screenshot's image: pitch-linear, in readback_memory, so its rows
+	are plain memory the CPU reads */
+	DkImage readback_image;
+	uint32_t readback_width, readback_height, readback_pitch;
 } dk;
 
 static void debug_callback(void *user, const char *context, DkResult result, const char *message)
@@ -281,7 +331,11 @@ static void frame_begin(void)
 	dkCmdBufAddMemory(dk.commands, dk.command_memory, (uint32_t)dk.frame * COMMAND_MEMORY_SIZE, COMMAND_MEMORY_SIZE);
 	/* the upload slice is reused the same way, behind the same fence */
 	dk.upload_used = 0;
+	dk.upload_generation++;
 	dk.color = dk.depth = NULL;
+	/* the queue is not trusted to be as the draws were told: put it back */
+	dk.state_dirty = dk.shaders_dirty = dk.format_dirty = 1;
+	dk.uniforms_bound = 0;
 }
 
 /* ---------- the game's memory, where the game keeps it (DEKO3D.md, phase 3)
@@ -555,6 +609,12 @@ static int initialize(void)
 	else
 		host_logf(HOST_LOG_ERROR, "deko3d: no upload buffer; data outside the window will not draw");
 
+	dk.uniform_memory = memory_block(UNIFORM_MEMORY_SIZE, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached, NULL);
+	if (dk.uniform_memory)
+		dk.uniform_gpu = dkMemBlockGetGpuAddr(dk.uniform_memory);
+	else
+		host_logf(HOST_LOG_ERROR, "deko3d: no uniform buffer; nothing will be drawn");
+
 	frame_begin();
 	return 1;
 }
@@ -584,6 +644,8 @@ static void targets_bind(const struct dk_command_targets *command)
 		dkCmdBufSetViewports(dk.commands, 0, &viewport, 1);
 		dkCmdBufSetScissors(dk.commands, 0, &scissor, 1);
 	}
+	/* (the draws' viewport and scissor go back at the next draw) */
+	dk.state_dirty = 1;
 }
 
 static void clear(const struct dk_command_clear *command)
@@ -600,6 +662,8 @@ static void clear(const struct dk_command_clear *command)
 		mask = 0;
 	if (!mask && !depth && !stencil)
 		return;
+	/* (a clear sets the scissor to each rectangle) */
+	dk.state_dirty = 1;
 	for (index = 0; index < command->rectangle_count; index++)
 	{
 		const uint32_t *rectangle = command->rectangles[index];
@@ -615,10 +679,75 @@ static void clear(const struct dk_command_clear *command)
 	}
 }
 
+/* A screenshot's destination: a pitch-linear image in CPU-visible memory,
+which the back buffer is blitted into (by the 2D engine, as the present's
+blit is). Not a copy of the back buffer into a buffer: the back buffer is
+made with hardware compression (target_get), and copying a compressed image
+with dkCmdBufCopyImageToBuffer is what stopped the first frame of phase 6's
+first console run - the GPU never reached the frame's fence. Kept for the
+next screenshot of the same size. */
+static int readback_make(uint32_t width, uint32_t height)
+{
+	DkImageLayoutMaker maker;
+	DkImageLayout layout;
+	uint32_t pitch = (width * 4 + DK_IMAGE_LINEAR_STRIDE_ALIGNMENT - 1) & ~(uint32_t)(DK_IMAGE_LINEAR_STRIDE_ALIGNMENT - 1);
+	uint32_t size;
+
+	if (dk.readback_memory && dk.readback_width == width && dk.readback_height == height)
+		return 1;
+	dkImageLayoutMakerDefaults(&maker, dk.device);
+	maker.flags = DkImageFlags_PitchLinear | DkImageFlags_Usage2DEngine;
+	maker.format = DkImageFormat_RGBA8_Unorm;
+	maker.dimensions[0] = width;
+	maker.dimensions[1] = height;
+	maker.pitchStride = pitch;
+	dkImageLayoutInitialize(&layout, &maker);
+	size = (uint32_t)dkImageLayoutGetSize(&layout);
+	if (dk.readback_memory)
+		dkMemBlockDestroy(dk.readback_memory);
+	dk.readback_memory = memory_block(size, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached |
+		DkMemBlockFlags_Image, NULL);
+	dk.readback_size = dk.readback_memory ? size : 0;
+	dk.readback_width = dk.readback_height = 0;
+	if (!dk.readback_memory)
+		return 0;
+	dkImageInitialize(&dk.readback_image, &layout, dk.readback_memory, 0);
+	dk.readback_width = width;
+	dk.readback_height = height;
+	dk.readback_pitch = pitch;
+	return 1;
+}
+
 static void present(const struct dk_command_present *command)
 {
 	struct target *back_buffer = target_get(&command->back_buffer);
-	int slot = dkQueueAcquireImage(dk.queue, dk.swapchain);
+	struct target *screenshot = NULL;
+	int slot;
+
+	/* A GPU fault puts the queue in an error state, and deko3d then ends the
+	program at the next call that needs the queue - the swapchain's acquire,
+	here - with nothing said about the fault. Say it, with the frame, and
+	stop presenting: the game goes on, the picture stops, the log has the
+	frame the GPU faulted in */
+	if (dkQueueIsInErrorState(dk.queue))
+	{
+		static int said;
+
+		if (!said)
+		{
+			said = 1;
+			host_logf(HOST_LOG_ERROR, "deko3d: the GPU faulted (the queue is in an error state) by frame %lu; "
+				"nothing more is presented", dk.frames_presented);
+		}
+		/* what was recorded is thrown away, so the command memory does not
+		fill with frames that are never submitted (frame_begin would wait for
+		a fence the faulted GPU never reaches) */
+		dkCmdBufClear(dk.commands);
+		dkCmdBufAddMemory(dk.commands, dk.command_memory, (uint32_t)dk.frame * COMMAND_MEMORY_SIZE, COMMAND_MEMORY_SIZE);
+		dk.recorded = 0;
+		return;
+	}
+	slot = dkQueueAcquireImage(dk.queue, dk.swapchain);
 	DkImageView screen_view;
 	DkImageView const *screen_views[1] = { &screen_view };
 	DkScissor scissor = { 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT };
@@ -650,15 +779,485 @@ static void present(const struct dk_command_present *command)
 		to.depth = 1;
 		dkImageViewDefaults(&source, &back_buffer->image);
 		dkCmdBufBarrier(dk.commands, DkBarrier_Fragments, 0);
+		if (command->screenshot && readback_make(back_buffer->surface.width, back_buffer->surface.height))
+		{
+			DkImageView readback;
+
+			dkImageViewDefaults(&readback, &dk.readback_image);
+			dkCmdBufBlitImage(dk.commands, &source, &from, &readback, &from, 0, 0);
+			screenshot = back_buffer;
+		}
 		dkCmdBufBlitImage(dk.commands, &source, &from, &screen_view, &to, DkBlitFlag_FilterLinear, 0);
 	}
 	commands_submit();
+	if (screenshot)
+	{
+		/* a screenshot is a debugging aid: the frame waits for the GPU to
+		have drawn it - two seconds at most, so that a GPU that has stopped
+		(as the first screenshot's copy once made it) is said in the log
+		rather than freezing the game with nothing said */
+		if (dkFenceWait(&dk.fences[dk.frame], 2000000000LL) == DkResult_Success)
+		{
+			const unsigned char *rows = (const unsigned char *)dkMemBlockGetCpuAddr(dk.readback_memory);
+			unsigned char *out = (unsigned char *)(uintptr_t)command->screenshot;
+			uint32_t row, row_bytes = screenshot->surface.width * 4;
+
+			for (row = 0; row < screenshot->surface.height; row++)
+				memcpy(out + (size_t)row * row_bytes, rows + (size_t)row * dk.readback_pitch, row_bytes);
+		}
+		else
+		{
+			host_logf(HOST_LOG_ERROR, "deko3d: the GPU did not finish the frame in two seconds; no screenshot (and "
+				"the GPU may have stopped)");
+		}
+	}
 	dkQueuePresentImage(dk.queue, dk.swapchain, slot);
 	host_dk_presenting = 1;
 	if (++dk.frames_presented == 1)
 		host_logf(HOST_LOG_INFO, "deko3d: first frame presented");
 	dk.frame = (dk.frame + 1) % FRAMES;
 	frame_begin();
+}
+
+/* ---------- draws (DEKO3D.md, phase 6) */
+
+/* the Xbox's enumerants, which are OpenGL's (dk_commands.h), as deko3d's */
+static DkCompareOp compare_op(uint32_t function)
+{
+	return function >= 0x200 && function <= 0x207 ? (DkCompareOp)(function - 0x200 + DkCompareOp_Never) :
+		DkCompareOp_Always;
+}
+
+static DkStencilOp stencil_op(uint32_t operation)
+{
+	switch (operation)
+	{
+	case 0x0000: return DkStencilOp_Zero;
+	case 0x1e01: return DkStencilOp_Replace;
+	case 0x1e02: return DkStencilOp_Incr;
+	case 0x1e03: return DkStencilOp_Decr;
+	case 0x150a: return DkStencilOp_Invert;
+	case 0x8507: return DkStencilOp_IncrWrap;
+	case 0x8508: return DkStencilOp_DecrWrap;
+	default: return DkStencilOp_Keep;
+	}
+}
+
+static DkBlendFactor blend_factor(uint32_t factor)
+{
+	switch (factor)
+	{
+	case 0x0000: return DkBlendFactor_Zero;
+	case 0x0300: return DkBlendFactor_SrcColor;
+	case 0x0301: return DkBlendFactor_InvSrcColor;
+	case 0x0302: return DkBlendFactor_SrcAlpha;
+	case 0x0303: return DkBlendFactor_InvSrcAlpha;
+	case 0x0304: return DkBlendFactor_DstAlpha;
+	case 0x0305: return DkBlendFactor_InvDstAlpha;
+	case 0x0306: return DkBlendFactor_DstColor;
+	case 0x0307: return DkBlendFactor_InvDstColor;
+	case 0x0308: return DkBlendFactor_SrcAlphaSaturate;
+	case 0x8001: return DkBlendFactor_ConstColor;
+	case 0x8002: return DkBlendFactor_InvConstColor;
+	case 0x8003: return DkBlendFactor_ConstAlpha;
+	case 0x8004: return DkBlendFactor_InvConstAlpha;
+	default: return DkBlendFactor_One;
+	}
+}
+
+static DkBlendOp blend_op(uint32_t equation)
+{
+	switch (equation)
+	{
+	case DK_BLEND_SUBTRACT: return DkBlendOp_Sub;
+	case DK_BLEND_REVERSE_SUBTRACT: return DkBlendOp_RevSub;
+	case DK_BLEND_MIN: return DkBlendOp_Min;
+	case DK_BLEND_MAX: return DkBlendOp_Max;
+	default: return DkBlendOp_Add;
+	}
+}
+
+static DkPrimitive primitive_of(uint32_t primitive)
+{
+	switch (primitive)
+	{
+	case DK_PRIMITIVE_POINTS: return DkPrimitive_Points;
+	case DK_PRIMITIVE_LINES: return DkPrimitive_Lines;
+	case DK_PRIMITIVE_LINE_LOOP: return DkPrimitive_LineLoop;
+	case DK_PRIMITIVE_LINE_STRIP: return DkPrimitive_LineStrip;
+	case DK_PRIMITIVE_TRIANGLE_STRIP: return DkPrimitive_TriangleStrip;
+	case DK_PRIMITIVE_TRIANGLE_FAN: return DkPrimitive_TriangleFan;
+	case DK_PRIMITIVE_QUADS: return DkPrimitive_Quads;
+	default: return DkPrimitive_Triangles;
+	}
+}
+
+/* how deko3d reads a register of each kind (DK_ATTRIBUTE_*); a kind of 0 or
+past the end is not one */
+static int attribute_format_make(uint32_t format, DkVtxAttribSize *size, DkVtxAttribType *type, int *bgra)
+{
+	static const struct
+	{
+		DkVtxAttribSize size;
+		DkVtxAttribType type;
+	} table[] =
+	{
+		[DK_ATTRIBUTE_UNFED] = { DkVtxAttribSize_4x32, DkVtxAttribType_Float },
+		[DK_ATTRIBUTE_UNFED_PACKED] = { DkVtxAttribSize_1x32, DkVtxAttribType_Uint },
+		[DK_ATTRIBUTE_FLOAT1] = { DkVtxAttribSize_1x32, DkVtxAttribType_Float },
+		[DK_ATTRIBUTE_FLOAT2] = { DkVtxAttribSize_2x32, DkVtxAttribType_Float },
+		[DK_ATTRIBUTE_FLOAT3] = { DkVtxAttribSize_3x32, DkVtxAttribType_Float },
+		[DK_ATTRIBUTE_FLOAT4] = { DkVtxAttribSize_4x32, DkVtxAttribType_Float },
+		[DK_ATTRIBUTE_COLOR] = { DkVtxAttribSize_4x8, DkVtxAttribType_Unorm },
+		[DK_ATTRIBUTE_SHORT1] = { DkVtxAttribSize_1x16, DkVtxAttribType_Sscaled },
+		[DK_ATTRIBUTE_SHORT2] = { DkVtxAttribSize_2x16, DkVtxAttribType_Sscaled },
+		[DK_ATTRIBUTE_SHORT3] = { DkVtxAttribSize_3x16, DkVtxAttribType_Sscaled },
+		[DK_ATTRIBUTE_SHORT4] = { DkVtxAttribSize_4x16, DkVtxAttribType_Sscaled },
+		[DK_ATTRIBUTE_NORMSHORT1] = { DkVtxAttribSize_1x16, DkVtxAttribType_Snorm },
+		[DK_ATTRIBUTE_NORMSHORT2] = { DkVtxAttribSize_2x16, DkVtxAttribType_Snorm },
+		[DK_ATTRIBUTE_NORMSHORT3] = { DkVtxAttribSize_3x16, DkVtxAttribType_Snorm },
+		[DK_ATTRIBUTE_NORMSHORT4] = { DkVtxAttribSize_4x16, DkVtxAttribType_Snorm },
+		[DK_ATTRIBUTE_BYTE1] = { DkVtxAttribSize_1x8, DkVtxAttribType_Unorm },
+		[DK_ATTRIBUTE_BYTE2] = { DkVtxAttribSize_2x8, DkVtxAttribType_Unorm },
+		[DK_ATTRIBUTE_BYTE3] = { DkVtxAttribSize_3x8, DkVtxAttribType_Unorm },
+		[DK_ATTRIBUTE_BYTE4] = { DkVtxAttribSize_4x8, DkVtxAttribType_Unorm },
+		[DK_ATTRIBUTE_PACKED] = { DkVtxAttribSize_1x32, DkVtxAttribType_Uint },
+	};
+
+	if (format >= sizeof(table) / sizeof(table[0]))
+		return 0;
+	*size = table[format].size;
+	*type = table[format].type;
+	*bgra = format == DK_ATTRIBUTE_COLOR;
+	return 1;
+}
+
+static void state_receive(const struct dk_command_state *command)
+{
+	dk.state = command->state;
+	dk.state_valid = 1;
+	dk.state_dirty = 1;
+}
+
+static void shaders_receive(const struct dk_command_shaders *command)
+{
+	dk.vertex_shader = command->vertex;
+	dk.pixel_shader = command->pixel;
+	dk.shaders_dirty = 1;
+}
+
+/* the uniform buffers' contents, written with the commands of the draws
+that read them */
+static void constants_receive(const struct dk_command_constants *command)
+{
+	if (!dk.uniform_memory || command->first >= 192 || command->count > 192 - command->first)
+		return;
+	dkCmdBufPushConstants(dk.commands, dk.uniform_gpu + UNIFORM_VERTEX_CONSTANTS, sizeof(struct dk_vertex_constants),
+		command->first * 4 * sizeof(float), command->count * 4 * sizeof(float), command->data);
+}
+
+static void vertex_parameters_receive(const struct dk_command_vertex_parameters *command)
+{
+	if (!dk.uniform_memory)
+		return;
+	dkCmdBufPushConstants(dk.commands, dk.uniform_gpu + UNIFORM_VERTEX_PARAMETERS, sizeof(struct dk_vertex_parameters),
+		0, sizeof(command->parameters), &command->parameters);
+}
+
+static void pixel_parameters_receive(const struct dk_command_pixel_parameters *command)
+{
+	if (!dk.uniform_memory)
+		return;
+	dkCmdBufPushConstants(dk.commands, dk.uniform_gpu + UNIFORM_PIXEL_PARAMETERS, sizeof(struct dk_pixel_parameters),
+		0, sizeof(command->parameters), &command->parameters);
+}
+
+/* deko3d's form of a vertex format, ready for the draws that follow */
+static void format_receive(const struct dk_command_vertex_format *command)
+{
+	uint32_t binding_of_stream[DK_STREAM_COUNT];
+	uint32_t stream, index, constants_binding;
+
+	dk.format = command->format;
+	dk.format_valid = 0;
+	dk.format_dirty = 1;
+	/* the unfed registers' values may be new (a format is sent again when a
+	SetVertexData changes one): copied again at the next draw, not taken
+	from the copy the frame made for an earlier format */
+	dk.constants_gpu = 0;
+	memset(&dk.vertex, 0, sizeof(dk.vertex));
+	for (stream = 0; stream < DK_STREAM_COUNT; stream++)
+	{
+		binding_of_stream[stream] = 0;
+		if (!((dk.format.stream_mask >> stream) & 1))
+			continue;
+		binding_of_stream[stream] = dk.vertex.buffer_count;
+		dk.vertex.buffers[dk.vertex.buffer_count].stride = dk.format.strides[stream];
+		dk.vertex.buffers[dk.vertex.buffer_count].divisor = 0;
+		dk.vertex.buffer_count++;
+	}
+	for (index = 0; index < DK_ATTRIBUTE_COUNT; index++)
+	{
+		if (dk.format.attributes[index].format == DK_ATTRIBUTE_UNFED ||
+			dk.format.attributes[index].format == DK_ATTRIBUTE_UNFED_PACKED)
+			dk.vertex.has_constants = 1;
+	}
+	/* the constants are a stream of their own, with a stride of 0 */
+	constants_binding = dk.vertex.buffer_count;
+	if (dk.vertex.has_constants)
+	{
+		if (dk.vertex.buffer_count == DK_STREAM_COUNT)
+		{
+			host_logf(HOST_LOG_ERROR, "deko3d: a vertex format reads %u streams and has unfed registers; its draws are skipped",
+				(unsigned)dk.vertex.buffer_count);
+			return;
+		}
+		dk.vertex.buffers[constants_binding].stride = 0;
+		dk.vertex.buffers[constants_binding].divisor = 0;
+		dk.vertex.buffer_count++;
+	}
+	for (index = 0; index < DK_ATTRIBUTE_COUNT; index++)
+	{
+		const struct dk_attribute *attribute = &dk.format.attributes[index];
+		DkVtxAttribState *state = &dk.vertex.attributes[index];
+		DkVtxAttribSize size;
+		DkVtxAttribType type;
+		int bgra, unfed = attribute->format == DK_ATTRIBUTE_UNFED || attribute->format == DK_ATTRIBUTE_UNFED_PACKED;
+
+		if (!attribute_format_make(attribute->format, &size, &type, &bgra) ||
+			(!unfed && (attribute->stream >= DK_STREAM_COUNT || !((dk.format.stream_mask >> attribute->stream) & 1))))
+		{
+			host_logf(HOST_LOG_ERROR, "deko3d: register %u of a vertex format is of kind %u, stream %u; its draws are skipped",
+				(unsigned)index, (unsigned)attribute->format, (unsigned)attribute->stream);
+			return;
+		}
+		memset(state, 0, sizeof(*state));
+		state->bufferId = unfed ? constants_binding : binding_of_stream[attribute->stream];
+		state->offset = unfed ? index * 4 * sizeof(float) : attribute->offset;
+		state->size = size;
+		state->type = type;
+		state->isBgra = bgra;
+	}
+	dk.format_valid = 1;
+}
+
+/* puts the queue's state as the draws were told, if it is not: the viewport
+and scissor are clamped to the target they are for, which the guest does
+not know the size of from here. 0 if nothing can be drawn with this state (an
+empty viewport). */
+static int state_apply(void)
+{
+	const struct dk_draw_state *state = &dk.state;
+	const struct target *size_from = dk.color ? dk.color : dk.depth;
+	DkViewport viewport;
+	DkScissor scissor;
+	DkRasterizerState rasterizer;
+	DkColorState color;
+	DkColorWriteState color_write;
+	DkBlendState blend;
+	DkDepthStencilState depth_stencil;
+	int32_t left, top, right, bottom;
+
+	if (!dk.state_dirty)
+		return 1;
+	if (state->viewport[2] <= 0 || state->viewport[3] <= 0 || !size_from)
+		return 0;
+	dk.state_dirty = 0;
+
+	viewport.x = (float)state->viewport[0];
+	viewport.y = (float)state->viewport[1];
+	viewport.width = (float)state->viewport[2];
+	viewport.height = (float)state->viewport[3];
+	viewport.near = state->depth_range[0];
+	viewport.far = state->depth_range[1];
+	dkCmdBufSetViewports(dk.commands, 0, &viewport, 1);
+	left = state->scissor[0] < 0 ? 0 : state->scissor[0];
+	top = state->scissor[1] < 0 ? 0 : state->scissor[1];
+	right = state->scissor[0] + state->scissor[2];
+	bottom = state->scissor[1] + state->scissor[3];
+	if (right > (int32_t)size_from->surface.width)
+		right = (int32_t)size_from->surface.width;
+	if (bottom > (int32_t)size_from->surface.height)
+		bottom = (int32_t)size_from->surface.height;
+	scissor.x = (uint32_t)left;
+	scissor.y = (uint32_t)top;
+	scissor.width = right > left ? (uint32_t)(right - left) : 0;
+	scissor.height = bottom > top ? (uint32_t)(bottom - top) : 0;
+	dkCmdBufSetScissors(dk.commands, 0, &scissor, 1);
+
+	dkRasterizerStateDefaults(&rasterizer);
+	rasterizer.cullMode = state->cull == DK_CULL_FRONT ? DkFace_Front : state->cull == DK_CULL_BACK ? DkFace_Back :
+		DkFace_None;
+	rasterizer.frontFace = state->front_face_ccw ? DkFrontFace_CCW : DkFrontFace_CW;
+	rasterizer.polygonModeFront = rasterizer.polygonModeBack = state->fill_mode == DK_FILL_LINE ? DkPolygonMode_Line :
+		state->fill_mode == DK_FILL_POINT ? DkPolygonMode_Point : DkPolygonMode_Fill;
+	rasterizer.depthBiasEnableMask = state->offset_enable ? (DkPolygonFlag_Fill | DkPolygonFlag_Line) : 0;
+	dkCmdBufBindRasterizerState(dk.commands, &rasterizer);
+	if (state->offset_enable)
+		dkCmdBufSetDepthBias(dk.commands, state->offset_units, 0.0f, state->offset_slope);
+
+	dkColorStateDefaults(&color);
+	dkColorStateSetBlendEnable(&color, 0, state->blend != 0);
+	dkCmdBufBindColorState(dk.commands, &color);
+	dkBlendStateDefaults(&blend);
+	if (state->blend)
+	{
+		DkBlendFactor source = blend_factor(state->blend_source), destination = blend_factor(state->blend_destination);
+
+		dkBlendStateSetOps(&blend, blend_op(state->blend_equation), blend_op(state->blend_equation));
+		/* (glBlendFunc: the alpha channel's factors are the color's) */
+		dkBlendStateSetFactors(&blend, source, destination, source, destination);
+		dkCmdBufSetBlendConst(dk.commands, state->blend_color[0], state->blend_color[1], state->blend_color[2],
+			state->blend_color[3]);
+	}
+	dkCmdBufBindBlendStates(dk.commands, 0, &blend, 1);
+	dkColorWriteStateDefaults(&color_write);
+	dkColorWriteStateSetMask(&color_write, 0, state->color_mask);
+	dkCmdBufBindColorWriteState(dk.commands, &color_write);
+
+	dkDepthStencilStateDefaults(&depth_stencil);
+	depth_stencil.depthTestEnable = state->depth_test != 0;
+	depth_stencil.depthWriteEnable = state->depth_write != 0;
+	depth_stencil.depthCompareOp = compare_op(state->depth_function);
+	depth_stencil.stencilTestEnable = state->stencil_test != 0;
+	if (state->stencil_test)
+	{
+		/* one set of operations for both faces, as glStencilOp's */
+		depth_stencil.stencilFrontFailOp = depth_stencil.stencilBackFailOp = stencil_op(state->stencil_fail);
+		depth_stencil.stencilFrontDepthFailOp = depth_stencil.stencilBackDepthFailOp = stencil_op(state->stencil_depth_fail);
+		depth_stencil.stencilFrontPassOp = depth_stencil.stencilBackPassOp = stencil_op(state->stencil_pass);
+		depth_stencil.stencilFrontCompareOp = depth_stencil.stencilBackCompareOp = compare_op(state->stencil_function);
+		dkCmdBufSetStencil(dk.commands, DkFace_FrontAndBack, (uint8_t)state->stencil_write_mask,
+			(uint8_t)state->stencil_reference, (uint8_t)state->stencil_mask);
+	}
+	dkCmdBufBindDepthStencilState(dk.commands, &depth_stencil);
+	return 1;
+}
+
+/* the shaders and the uniform buffers, which are bound again at the start of
+each frame (frame_begin) */
+static int shaders_apply(void)
+{
+	const DkShader *shaders[2];
+
+	if (!dk.uniforms_bound && dk.uniform_memory)
+	{
+		dkCmdBufBindUniformBuffer(dk.commands, DkStage_Vertex, DK_BINDING_VERTEX_CONSTANTS,
+			dk.uniform_gpu + UNIFORM_VERTEX_CONSTANTS, sizeof(struct dk_vertex_constants));
+		dkCmdBufBindUniformBuffer(dk.commands, DkStage_Vertex, DK_BINDING_VERTEX_PARAMETERS,
+			dk.uniform_gpu + UNIFORM_VERTEX_PARAMETERS, sizeof(struct dk_vertex_parameters));
+		dkCmdBufBindUniformBuffer(dk.commands, DkStage_Fragment, DK_BINDING_PIXEL_PARAMETERS,
+			dk.uniform_gpu + UNIFORM_PIXEL_PARAMETERS, sizeof(struct dk_pixel_parameters));
+		dk.uniforms_bound = 1;
+	}
+	if (!dk.shaders_dirty)
+		return 1;
+	shaders[0] = (const DkShader *)host_dk_shader(dk.vertex_shader);
+	shaders[1] = (const DkShader *)host_dk_shader(dk.pixel_shader);
+	if (!shaders[0] || !shaders[1])
+		return 0;
+	dkCmdBufBindShaders(dk.commands, DkStageFlag_GraphicsMask, shaders, 2);
+	dk.shaders_dirty = 0;
+	return 1;
+}
+
+/* where a range a draw reads is for the GPU: in the window, where the game
+keeps it, or (if it is somewhere else, or crosses from one chunk of the window
+into the next) copied into the upload buffer */
+static DkGpuAddr range_read(const void *data, uint32_t size)
+{
+	DkGpuAddr gpu = window_read((uint64_t)(uintptr_t)data, size);
+
+	return gpu ? gpu : upload_copy(data, size);
+}
+
+static void draw_problem(const char *what)
+{
+	if (dk.said_draw_problem < 8)
+	{
+		dk.said_draw_problem++;
+		host_logf(HOST_LOG_ERROR, "deko3d: a draw is skipped: %s", what);
+	}
+}
+
+static void draw(const struct dk_command_draw *command)
+{
+	DkBufExtents extents[DK_STREAM_COUNT + 1];
+	const unsigned char *inline_data = (const unsigned char *)&command->streams[command->stream_count];
+	uint32_t binding = 0, stream, streams = 0;
+	DkGpuAddr index_gpu = 0;
+
+	for (stream = 0; stream < DK_STREAM_COUNT; stream++)
+		streams += (dk.format.stream_mask >> stream) & 1;
+	if (!dk.format_valid || !dk.state_valid || (!dk.color && !dk.depth) || streams != command->stream_count)
+	{
+		draw_problem("what it needs is not in place");
+		return;
+	}
+	if (!state_apply())
+		return;
+	if (!shaders_apply())
+	{
+		draw_problem("a shader is not loaded");
+		return;
+	}
+	for (binding = 0; binding < streams; binding++)
+	{
+		uint32_t size = command->streams[binding][1];
+		DkGpuAddr gpu = command->inline_bytes ? upload_copy(inline_data, command->inline_bytes) :
+			range_read((const void *)(uintptr_t)command->streams[binding][0], size);
+
+		if (!gpu)
+		{
+			draw_problem("a stream could not be read");
+			return;
+		}
+		extents[binding].addr = gpu;
+		extents[binding].size = command->inline_bytes ? command->inline_bytes : size;
+	}
+	if (dk.vertex.has_constants)
+	{
+		if (dk.constants_generation != dk.upload_generation || !dk.constants_gpu)
+		{
+			dk.constants_gpu = upload_copy(dk.format.constants, sizeof(dk.format.constants));
+			dk.constants_generation = dk.upload_generation;
+		}
+		if (!dk.constants_gpu)
+		{
+			draw_problem("the constants could not be copied");
+			return;
+		}
+		extents[binding].addr = dk.constants_gpu;
+		extents[binding].size = sizeof(dk.format.constants);
+		binding++;
+	}
+	if (command->index_address)
+	{
+		index_gpu = range_read((const void *)(uintptr_t)command->index_address, command->count * sizeof(uint16_t));
+		if (!index_gpu)
+		{
+			draw_problem("the indices could not be read");
+			return;
+		}
+	}
+	if (dk.format_dirty)
+	{
+		dkCmdBufBindVtxAttribState(dk.commands, dk.vertex.attributes, DK_ATTRIBUTE_COUNT);
+		dkCmdBufBindVtxBufferState(dk.commands, dk.vertex.buffers, dk.vertex.buffer_count);
+		dk.format_dirty = 0;
+	}
+	if (binding)
+		dkCmdBufBindVtxBuffers(dk.commands, 0, extents, binding);
+	if (index_gpu)
+	{
+		dkCmdBufBindIdxBuffer(dk.commands, DkIdxFormat_Uint16, index_gpu);
+		dkCmdBufDrawIndexed(dk.commands, primitive_of(command->primitive), command->count, 1, 0, command->vertex_offset, 0);
+	}
+	else
+	{
+		dkCmdBufDraw(dk.commands, primitive_of(command->primitive), command->count, 1, 0, 0);
+	}
+	dk.recorded = 1;
 }
 
 /* runs size bytes of commands at commands (a guest address): one
@@ -694,6 +1293,30 @@ void host_dk_submit(uint32_t commands, uint32_t size)
 			break;
 		case DK_COMMAND_PRESENT:
 			present((const struct dk_command_present *)header);
+			break;
+		case DK_COMMAND_STATE:
+			state_receive((const struct dk_command_state *)header);
+			break;
+		case DK_COMMAND_SHADERS:
+			shaders_receive((const struct dk_command_shaders *)header);
+			break;
+		case DK_COMMAND_CONSTANTS:
+			constants_receive((const struct dk_command_constants *)header);
+			dk.recorded = 1;
+			break;
+		case DK_COMMAND_VERTEX_PARAMETERS:
+			vertex_parameters_receive((const struct dk_command_vertex_parameters *)header);
+			dk.recorded = 1;
+			break;
+		case DK_COMMAND_PIXEL_PARAMETERS:
+			pixel_parameters_receive((const struct dk_command_pixel_parameters *)header);
+			dk.recorded = 1;
+			break;
+		case DK_COMMAND_VERTEX_FORMAT:
+			format_receive((const struct dk_command_vertex_format *)header);
+			break;
+		case DK_COMMAND_DRAW:
+			draw((const struct dk_command_draw *)header);
 			break;
 		default:
 			host_logf(HOST_LOG_ERROR, "deko3d: unknown command %u", (unsigned)header->type);
