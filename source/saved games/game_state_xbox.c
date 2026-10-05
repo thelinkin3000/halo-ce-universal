@@ -149,6 +149,8 @@ static HANDLE game_state_open_persistent_storage(
 	const char *directory);
 static void game_state_writer_wait(
 	void);
+static boolean game_state_writer_ready(
+	void);
 
 /* ---------- globals */
 
@@ -263,6 +265,10 @@ void game_state_create_or_open_file(
 		SetEndOfFile(xbox_game_state_globals.handle))
 	{
 		xbox_game_state_globals.file_open = TRUE;
+		/* the writer and its 16 MB snapshot made now, while the map loads:
+		made at the first checkpoint, they cost that frame 0.87 s on the
+		Switch (Assault on the Control Room's first checkpoint) */
+		game_state_writer_ready();
 	}
 	else
 	{
