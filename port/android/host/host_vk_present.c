@@ -326,13 +326,10 @@ static void swapchain_recreate(const char *reason)
 	vkDeviceWaitIdle(B.device);
 	ok = swapchain_create(&made, B.chain.handle, 0, &transform);
 	/* the old swapchain is retired by the new one's creation; the device is idle, so its images are not in use */
+	/* (if the creation found the surface lost, host_vk_surface_lost has destroyed the old swapchain and the surface
+	already, and B.chain is empty here) */
 	retired = B.chain;
 	memset(&B.chain, 0, sizeof(B.chain));
-	if (!B.surface)
-	{
-		/* (the creation found the surface lost, and destroyed it with the old swapchain's handle left in retired:
-		the handle is destroyed here, on the device, which is still there) */
-	}
 	swapchain_destroy(&retired);
 	if (ok)
 	{
