@@ -24,7 +24,7 @@ the phone's driver; the results are in "Progress". Not tried: a second GPU
 family (a Mali). **Phase 1 is done on the test device and committed** (the
 Vulkan image, the host's choice and its decision, the stand-ins: the game
 runs under `display.renderer = "vulkan"` on the phone's driver and on
-Turnip, with a black screen as the phase says). **Phase 2 is done on the test device and committed** (the command stream, the device, the swapchain, the targets, clears and present: the game's clears are on the screen through Vulkan on both drivers). **Phase 3 is done on the test device and committed** (data records, the 4 MB stream, the upload rings and the data table; the data self-test is `ok` on both drivers). **Phase 4 is done on the test device and committed** (the GLSL generators for glslang, the pixel shader key, the dump, the PC check and the probe's `shaders` step: all 308 shaders of the corpus compile, validate and compare clean on both drivers and on the PC). **Phase 5 is next.** The
+Turnip, with a black screen as the phase says). **Phase 2 is done on the test device and committed** (the command stream, the device, the swapchain, the targets, clears and present: the game's clears are on the screen through Vulkan on both drivers). **Phase 3 is done on the test device and committed** (data records, the 4 MB stream, the upload rings and the data table; the data self-test is `ok` on both drivers). **Phase 4 is done on the test device and committed** (the GLSL generators for glslang, the pixel shader key, the dump, the PC check and the probe's `shaders` step: all 308 shaders of the corpus compile, validate and compare clean on both drivers and on the PC). **Phase 5 is written out and next.** The
 work is on the `vulkan-backend` branch, which starts again from `main`. An
 earlier attempt, kept on the `vulkan-backend-old` branch, is not the base of
 this work and nothing here builds on it; see "Lessons from the earlier
@@ -1613,45 +1613,185 @@ checkout once `configure.py` has fetched glslang:
 
 ## Phase 5 — shader and pipeline cache
 
-Vulkan has two compile steps where deko3d had one: GLSL to SPIR-V (glslang,
-on the device), and SPIR-V plus state to a pipeline (the driver). A
-pipeline's key is the two shaders' keys and every state that is not one of
-the core dynamic states (Decisions).
+The shaders a draw needs, compiled in the background on the device and kept
+there, and the pipelines made from them, kept in a `VkPipelineCache` per
+driver. The deko3d plan's phase 5 is the model (`port/switch/DEKO3D.md`,
+"Phase 5 — shader cache", steps 2 to 4, and `port/switch/guest/dk_shaders.c`,
+`port/switch/host/host_dk_shaders.c`: read them first), less what this plan
+dropped (key files, the startup pass, priorities by map: Decisions) and plus
+what deko3d has no need of: pipelines.
 
-As in deko3d's phase 5, a draw whose pipeline is not made yet is skipped
-while one compile thread makes it, and drawn from the first frame it is
-ready; the cache makes that happen once per device and driver. Unlike
-deko3d's, there are no key files and no startup pass over known keys: a
-device compiles what it meets.
+### What this phase is, and is not
 
-### Step 1: glslang in the host
-Built for Android as phase 0 built it (`libglslang_probe.so`, renamed for
-the backend), loaded with `dlopen` by the backend, front end initialised
-once.
+- **It is** glslang in the backend, the shader service (identity, the disk
+  cache, the compile thread, handles), the pipeline service (identity, the
+  compile thread, the per-driver `VkPipelineCache` saved on the device), and
+  the guest's side that asks for them at each draw.
+- **It is not** drawing: phase 6 draws, and makes the pipeline's state from
+  the game's. Here the pipelines asked for carry a placeholder state, so that
+  the service, its thread and its cache are made and tried before draws
+  depend on them; phase 6 replaces the placeholder and nothing else.
+- **No key files, no startup pass, no shared keys** (Decisions): a device
+  compiles what its draws meet, and keeps it.
 
-### Step 2: the shader service in the host
-- SPIR-V cached on the device by shader key, in
-  `<internal storage>/shader_cache/<build>/`; a file that does not load
-  (truncated, a different build) is deleted and the shader compiled again.
-- The `VkPipelineCache` **per driver**: its file is named by the driver's
-  `pipelineCacheUUID`, `driverID` and `driverVersion`, so Turnip's and the
-  phone's never meet; loaded at start, saved when the game is paused or
-  backgrounded and on exit; a file the driver rejects is deleted.
-- One compile thread, fed from a queue; a key a draw asks for goes to the
-  front. The thread compiles the SPIR-V if it is not cached and makes the
-  pipeline; the recording thread finds it in an in-memory table by key
-  (finished entries published under a lock, never half-made). A key whose
-  compile fails is logged once with glslang's or the driver's message and
-  marked failed, so its draws are counted, not retried every frame.
+### Files
 
-**Testing on the device**, on both drivers: a cold start (the log counts the
-shaders and pipelines compiled), a second start (it compiles nothing), a map
-loaded twice; a log line per 60 frames with draws, pipelines made and
-draws skipped for a pipeline not ready.
+| File | What |
+|---|---|
+| `port/android/probe/glslang/CMakeLists.txt`, `tools/android_build.py` | the library renamed `libhalo_glslang.so` (it is the backend's now, and the probe's) |
+| `port/android/host/host_vk_shaders.c` | glslang's loader (moved from `host_vk_render.c`, which keeps using it for its built-in shaders), the shader service, the pipeline service, the compile thread, the caches |
+| `port/android/host/host_vk.h` | the services' state and functions |
+| `port/android/host_imports.list` | `host_vk_shader_find`, `host_vk_shader_compile` (below) |
+| `port/android/guest/vk_shaders.h` | the state a pipeline is made with (`struct vk_pipeline_state`, below), the shader identities' hashing |
+| `port/android/guest/d3d8_vk.c` | the shader handles at each draw, and the pipeline asked for |
+| `port/android/guest/vk_commands.h` | `VK_COMMAND_PIPELINE` (below) |
+| `port/android/host/host_vk_probe.c` | `dlopen`s the renamed library |
 
-**Acceptance:** the second start compiles nothing, on both drivers; switching
-`vk_driver` and back keeps both caches; on a warm cache no draw is skipped
-for a pipeline not ready; a failed compile names its key.
+### Identity
+
+As deko3d's: a shader is known by a 64-bit FNV-1a hash the guest makes, and
+the host never sees keys, only hashes and GLSL.
+
+- **A vertex shader:** `VK_SHADER_GENERATOR_VERSION`, the hash of its
+  program (FNV-1a 64 over the instruction count and words, made once in
+  `D3DDevice_CreateVertexShader` and kept in the object), and the packed
+  mask (0 for immediate mode).
+- **A pixel shader:** `VK_SHADER_GENERATOR_VERSION` and the
+  `nv2a_pixel_shader_key`, `count_samples` 0.
+- **A pipeline:** the two shaders' hashes and the hash of its
+  `struct vk_pipeline_state` (the host makes this one; the guest sends the
+  state).
+
+### The shader service (host)
+
+- **Imports** (the import stubs pass a 64-bit integer in one register on
+  both sides, as deko3d's do; log one on both sides the first time to be
+  sure):
+  - `uint32_t host_vk_shader_find(uint32_t stage, uint64_t hash)`: a handle
+    (1 or more) if the shader's module is made; else, if its SPIR-V is in
+    the disk cache, the module is made now from the file (fractions of a
+    millisecond: phase 4 measured `vkCreateShaderModule` at 0.4 to 1.8 ms)
+    and its handle returned; else 0, with "queued", "compiling", "failed" or
+    "unknown" told apart (an out parameter).
+  - `void host_vk_shader_compile(uint32_t stage, uint64_t hash, uint32_t
+    glsl, uint32_t glsl_size)`: queues it. The GLSL is copied into host
+    memory **during the call** (`glsl` is a guest address: the rule about
+    guest memory holds). Already queued or made: nothing.
+- **The disk cache:** `<internal storage>/vk_cache/spirv/<glslang tag>-<
+  VK_SHADER_GENERATOR_VERSION>/`, one `<v|f><hash, 16 hex>.spv` a shader:
+  a header (magic, the hash, the SPIR-V's size, a CRC of it) and the
+  SPIR-V. Written as `.tmp` and renamed when complete. At start the folder is
+  listed once into a set (the files are not opened), and the other folders
+  under `vk_cache/spirv/` are removed (other glslang versions' or
+  generators'; nothing else is touched). A file whose header or CRC does not
+  check is deleted and the shader compiled again. SPIR-V does not depend on
+  the driver, so both drivers share these files.
+- **A failed compile** (glslang's error, or `vkCreateShaderModule`'s) is
+  logged once with the hash, the stage and glslang's message, and the shader
+  is marked failed for the run (its draws are counted, not retried every
+  frame). The GLSL is written next to the log (`vk_cache/failed/`) so that
+  it can be compiled on the PC with `tools/vk_shader_check.py`.
+- **Handles** index a table of `VkShaderModule`s, kept for the run.
+
+### The pipeline service (host)
+
+- **The state** (`struct vk_pipeline_state`, fixed-width fields only, in
+  `vk_shaders.h`): everything in a pipeline that is not one of the core
+  dynamic states (Decisions): the topology; polygon mode; cull mode and
+  front face; depth test, write and compare op; depth bias enable; stencil
+  test enable, and each face's fail, pass, depth-fail ops and compare op;
+  colour blend enable, the four factors and two ops, the colour write mask;
+  the colour and depth-stencil attachments' formats (none or which); and the
+  vertex input: sixteen attributes (format, binding, offset; every one
+  present, Phase 4's rule) and their bindings (stride, rate). Unused fields
+  are zero, so that equal states hash equal. Phase 6 fills it from the game's
+  render state; this phase sends a placeholder (below).
+- **`VK_COMMAND_PIPELINE`** (vertex handle, pixel handle, a state): the
+  host looks the pipeline up by the three hashes; if made, it is ready (phase
+  6's draw binds it); if not, it is queued for the compile thread and the
+  draw that asked would be skipped (counted: "pipeline not ready"). The
+  pipeline layout is one for every pipeline: set 0 as Phase 4's table
+  (two vertex uniform blocks, one pixel uniform block, four combined image
+  samplers), made at the device's creation.
+- **The `VkPipelineCache`, per driver:** one cache object, used for every
+  pipeline, loaded at the device's creation from
+  `<internal storage>/vk_cache/pipelines/<pipelineCacheUUID, hex>-<driverID>-<
+  driverVersion, hex>.bin` (so the phone's driver's and Turnip's never meet,
+  and a driver update starts afresh), and saved (as `.tmp`, renamed) when the
+  app goes to the background (phase 2's surface loss), every five minutes if
+  pipelines were made since, and at the game's exit (`host_exit`). A file
+  the driver does not accept (`vkCreatePipelineCache` fails with it, or its
+  header names another device) is deleted and a new cache started.
+
+### The compile thread
+
+One host thread (phase 0 found one enough: a game-sized shader compiles in
+2 to 4 ms, a pipeline in 1 to 12 ms on the phone's driver and less on
+Turnip), a plain `pthread` with a stack of 2 MB (it never runs guest code),
+at a lower priority than the game thread (`setpriority`, as Android allows an
+app). It takes the oldest entry of one queue (shaders before pipelines that
+need them, a pipeline whose shaders are not made waiting behind them),
+compiles, writes the cache file, makes the module or the pipeline, and logs
+a line every so often (counts, the queue's length), not one an item.
+Nothing else calls glslang while it runs (one lock around it: phase 2's
+built-in shaders are compiled through the same loader).
+
+### The guest's side
+
+- At each draw (phase 4's `draw_note`, now made at every draw, not only with
+  the dump: phase 6 will need it at every draw anyway), the device makes the
+  vertex shader's and the pixel shader's hashes, keeps a table of hash to
+  handle, and for a hash without a handle asks `host_vk_shader_find`; an
+  unknown one has its GLSL generated (phase 4's generators) and sent with
+  `host_vk_shader_compile`. Then it writes `VK_COMMAND_PIPELINE` with the two
+  handles (0 if not ready yet: the host then counts the draw as skipped for
+  the shader, without asking for a pipeline) and the placeholder state.
+- **The placeholder state:** triangle list, fill, no culling, depth test
+  and write off, no stencil, no blend, all four channels written, the colour
+  target `B8G8R8A8_UNORM` and the depth target as phase 2 chose it, and the
+  vertex input of sixteen `R32G32B32A32_SFLOAT` attributes from one binding
+  of stride 0. Phase 6 replaces it with the draw's real state; until then it
+  makes one pipeline per pair of shaders met, which is what this phase
+  needs to try the service on the game's real shaders.
+- The dump of phase 4 is unchanged (it stays behind `debug.gpu_dump_shaders`).
+
+### Diagnostics
+
+The statistics line (phase 2) gains: shaders made from the cache and
+compiled this run, failed, queued; pipelines made and queued; draws that
+would be skipped for a shader and for a pipeline not ready; the pipeline
+cache's size. The compile thread's own line says what it did since the last
+one, with average times.
+
+### Testing on the device
+
+On both drivers, the `.vk` build, `display.renderer = "vulkan"`:
+
+1. **A cold start** (`vk_cache/` removed by adb): the menus and a new game's
+   opening; the log counts the shaders compiled and the pipelines made, the
+   draws that would be skipped falling to 0 within seconds of each new
+   screen; the game's frames unaffected (the compile thread is not the game
+   thread: the frame count every 10 s as before).
+2. **A second start**: no shader compiled (all from the cache), pipelines
+   made from the `VkPipelineCache` (their average time far below the first
+   run's; the compile thread says so).
+3. **Both drivers in turn**: each has its own pipeline cache file; the
+   SPIR-V files are shared; switching back and forth keeps both.
+4. **A broken cache**: a truncated `.spv` and a truncated pipeline cache
+   file (`truncate` by adb); each is said, deleted and made again.
+5. **Validation on** for 1 and 2: no message beyond the known two.
+6. `renderer = "gl"`: unchanged.
+
+### Acceptance
+
+- The second start compiles nothing, on both drivers; switching drivers
+  keeps both caches; a broken file is replaced, not fatal.
+- No draw stays "would be skipped" for a shader or a pipeline once it has
+  had a few seconds; no failed compile in the corpus of phase 4's screens.
+- The game's frame rate unchanged while the thread compiles.
+- The code audited against the source and the Vulkan specification (the
+  thread's use of the device and the cache, the files' writes), then
+  committed; the numbers in "Progress".
 
 ## Phase 6 — draws, textures and render targets
 
