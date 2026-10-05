@@ -941,6 +941,41 @@ static void log_statistics(void)
 	c->target_changes = 0;
 }
 
+static void backend_unavailable(const char *format, ...) __attribute__((format(printf, 1, 2)));
+
+/* The frame acquired a swapchain image but could not be submitted (vkQueueSubmit failed, and said why): the acquire
+semaphore is signalled with nothing to wait on it, and the image is held. An empty batch waits on the semaphore and
+signals the image's render-done semaphore, so that the image can be presented (it shows what it held) and the
+semaphore is free for the frame's next acquire. If that fails too, the swapchain is let go and the semaphore made
+anew once the device is idle (nothing can be waiting on it then but the presentation engine, which the swapchain's
+destruction releases). */
+static void present_unsubmitted(uint32_t image)
+{
+	struct host_vk_frame *frame = &B.frames[B.frame];
+	VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+	VkSubmitInfo submit = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+	VkSemaphoreCreateInfo semaphore = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+
+	submit.waitSemaphoreCount = 1;
+	submit.pWaitSemaphores = &frame->acquired;
+	submit.pWaitDstStageMask = &wait_stage;
+	submit.signalSemaphoreCount = 1;
+	submit.pSignalSemaphores = &B.chain.render_done[image];
+	if (HOST_VK_CHECK(vkQueueSubmit(B.queue, 1, &submit, VK_NULL_HANDLE)))
+	{
+		host_vk_present_queue(image);
+		return;
+	}
+	if (B.dead)
+		return;
+	host_vk_surface_lost("a frame could not be submitted");
+	vkDeviceWaitIdle(B.device);
+	vkDestroySemaphore(B.device, frame->acquired, NULL);
+	frame->acquired = VK_NULL_HANDLE;
+	if (!HOST_VK_CHECK(vkCreateSemaphore(B.device, &semaphore, NULL, &frame->acquired)))
+		backend_unavailable("the frame's acquire semaphore could not be made again");
+}
+
 static void command_present(const struct vk_command_present *command)
 {
 	VkCommandBuffer cmd = host_vk_frame_command();
@@ -957,7 +992,9 @@ static void command_present(const struct vk_command_present *command)
 	else
 		host_vk_presenting = 0;
 	frame_submit(image);
-	if (image != UINT32_MAX && !B.dead)
+	if (image != UINT32_MAX && !B.dead && !B.frames[B.frame].submitted)
+		present_unsubmitted(image);
+	else if (image != UINT32_MAX && !B.dead)
 		host_vk_present_queue(image);
 	B.frame = (B.frame + 1) % HOST_VK_FRAMES;
 	B.counts.presents++;
@@ -992,8 +1029,6 @@ static int enabled_add(const char **names, uint32_t *count, const char *name)
 	}
 	return 0;
 }
-
-static void backend_unavailable(const char *format, ...) __attribute__((format(printf, 1, 2)));
 
 static void backend_unavailable(const char *format, ...)
 {

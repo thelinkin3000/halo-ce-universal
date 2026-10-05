@@ -1517,6 +1517,36 @@ Phase 0 was worked on the test device (Lenovo TB321FU, Adreno 750, Android 16,
 API 36, the phone's own driver). The reports are in `port/android/probe/reports/`.
 Newest first.
 
+### Phase 2 — audit
+
+The audit found the record true to the code and no fault in what runs: the
+guest's clears follow `d3d8_gl.c` to the arithmetic, layouts are tracked and
+every barrier is outside a rendering, the clear pipelines match the
+rendering they are used in, clear rectangles are kept inside the render area,
+and the swapchain's semaphores, letterbox, transform and loss paths are as the
+spec says. Fixed after it:
+
+- **An acquired image could be stranded**: when a frame's `vkQueueSubmit`
+  failed (other than a lost device) after an image was acquired, the acquire
+  semaphore stayed signalled with nothing waiting on it, which makes the
+  frame's next acquire invalid. An empty batch now waits on it and signals
+  the image's render-done semaphore, and the image is presented; if that
+  fails too, the swapchain is let go and the semaphore made anew with the
+  device idle (`present_unsubmitted`). Not met on the device: it needs a
+  failing submit.
+- A stale comment and an empty block in `swapchain_recreate` that described
+  an order of events that does not happen.
+
+Left as it is: Android answers most presents with `SUBOPTIMAL` (the
+transform the swapchain leaves to the compositor), and each one looks at the
+surface's size, which costs a call a frame and is right.
+
+Open, for when the game draws: a new game's opening cinematic was not seen
+to end under Vulkan in 14 minutes (phase 2's deviation 12). Whether that is
+timing or the game waiting on something the device answers differently
+(visibility tests report 0, `IsBusy` is false) is looked at once the screen
+shows the game.
+
 ### Phase 2 — summary
 
 Worked unattended on the test device (Lenovo TB321FU, Adreno 750, Android 16) as the `.vk` build, with the validation
