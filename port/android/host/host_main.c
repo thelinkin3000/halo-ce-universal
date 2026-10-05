@@ -17,7 +17,8 @@ on first run; saves go to its save/ subdirectory. The settings,
 config.toml, live there too (port/linux/src/port_config.c, which the game
 reads); this file reads only debug.sample_seconds and debug.profile_hz from
 it, for the samplers that run here, and debug.vk_probe, which runs the
-Vulkan probe (host_vk_probe.c) instead of the game.
+Vulkan probe (host_vk_probe.c) instead of the game, on the driver that
+display.vk_driver names (host_vk_driver.c).
 */
 
 #include "host.h"
@@ -165,6 +166,7 @@ struct host_settings
 	char sample_seconds[32]; /* as text for the sampler; empty for none */
 	int profile_hz;
 	char vk_probe[128]; /* empty: the game runs */
+	char vk_driver[256]; /* display.vk_driver: empty is the phone's own Vulkan driver */
 };
 
 static void config_read(const char *path, struct host_settings *settings)
@@ -332,7 +334,7 @@ static void *game_main(void *unused)
 	{
 		/* the probe owns the window and ends the app; the game does not start */
 		host_logf(HOST_LOG_INFO, "running the Vulkan probe (%s) instead of the game", settings.vk_probe);
-		host_vk_probe_run(settings.vk_probe, data_root);
+		host_vk_probe_run(settings.vk_probe, data_root, settings.vk_driver);
 	}
 	if (settings.sample_seconds[0])
 		host_debug_start_sampler(settings.sample_seconds);
