@@ -585,6 +585,9 @@ def generate_android_build(n: Writer, sln: Any) -> None:
     # display.renderer says (port/android/host/host_main.c).
     vk_objects = [obj for obj in objects if obj != gl_renderer_object]
     vk_objects.append(guest_object(PORT_DIR / "guest" / "d3d8_vk.c", platform_cflags))
+    # the generators for glslang (port/android/VULKAN.md, phase 4): the originals stay in both images
+    vk_objects.append(guest_object(PORT_DIR / "guest" / "nv2a_vsh_vk.c", platform_cflags))
+    vk_objects.append(guest_object(PORT_DIR / "guest" / "nv2a_psh_vk.c", platform_cflags))
     vk_relocations = BUILD / "halo_guest_vk.relocs"
     n.build(outputs=vk_image, rule="android_guest_link", inputs=vk_objects, implicit_outputs=[vk_relocations],
             implicit=[libguestc, linker_script, Path("tools/guest_relocations.py")],
