@@ -36,3 +36,6 @@ dist/
 # screenshots. Thirteen megabytes of someone else's repository, useful to
 # read and no business in ours.
 reference/
+
+# SPIR-V a glslangValidator run leaves in the current folder (tools/vk_shader_check.py writes under build/)
+/*.spv
