@@ -102,6 +102,9 @@ symbols in this file:
 #include "saved games/game_state.h"
 #include "sound/sound_manager.h"
 #include <xtl.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
 /* ---------- constants */
 
@@ -144,10 +147,31 @@ static void game_state_header_terminate(
 	long header_size);
 static HANDLE game_state_open_persistent_storage(
 	const char *directory);
+static void game_state_writer_wait(
+	void);
 
 /* ---------- globals */
 
 static struct xbox_game_state_globals_prefix xbox_game_state_globals = { 0 };
+
+/* The checkpoint written behind the game's back (not the Xbox's: the native
+builds' game state is 16 MB, written to the card or the disk with the game
+stopped). A checkpoint copies the game state into the snapshot and returns at
+once; the writer thread writes the snapshot to savegame.bin while the game
+goes on, and a revert copies it back from memory, so it never reads a file
+still being written. The game state cannot be written from where it is: the
+game changes it from the next tick. */
+static struct
+{
+	/* the snapshot, aligned for FILE_FLAG_NO_BUFFERING (allocation is what
+	malloc gave), and whether it holds this file's latest checkpoint */
+	void *allocation;
+	void *snapshot;
+	boolean snapshot_valid;
+	/* work: a snapshot to write; idle: the writer has none (manual reset) */
+	HANDLE thread, work, idle;
+	boolean failed;
+} game_state_writer = { 0 };
 
 /* ---------- public code */
 
@@ -260,10 +284,81 @@ void game_state_close_file(
 		"c:\\halo\\SOURCE\\saved games\\game_state_xbox.c",
 		106,
 		xbox_game_state_globals.file_open);
+	/* (the checkpoint being written finished first: the writer has the handle) */
+	game_state_writer_wait();
+	game_state_writer.snapshot_valid = FALSE;
 	CloseHandle(xbox_game_state_globals.handle);
 	xbox_game_state_globals.file_open = FALSE;
 
 	return;
+}
+
+static DWORD WINAPI game_state_writer_main(
+	LPVOID unused)
+{
+	(void)unused;
+	for (;;)
+	{
+		unsigned long bytes_written;
+
+		WaitForSingleObject(game_state_writer.work, INFINITE);
+		if (SetFilePointer(xbox_game_state_globals.handle, 0, NULL, FILE_BEGIN) !=
+				INVALID_SET_FILE_POINTER &&
+			WriteFile(xbox_game_state_globals.handle, game_state_writer.snapshot,
+				xbox_game_state_globals.buffer_size, &bytes_written, NULL) &&
+			bytes_written == (unsigned long)xbox_game_state_globals.buffer_size)
+		{
+			game_state_writer.failed = FALSE;
+		}
+		else
+		{
+			/* (the checkpoint in memory still stands: only the file, which
+			matters across a crash, is behind) */
+			game_state_writer.failed = TRUE;
+			error(_error_log, "couldn't write saved game file (#%d)", GetLastError());
+		}
+		SetEvent(game_state_writer.idle);
+	}
+	return 0;
+}
+
+/* the writer started, with its snapshot; FALSE if it cannot be, and the
+checkpoint is written as the Xbox wrote it */
+static boolean game_state_writer_ready(
+	void)
+{
+	if (game_state_writer.thread)
+		return TRUE;
+	if (!game_state_writer.allocation)
+	{
+		game_state_writer.allocation = malloc(xbox_game_state_globals.buffer_size + CPU_PAGE_SIZE);
+		if (!game_state_writer.allocation)
+			return FALSE;
+		game_state_writer.snapshot = (void *)(((uintptr_t)game_state_writer.allocation + CPU_PAGE_SIZE - 1) &
+			~(uintptr_t)(CPU_PAGE_SIZE - 1));
+	}
+	game_state_writer.work = CreateEventA(NULL, FALSE, FALSE, NULL);
+	game_state_writer.idle = CreateEventA(NULL, TRUE, TRUE, NULL);
+	if (game_state_writer.work && game_state_writer.idle)
+		game_state_writer.thread = CreateThread(NULL, 0, game_state_writer_main, NULL, 0, NULL);
+	if (!game_state_writer.thread)
+	{
+		if (game_state_writer.work)
+			CloseHandle(game_state_writer.work);
+		if (game_state_writer.idle)
+			CloseHandle(game_state_writer.idle);
+		game_state_writer.work = game_state_writer.idle = NULL;
+		return FALSE;
+	}
+	return TRUE;
+}
+
+/* until the writer has written what it was given */
+static void game_state_writer_wait(
+	void)
+{
+	if (game_state_writer.thread)
+		WaitForSingleObject(game_state_writer.idle, INFINITE);
 }
 
 boolean game_state_write_to_file(
@@ -280,6 +375,18 @@ boolean game_state_write_to_file(
 		"c:\\halo\\SOURCE\\saved games\\game_state_xbox.c",
 		121,
 		xbox_game_state_globals.file_open);
+
+	/* behind the game's back: the snapshot taken, the writer told, done */
+	if (game_state_writer_ready())
+	{
+		game_state_writer_wait();
+		memcpy(game_state_writer.snapshot, xbox_game_state_globals.buffer, xbox_game_state_globals.buffer_size);
+		game_state_writer.snapshot_valid = TRUE;
+		xbox_game_state_globals.file_valid_for_read = TRUE;
+		ResetEvent(game_state_writer.idle);
+		SetEvent(game_state_writer.work);
+		return TRUE;
+	}
 
 	if (SetFilePointer(xbox_game_state_globals.handle, 0, NULL, FILE_BEGIN) !=
 			INVALID_SET_FILE_POINTER &&
@@ -321,6 +428,15 @@ boolean game_state_read_from_file(
 		"c:\\halo\\SOURCE\\saved games\\game_state_xbox.c",
 		146,
 		xbox_game_state_globals.file_valid_for_read || recover_saved_games_hack);
+
+	/* this file's checkpoint is in memory: the file may still be being
+	written. It is this process's own game state, taken as it was saved, so it
+	is not checked as an image read from a file is */
+	if (game_state_writer.snapshot_valid)
+	{
+		memcpy(xbox_game_state_globals.buffer, game_state_writer.snapshot, xbox_game_state_globals.buffer_size);
+		return TRUE;
+	}
 
 	/* port: read beside the game state, and taken once checked */
 	image = malloc(xbox_game_state_globals.buffer_size);
