@@ -24,7 +24,7 @@ the phone's driver; the results are in "Progress". Not tried: a second GPU
 family (a Mali). **Phase 1 is done on the test device and committed** (the
 Vulkan image, the host's choice and its decision, the stand-ins: the game
 runs under `display.renderer = "vulkan"` on the phone's driver and on
-Turnip, with a black screen as the phase says). **Phase 2 is done on the test device and committed** (the command stream, the device, the swapchain, the targets, clears and present: the game's clears are on the screen through Vulkan on both drivers). **Phase 3 is done on the test device and committed** (data records, the 4 MB stream, the upload rings and the data table; the data self-test is `ok` on both drivers). **Phase 4 is done on the test device and committed** (the GLSL generators for glslang, the pixel shader key, the dump, the PC check and the probe's `shaders` step: all 308 shaders of the corpus compile, validate and compare clean on both drivers and on the PC). **Phase 5 is done on the test device and committed** (glslang in the backend, the shader and pipeline services with their compile thread and the per-driver pipeline cache, tried cold and warm on both drivers). **Phase 6 is next.** The
+Turnip, with a black screen as the phase says). **Phase 2 is done on the test device and committed** (the command stream, the device, the swapchain, the targets, clears and present: the game's clears are on the screen through Vulkan on both drivers). **Phase 3 is done on the test device and committed** (data records, the 4 MB stream, the upload rings and the data table; the data self-test is `ok` on both drivers). **Phase 4 is done on the test device and committed** (the GLSL generators for glslang, the pixel shader key, the dump, the PC check and the probe's `shaders` step: all 308 shaders of the corpus compile, validate and compare clean on both drivers and on the PC). **Phase 5 is done on the test device and committed** (glslang in the backend, the shader and pipeline services with their compile thread and the per-driver pipeline cache, tried cold and warm on both drivers). **Phase 6 is written out and next.** The
 work is on the `vulkan-backend` branch, which starts again from `main`. An
 earlier attempt, kept on the `vulkan-backend-old` branch, is not the base of
 this work and nothing here builds on it; see "Lessons from the earlier
@@ -1795,69 +1795,415 @@ On both drivers, the `.vk` build, `display.renderer = "vulkan"`:
 
 ## Phase 6 — draws, textures and render targets
 
-The largest phase: the equivalent of most of `d3d8_gl.c` on Vulkan. Read
-`d3d8_gl.c` whole first, and `d3d8_dk.c` beside it: the deko3d version is
-the same work against a command-buffer API, and its "Progress" entries are a
-list of the traps.
+The game drawn through Vulkan: at the end, the menus and the maps look as
+they do under GL ES, on the phone's driver and on Turnip. It is the largest
+phase - the equivalent of most of `port/linux/src/d3d8_gl.c` - and is worked
+in six steps, each tried on the device before the next.
 
-### The order, each step tried on the device before the next, on both drivers
+Read first, in this order: "Decisions", "Where the renderer lives", the
+specs and "Progress" entries of phases 1 to 5 (what exists, and the notes
+they left for this phase); then `d3d8_gl.c` whole (about 4,100 lines: it is
+the specification of what the Xbox's Direct3D does, as this port has
+debugged it against the game), `xbox_textures.c`, `hud_hires.c`,
+`text_hires.c`, `menu_files.c`; then the deko3d plan's phase 6
+(`port/switch/DEKO3D.md`, "Phase 6", and its "Progress" entries: **the
+list of traps that renderer met, most of which this one will meet**) with
+`port/switch/guest/d3d8_dk.c`, `xbox_textures_dk.c`, `dk_commands.h` and
+`port/switch/host/host_dk.c` beside it: the same work against a
+command-buffer API.
 
-1. **First triangle, and the picture's orientation.** Immediate-mode draws,
-   no texture, vertex colour. Vulkan's clip space has Y down and depth 0 to
-   1: settle it here, once, in the viewport (a negative height) or the
-   generated shaders, and nowhere else.
-2. **The menus.** Textures (2D, the menus' formats), samplers, blending, the
-   alpha test, `D3DPT_QUADLIST`. The PC menus and the Xbox ones both.
-3. **A map.** Indexed draws, vertex declarations and every attribute type,
-   depth and stencil, z bias, fog, cube and 3D textures, the remaining
-   texture formats.
-4. **Render targets.** Render-to-texture (the sniper's zoom), the mip
-   composite (the water's ripples), split screen (the scissor follows the
-   viewport; clears are clipped to it).
-5. **Visibility tests** (lens flares): occlusion queries whose results the GPU
-   copies to a host-visible buffer; the game reads a slot's latest count and
-   never waits for the GPU.
-6. **The high-res HUD and text, and the menus' art**, as images of their own
-   (deko3d's step 6).
+### What exists, what this phase adds
 
-### Pitfalls already known (from deko3d's phase 6 and the earlier attempt)
+Exists: the Vulkan image's device (`d3d8_vk.c`) keeps every piece of
+Direct3D state the game sets, as `d3d8_gl.c` does; the command stream
+(`vk_commands.h`) with targets, clears, present, data records; the host's
+device, frames, render targets by address, swapchain, clears (phase 2);
+`vk_data_put`, the upload rings and `host_vk_data_find` (phase 3); the
+generators and `vk_shaders.h`'s blocks, bindings and locations (phase 4);
+the shader and pipeline services with handles, the per-driver pipeline
+cache, and the guest's `draw_note` asking for each draw's shaders and a
+pipeline with a placeholder state (phase 5).
 
-- The device's state at a draw is the guest's to describe and the host's to
-  apply; a target change resets viewport and scissor on the host.
-- A pipeline's state must match the rendering attachments it is used with, or
-  some drivers drop the draws silently (the earlier attempt's driver did).
-- Images change layout; track each image's layout and transition from it.
-- Descriptors bound by a recorded command must not be rewritten before the GPU
-  is done; take a fresh set or use push descriptors.
-- Barriers are recorded outside rendering.
-- A texture written in place waits for the draws that read it; a render target
-  sampled after it is drawn needs a barrier between.
-- Constants a vertex format does not feed are reset when the format changes.
+Adds: draws (indexed, not, immediate mode, every primitive type), the
+pipeline state made from the game's (replacing phase 5's placeholder), the
+dynamic state, the uniforms, vertex input, textures and samplers, the
+high-res HUD and text and the menus' art, render-to-texture and the mip
+composite, and visibility tests.
 
-**The GL calls left in the Vulkan image.** Phase 1 turned every GL import of
-the Vulkan image into a stub that counts the call and returns zero
-(`host_gl.c`): it writes no output, so `glGenTextures` leaves its array as it
-was and `glGetIntegerv` its integer. Nothing reached them in phase 1 (they
-are reached through `d3d8_gl.c`'s paths); each step here that brings back a
-caller (`xbox_textures.c`, `hud_hires.c`, `text_hires.c`, `menu_files.c`,
-`nv2a_vsh.c`'s `glClipControl`) replaces it in the Vulkan image, and the
-count (`debug.gpu_stats`) is read at the end of each step: it must stay at
-zero.
+### The draw record
+
+The guest decides; the host records. Unlike deko3d's renderer, which sends
+only what changed and lets the host keep the rest (and met, in its
+"Progress", state the host had not kept as told), **each draw is one
+self-contained `VK_COMMAND_DRAW` record**: the host keeps no draw state
+between draws apart from what it has bound, and binds what a record says.
+A record is a few hundred bytes; a busy frame's two thousand draws are under
+a megabyte, which the 4 MB stream holds. Making it smaller is phase 7's,
+if ever.
+
+A `VK_COMMAND_DRAW` holds (fixed-width fields, `vk_commands.h`'s rules):
+
+- **Shaders**: the vertex and pixel shader handles (phase 5's
+  `shader_handle`). Either 0: the draw is skipped, counted ("shader not
+  ready").
+- **Pipeline state**: `struct vk_pipeline_state` (phase 5), made from the
+  game's render state as `apply_raster_state` in `d3d8_gl.c` decides it
+  (below), and the vertex input as `setup_streams` and `attribute_format`
+  decide it. The host's pipeline service looks it up; not ready: skipped,
+  counted ("pipeline not ready").
+- **Dynamic state**: the viewport, the scissor, the depth bias (constant,
+  clamp and slope), the blend constants, the stencil compare and write masks
+  and reference - Vulkan 1.0's core dynamic states, set at every draw.
+- **Uniforms**: three data references (phase 3), one per block, each a
+  `vk_data_put` of the block's C structure (`vk_shaders.h`):
+  `vk_vertex_constants` (3,072 bytes), `vk_vertex_parameters` (48),
+  `vk_pixel_parameters` (528). Put again only when it changed since it was
+  last put this frame (data ids are good for the whole frame: a later draw
+  may name an earlier draw's id): the vertex constants by
+  `d3d8_gl.c`'s constant serials, the other two by comparing with what was
+  put. The constants with no draw between two changes are put once.
+- **Vertex streams**: up to 16 bindings, each a data reference and a stride,
+  and one more binding of stride 0 holding the current values of the
+  attributes the declaration does not feed (below).
+- **Textures**: four stages, each an image reference (below) and a sampler
+  state.
+- **The draw**: the primitive (Vulkan's), the vertex or index count, the
+  index data reference (16-bit indices), the vertex offset, the instance
+  count 1.
+- **The visibility test** the draw is in, if any (step 6).
+
+The host, for each record: looks up the pipeline (skip if not ready), opens
+the rendering on the current targets if it is not open (phase 2), binds the
+pipeline if it changed, sets the dynamic state, finds each data reference
+(`host_vk_data_find`: a reference it cannot find skips the draw, said once),
+writes a descriptor set (below), binds the vertex buffers (and the index
+buffer) at the ring's buffers and offsets, and draws.
+
+**Descriptor sets**: one per draw, allocated from the frame's descriptor
+pools (several pools a frame, a new one when one is full; all reset when the
+frame's fence has passed), written with the three uniform buffers (the
+ring's buffer, offset and the block's size) and the four combined image
+samplers. One path for every driver, rather than push descriptors (both
+Adreno drivers have them; a Mali might not). Every binding is written: a
+stage without a texture gets a dummy (an opaque black 1x1 image of the type
+the pixel shader declares for that stage - 2D, 3D or cube - so the view's
+type always matches the shader's sampler).
+
+### The pipeline state, from the game's
+
+Made in the guest, as `apply_raster_state` and its helpers in `d3d8_gl.c`
+make the GL state, into `struct vk_pipeline_state`:
+
+- **The Xbox's enumerants are OpenGL's** (`D3DBLEND_*`, `D3DCMP_*`, the
+  stencil operations, `D3DBLENDOP_*`: `d3d8_gl.c` passes many to GL as they
+  are): map them to Vulkan's once, in a table, in the guest, and send
+  Vulkan's values.
+- **Cull mode and front face**: start from `d3d8_gl.c`'s **desktop** branch
+  (`D3DFRONT_CCW` is GL's `GL_CCW`), not its Android branch, whose inversion
+  answers its y flip in the shaders, which the Vulkan shaders do not make
+  (phase 4: the flip is the viewport's). Whether Vulkan's negative-height
+  viewport inverts it again is seen in step 4 (a map culls everything): if
+  geometry is seen from inside, invert the front face in one place, not the
+  shaders.
+- **Depth**: test, write, compare; the depth range comes from the viewport
+  (dynamic). **Stencil**: test, each face's ops and compare (D3D8 has one
+  face: both get the same), masks and reference dynamic.
+- **Z bias**: `D3DDevice_SetRenderState_ZBias`'s comment in `d3d8_gl.c`
+  says what the bias is (a constant and a slope term, for decals); depth
+  bias enable in the pipeline, the values dynamic (`vkCmdSetDepthBias`;
+  Vulkan's constant factor is in units of the format's minimum resolvable
+  difference, as GL's `glPolygonOffset` units are: check decals in step 4).
+- **Blend**: enable, the four factors, the two ops, the colour write mask
+  (`D3DRS_COLORWRITEENABLE`); the blend constant dynamic.
+- **Fill mode** (point, line, fill) and line width 1; the alpha test is in
+  the pixel shader (phase 4), not here.
+- **The attachments**: whether a colour target and a depth target are
+  bound (phase 2's formats), so the pipeline matches the rendering it is
+  used in.
+- **Primitive** (below) and **vertex input** (below).
+
+### Primitives
+
+As `primitive_mode` and `quad_indices` in `d3d8_gl.c`: point, line list and
+strip, triangle list, strip and fan map to Vulkan's; `D3DPT_QUADSTRIP` is a
+triangle strip and `D3DPT_POLYGON` a triangle fan, as there; `D3DPT_QUADLIST`
+becomes indexed triangles (two a quad, the guest makes the indices, as
+`quad_indices` does), and `D3DPT_LINELOOP` a line strip with the first
+vertex again at its end (Vulkan has no loop). Vulkan has no quads, so
+deko3d's quad primitive does not apply.
+
+### Vertex input
+
+As `setup_streams` and `attribute_format` in `d3d8_gl.c` decide:
+
+- **Each stream** a draw reads is put (`vk_data_put`) at the draw: for a
+  plain draw, its vertices from the first to the last drawn; for an indexed
+  one, from the lowest index to the highest (`index_extent`'s scan), the
+  draw's vertex offset then minus that lowest index (as `d3d8_dk.c` does
+  for deko3d's `vertexOffset`, and `d3d8_gl.c` with its base vertex), and
+  `SetIndices`' base vertex index added as `d3d8_gl.c` adds it. Immediate
+  mode's vertices (`End`) are put as they are (the next `Begin` reuses their
+  buffer; the put copies them first).
+- **Index data**: the draw's 16-bit indices put as they are (or the quad
+  list's made ones). Phase 3's note: the offset of index data inside a piece
+  must be a multiple of 2 - put the indices as a piece of their own.
+- **Formats**: `D3DVSDT_*` to Vulkan, as `attribute_format` maps them to GL
+  (the desktop branch: `D3DCOLOR` is `B8G8R8A8_UNORM`, which reads the
+  Xbox's byte order, so no swizzle; `FLOAT2H` three floats; `SHORT*`
+  unnormalised, `NORMSHORT*` and `PBYTE*` normalised; `NORMPACKED3` is
+  `R32_UINT`, unpacked in the shader - phase 5's validation found that a
+  packed attribute's format must be an integer one). **Not every such format
+  is one a driver must read as a vertex attribute** (Vulkan requires few: the
+  unnormalised `SSCALED` shorts and the three-component 8- and 16-bit ones
+  are optional): the host checks each format the table can give for
+  `VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT` at the device's creation and tells
+  the guest (an import, once) which are missing; the guest then puts those
+  attributes expanded to `R32G32B32A32_SFLOAT` (a stream of its own, made at
+  the draw from the game's bytes), and logs once which formats were
+  expanded.
+- **The attributes the declaration does not feed** read the current values
+  `D3DDevice_SetVertexData*` set (`device.attributes`): one binding of
+  stride 0 holding all sixteen, put at each draw whose values changed, every
+  attribute the declaration leaves out read from it (phase 4: every
+  shader declares all sixteen inputs). deko3d's "Progress" has the trap:
+  its copy of these was made once a frame and reused across formats, so a
+  `SetVertexData` between draws - how the HUD and menus set a colour - drew
+  with the frame's first values.
+- **Every one of the sixteen attributes is in the pipeline**, from a stream
+  or from the stride-0 binding.
+
+### Uniforms
+
+The three blocks are made in the guest as `prepare_draw` makes the GL
+uniforms (`struct draw_uniforms` in `d3d8_gl.c`, its uploads, and
+`viewport_update_constants`), into `vk_shaders.h`'s structures: the vertex
+constants (`c[192]`, with the reserved viewport constants), the viewport
+scale and offset, the point size, the screen offset (the menus' centring),
+the combiner constants, fog, the alpha reference, the bump matrices and
+luminance, the linear textures' coordinate scale. No LOD bias here (phase
+4: it is the sampler's).
+
+### Textures
+
+- **`port/android/guest/xbox_textures_vk.c`**, a copy of `xbox_textures.c`
+  (the original stays in both images; the copy replaces it in the Vulkan
+  image's objects, as `d3d8_vk.c` replaces `d3d8_gl.c`): its decoders and
+  its cache kept; its GL calls replaced by commands. **BC1 to BC3 are sent
+  as they are** where the device samples them (both Adreno drivers do;
+  `xgpu_capabilities.s3tc`'s role), decoded to BGRA8 where not, as the GL ES
+  path decodes them for Mali; every other format is decoded to BGRA8
+  (`B8G8R8A8_UNORM`), as deko3d's copy does. Swizzled, palettized (the
+  stage's palette), linear (with the coordinate scale), cube (six faces) and
+  3D textures, every mip level.
+- **Upload**: `VK_COMMAND_TEXTURE` (an image id the guest gives, type,
+  format, size, levels) makes the image; `VK_COMMAND_TEXTURE_DATA` (id, level,
+  face or slice, a data reference) fills a level; `VK_COMMAND_TEXTURE_FREE`
+  releases it when the cache evicts it (the host destroys it once the frames
+  that may use it have passed). The texels are put with `vk_data_put` when
+  the cache uploads them, so they are the game's as they were then; the host
+  copies them from the ring into the image (`vkCmdCopyBufferToImage`) outside
+  any rendering (ending it), with a barrier from the image's last use
+  (draws of this frame may still sample its old texels, recorded before) and
+  one to the shader-read layout after.
+- **Staleness: start the memory watch.** The cache tells a texture was
+  rewritten by `memory_watch.c`'s write generations (page protection and
+  announced writes). `d3d8_gl.c` starts the watch (`memory_watch_initialize`
+  in `gl_initialize`); **`d3d8_vk.c` never does**, so without it a texture
+  the game rewrites would be drawn stale for the run. Start it where
+  `d3d8_gl.c` does.
+- **Samplers**: from the stage's state as `configure_sampler` in
+  `d3d8_gl.c` decides it: filters, mip filter, address modes, the border
+  colour (Vulkan's three fixed ones, or `VK_EXT_custom_border_color`, which
+  both Adreno drivers have, for another), the LOD bias (`mipLodBias`; phase
+  4 took it out of the shaders), the maximum level, anisotropy (the device's
+  `samplerAnisotropy` and its limit). Sent as a fixed-width state in the
+  draw; the host keeps one `VkSampler` per distinct state (a table by hash:
+  the device allows a few thousand).
+- **A texture whose data is a render target's** samples the target's image,
+  not the game's memory (where the GPU never writes): the guest notes every
+  colour surface it binds as a target (address, size, last bound), and a
+  stage whose texture's data is one names that target instead of an image
+  id (with one level and the linear-texture scale from the target's size),
+  as `bind_textures` in `d3d8_gl.c` and deko3d's `rendered_note` do. The
+  host takes the target last bound at that address, transitions it to the
+  shader-read layout (a barrier from its rendering), and back when it is
+  drawn into again.
+
+### The high-res HUD and text, the menus' art
+
+`hud_hires.c`, `text_hires.c` and `menu_files.c` make GL textures and hand
+GL names to `xbox_textures.c` (`texture_entry_result`); under the Vulkan
+image those GL calls reach phase 1's stubs and do nothing. `xbox_textures_vk.c`
+makes the three replacements itself as images of its own (deko3d's step 6
+did this, and its "Progress" says how): the text's atlas (after the first
+upload only the rows written since), a menu's art (by file name), a high-res
+HUD bitmap (found by `hud_hires_override_find`), decoded as there and sent
+as textures. It needs the accessors deko3d added behind `#ifdef HALO_SWITCH`
+(`text_hires_atlas_rows`, `hud_hires_png_pixels`, `menu_art_name`,
+`menu_art_png`): widen their guards to `#if defined(HALO_SWITCH) ||
+defined(HALO_ANDROID)` - read-only accessors the GL ES image links but does
+not call, the one kind of change to `port/linux/src` this plan allows; say
+so in "Progress". The GL stub count (phase 1, `debug.gpu_stats`) must stay
+at zero.
+
+### Render targets, the mip composite, the screen
+
+- Phase 2 makes the targets (keyed as `render_target_get` keys them, at the
+  screen's scale for the screen's targets) with sampled usage. Sampling one
+  is above.
+- **The mip composite** (`mip_composite_get` in `d3d8_gl.c`: the water
+  renders a texture one mip level at a time, each level a target): a
+  mipmapped image the levels are copied into (`vkCmdBlitImage`), the levels
+  below the last drawn made by halving, after a barrier from the levels'
+  rendering; copied again only when one of its levels was drawn into since
+  (deko3d's `composite_sampled`).
+- **The viewport** in the target's pixels (the screen's scale), with a
+  **negative height** (y from the bottom of the viewport's rectangle,
+  height negated: Vulkan 1.1's rule) - the one place the picture is turned
+  (phase 4) - and its depth range; **the scissor follows the viewport**
+  (the NV2A's does by default, and split screen depends on it).
+- **Direct3D's half pixel** is the vertex shaders' (`+ 0.5`, phase 4): not
+  again in the viewport.
+
+### Visibility tests
+
+Occlusion queries (`occlusionQueryPrecise`, which both drivers have): a
+query pool of 4,096 slots (the game's test indices, as `d3d8_gl.c`'s
+`VISIBILITY_TEST_SLOTS`). `BeginVisibilityTest` marks the draws until
+`EndVisibilityTest(index)` as the test's: the host begins the slot's query
+before the first and ends it after the last. A query may not span a
+rendering's end: if the rendering must end inside a test (a target change),
+the test is counted over several queries (two slots of a second pool, added
+up) - or, simpler and enough if the game never does it, the log says so
+once and the count is of the part inside. Results: copied
+(`vkCmdCopyQueryPoolResults`, outside rendering, at the frame's end) into a
+host-visible buffer per frame; `GetVisibilityTestResult` asks the host
+(an import) for the slot's latest finished count and never waits (as
+`d3d8_gl.c`'s query buffer path: the latest from this test, or from an
+earlier one while the GPU is behind); reset each slot before it is used
+again (`vkCmdResetQueryPool`, outside rendering). **The count is in the
+target's pixels**: divide by the target's scale (`visibility_unscaled`:
+the game divides by its own test's area, so a count at the screen's scale
+would make lens flares too bright).
+
+### Pitfalls already known
+
+From deko3d's phase 6, the earlier attempt and this plan's phases:
+
+- **A pipeline must match the rendering it is used in** (attachment
+  formats; the earlier attempt's driver dropped such draws silently): the
+  state's attachments come from the targets bound, and validation runs at
+  every step.
+- **Layouts**: every image's layout is tracked; render targets go between
+  attachment and shader-read; textures between transfer and shader-read.
+  **Barriers outside rendering**; ending the rendering for a copy, a
+  barrier, a query reset or a copy of results.
+- **Descriptors bound by a recorded command are not rewritten**: a fresh set
+  per draw, pools reset only when the frame's fence has passed.
+- **Data references are this frame's**: a draw naming an earlier frame's id
+  is a guest bug, said once by `host_vk_data_find`.
+- **The unfed attributes' values**: put when they change, not once a frame
+  (deko3d's trap above).
+- **A texture written after draws that sample it**: the copy waits for them
+  (a barrier), or the earlier draws sample the new texels.
+- **A target sampled after it is drawn into** needs a barrier between; a
+  target drawn into again after it is sampled, another.
+- **Viewport and scissor are set at every draw** (Vulkan keeps no state
+  across renderings: phase 2).
+- **The memory watch** (above): started, or textures go stale.
+- **A screen-sized count**: visibility counts divided by the scale.
+- **The Xbox's enumerants are OpenGL's**: compare `d3d8_gl.c` before writing
+  a mapping table.
+- **`d3d8_gl.c` is the reference, at this branch's `main`**: it moved with
+  upstream since `d3d8_vk.c` was cut (phase 1); where the Vulkan device
+  copies a decision from it, copy it from the file as it is now, and say in
+  "Progress" if a decision `d3d8_vk.c` already holds is older than the
+  file's.
 
 ### Diagnostics, from the first step
 
-- A log line every 60 frames: draws, immediate-mode draws, pipelines made,
-  and draws skipped, by reason (pipeline not ready, pipeline failed, no
-  target, a format the driver lacks).
-- Every wait on the GPU logs once it has taken two seconds, with what it waits
-  for; the queue's loss (`VK_ERROR_DEVICE_LOST`) is logged with the
-  submission number and the driver.
-- The validation layer in the debug APK, run at each step's end.
-- A dump of generated GLSL behind a setting, into the app's own files.
+- `debug.gpu_stats`: every 60 frames, draws made, immediate-mode draws, and
+  draws skipped by reason (shader not ready, pipeline not ready, data
+  missing, no target, a texture missing, too big), as `d3d8_gl.c`'s line
+  does; phase 2's backend line and phase 5's services line as they are; the
+  GL stub count (zero).
+- `debug.texture_log`: every texture upload (format, size, levels, BC or
+  decoded), as `d3d8_gl.c`'s.
+- The validation layer at every step's end, on both drivers.
+- **Screenshots by `adb exec-out screencap -p`**: the same scene under
+  `renderer = "gl"` and `"vulkan"`, looked at side by side (the agent reads
+  PNGs). Where the two differ, `debug.gpu_dump_shaders` and the draw log
+  (`debug.gpu_trace_frame`, if the Vulkan device keeps it) say what was
+  drawn.
 
-**Acceptance:** the game looks under Vulkan as it does under GL ES, the menus
-and a map, on both drivers, with the diagnostics clean - except where GL ES
-draws wrongly, which is phase 7's subject.
+### The order, each step tried on the device before the next
+
+Each step: built, run on both drivers with validation on, compared with GL ES
+by screenshot, its results in "Progress", committed.
+
+1. **First draws.** The draw record, the pipeline state, the dynamic state,
+   uniforms, vertex input and primitives, for draws without textures (a
+   draw that needs a texture is skipped, counted, until step 2). The main
+   menu's untextured draws (its fades and solid layers). **Done when**:
+   draws are made with no validation error and nothing skipped but for
+   textures; the statistics' counts match GL ES's for the same screen.
+2. **Textures.** `xbox_textures_vk.c`, uploads, samplers, the dummies, the
+   memory watch; the menus' textured draws. **Done when**: the Xbox-style
+   parts of the menus (`display.menus = "xbox"`) look as under GL ES, by
+   screenshot, and the picture is the right way up (the viewport's flip
+   settled).
+3. **The high-res HUD and text, and the menus' art** (deko3d pulled this
+   ahead of its render targets, because the PC menus cannot be read
+   without them; `display.menus = "pc"` is the default). **Done when**: the
+   PC menus look as under GL ES; the GL stub count stays at zero.
+4. **A map.** The first campaign map, from a new game: the opening
+   cinematic (**does it reach play as under GL ES?** phase 2's open question:
+   time both), then the cryo-tube and the first corridors; indexed draws,
+   every vertex format met, culling and front face, depth, stencil, z bias
+   (decals), fog, cube and 3D textures, skinned characters. And **phase
+   4's corpus again, from play** (`debug.gpu_dump_shaders` and
+   `tools/vk_shader_check.py`: fog, colour sign and alpha kill on stages 1
+   to 3 were never met). **Done when**: the scenes look as under GL ES
+   (render-target effects aside), nothing is skipped but for a shader or
+   pipeline on first sight, and the shader check is clean on the new corpus.
+5. **Render targets.** Render-to-texture (the sniper's zoom, screen
+   effects), the mip composite (water), split screen (needs a second
+   controller: the user's, see "Testing"). **Done when**: those scenes
+   look as under GL ES, those the agent can reach by keys, and the rest
+   are listed for the user.
+6. **Visibility tests** (lens flares: the first map has lights through
+   which they show). **Done when**: flares show and fade as under GL ES.
+
+### Testing on the device
+
+- The `.vk` build, both drivers, validation on for the step's runs and off
+  for a last run of each step (to see the game's pace).
+- **Reaching scenes by keys**: the menus by `KEYCODE_DPAD_*`, `ENTER`,
+  `BACK`; a new game (ENTER, DOWN, ENTER, ENTER, ENTER); now that the
+  screen shows the game, screenshots say where it is. The first map's play
+  needs moving and looking: keyboard keys (the game's PC bindings, as on
+  Linux: `port/linux/README.md`) by `adb shell input keyevent`, held keys by
+  `input keycombination` or repeated events, or `debug.test_input =
+  "look:<seed>"` (turns and looks, standing) and `"bot:<seed>"` (a scripted
+  pattern) from `port_config.c`'s table.
+- **What needs the user**: split screen (a second controller), the sniper's
+  zoom and water if they cannot be reached by keys, and a judgement of the
+  picture over a longer play: list them in "Progress" with what to look for.
+- Move `config.toml` only with `adb pull` and `adb push` (phase 1's audit).
+
+### Acceptance
+
+1. `ninja android_apk` builds with no new warnings; `port/linux/src`
+   changed only by the widened accessor guards, argued in "Progress"; the
+   GL ES image unchanged on the device.
+2. Each of the six steps done as it says, on both drivers, with screenshots
+   compared with GL ES's, and validation clean.
+3. Nothing the game draws is missing for longer than its shader's and
+   pipeline's first compile, on a warm cache.
+4. The opening cinematic's question answered (it reaches play, or why not).
+5. The shader check clean on a corpus from play.
+6. "Progress" has each step's result, every deviation, and what is left for
+   the user, with what to look for.
 
 ## Phase 7 — the drivers compared
 
