@@ -675,6 +675,13 @@ uint32_t host_dk_shader_find(uint32_t stage, uint64_t hash, uint32_t state_out)
 	return handle;
 }
 
+const void *host_dk_shader(uint32_t handle)
+{
+	if (!handle || handle > dksh.loaded_count)
+		return NULL;
+	return &dksh.loaded[handle - 1].shader;
+}
+
 /* what the host has of a shader, without loading it: 0 nothing, 1 queued
 or being compiled, 2 on the card, 3 loaded. The guest's startup pass asks
 this of every key it knows: loading each on the card there (find) cost the

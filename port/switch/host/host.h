@@ -209,6 +209,9 @@ void host_dk_shader_compile(uint32_t stage, uint64_t hash, uint32_t glsl, uint32
 /* what the host has of a shader, without loading it: 0 nothing, 1 queued
 or being compiled, 2 on the card, 3 loaded (the guest's startup pass) */
 uint32_t host_dk_shader_known(uint32_t stage, uint64_t hash);
+/* the DkShader (as a const void *) a handle of find's names, or NULL: for the
+backend's draws, on the game thread */
+const void *host_dk_shader(uint32_t handle);
 
 /* ---------- debugging (host_debug.c) */
 

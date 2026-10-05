@@ -4,7 +4,7 @@ A second renderer for the Switch build that drives the GPU through
 [deko3d](https://github.com/devkitPro/deko3d) instead of Mesa, with compiled
 shaders cached on the SD card.
 
-Status: phases 0 to 5 done, phase 6 next; see "Progress" at the end.
+Status: phases 0 to 5 done, phase 6 under way (step 1 of 6); see "Progress" at the end.
 
 ---
 
@@ -991,6 +991,78 @@ Don't commit; the review does that.
 ---
 
 ## Progress
+
+### Phase 6 (under way)
+
+Rules kept: no edit to the OpenGL renderer or to anything under
+`port/linux/src`; nothing committed.
+
+**Step 1, first triangle: run on the console - the draw path works; the
+picture's orientation is still to be seen (step 2).** In the menus, per 60
+frames: 60 immediate-mode draws drawn (one a frame), 0 other draws, 7,440
+skipped as textured (124 a frame), none skipped for a shader not ready or
+anything else, 60 frames a second, no GPU fault. The menus are almost all
+textured, so the screen stays black until step 2; the one untextured draw a
+frame is presumably a dark full-screen layer (a fade). It went through
+shaders from the cache, state, vertex data and uniforms with no fault - that
+is what step 1 could show. Whether the device flags give the right way up
+can only be judged when textured draws appear.
+
+Found on the console, and fixed or worked around:
+- **A screenshot faulted the GPU.** With `debug.screenshot_every` set (the
+  console's `config.toml` had 300 from this phase's testing, so frame 0 took
+  one), the frame never finished: first with `dkCmdBufCopyImageToBuffer` from
+  the back buffer, then with a blit of it into a pitch-linear image in
+  CPU-visible memory. Without screenshots, no fault. The back buffer is made
+  with `DkImageFlags_HwCompression` (`target_get`); reading a compressed
+  render target this way is the likely cause, not proved. The readback now
+  waits two seconds at most and says so (`present`). **Rework before using
+  screenshots again** - render targets without hardware compression, or a
+  copy into an uncompressed image first - and keep `screenshot_every = 0`
+  until then (it is 0 on the console now).
+- **A faulted GPU ended the program later, with nothing said**: deko3d aborts
+  at the next call needing the queue (`dkQueueAcquireImage`). `present` now
+  checks `dkQueueIsInErrorState`, logs the frame once, stops presenting and
+  discards what was recorded, so the game goes on and the log has the frame.
+- **The unfed registers' values were reused across formats** in a frame (see
+  the review note below); fixed.
+
+- `guest/dk_commands.h`: the draw commands. The host *keeps* what it is told
+  (`STATE`, `SHADERS`, `VERTEX_FORMAT`, the two parameter blocks), and the
+  guest writes each only when it differs from what it last wrote, so a draw
+  that changes nothing is one `DRAW` command. The Xbox's blend factors,
+  compare functions and stencil operations cross as they are (they are
+  OpenGL's) and the host maps them; the rest are neutral enums.
+- `guest/d3d8_dk.c`: `draw_prepare` (`prepare_draw`'s key building, the state
+  as `apply_raster_state` computes it, the changed vertex constants as one
+  run, the other uniforms converted only when their inputs changed),
+  `DrawVertices`, `DrawIndexedVertices` (the streams start at the lowest vertex
+  the indices name, `vertex_offset` is minus that, as `d3d8_gl.c` does with
+  `glDrawElementsBaseVertex`) and `End` (immediate mode: the vertices go in the
+  command itself, because the next `Begin` reuses their buffer before the
+  stream is handed over). A draw that needs a texture is skipped until step 2.
+  Screenshots (`debug.screenshot_every`) and `debug.gpu_stats`.
+- `host/host_dk.c`: one uniform buffer for every frame (`dkCmdBufPushConstants`
+  runs in order with the draws, so a ring is not needed), the tables from the
+  Xbox's enumerants to deko3d's, the state put into the queue at the next draw
+  when a frame start, a clear or a change of targets has left it not as told,
+  the vertex format as deko3d wants it (streams numbered densely; the
+  unfed registers' current values are one more stream, of stride 0, in the
+  upload buffer), and the draw. Ranges the draw reads go through `window_read`,
+  or `upload_copy` when that gives nothing.
+- `host/host_dk_shaders.c`: `host_dk_shader`, a handle's `DkShader`.
+- Command memory per frame went from 4 to 8 MB (the constants are in the
+  command stream).
+- Review: the unfed registers' values (one stride-0 stream in the upload
+  buffer) were copied once a frame and reused for every later format that
+  frame, so a `SetVertexData` between draws - how the HUD and menus set a
+  colour - would have drawn with the frame's first values; a new format now
+  makes a new copy. Still to settle on the console: the winding under
+  deko3d's upper-left origin (culling copies desktop OpenGL's, which relies
+  on `glClipControl`; if a map's geometry vanishes in step 3, look there
+  first), and the index range each indexed draw scans (no cache, unlike
+  `d3d8_gl.c`'s: without the mirror there is no write generation to tell a
+  cached range is stale - phase 7's question).
 
 ### Phase 5, steps 2 to 4
 

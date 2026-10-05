@@ -410,8 +410,9 @@ static struct dk_command_targets targets_told;
 static BOOL targets_known;
 
 /* tells the host the current targets, if they are not what it has; FALSE if
-there is nothing to draw into */
-static BOOL targets_bind(void)
+there is nothing to draw into. has_depth (if not NULL) says whether there is
+a depth buffer. */
+static BOOL targets_bind(BOOL *has_depth)
 {
 	struct dk_command_targets targets;
 
@@ -420,6 +421,8 @@ static BOOL targets_bind(void)
 	surface_describe(device.depth_stencil, TRUE, &targets.depth);
 	if (targets.color.kind == DK_SURFACE_NONE && targets.depth.kind == DK_SURFACE_NONE)
 		return FALSE;
+	if (has_depth)
+		*has_depth = targets.depth.kind != DK_SURFACE_NONE;
 	if (!targets_known || memcmp(&targets.color, &targets_told.color, sizeof(targets.color)) ||
 		memcmp(&targets.depth, &targets_told.depth, sizeof(targets.depth)))
 	{
@@ -584,7 +587,7 @@ HRESULT WINAPI Direct3D_CreateDevice(UINT adapter, D3DDEVTYPE device_type, void 
 		holds frames to the display's rate until deko3d presents them */
 		if (!platform_video_initialize(width, height))
 			platform_log("Direct3D: no window; the game's events will not be read");
-		platform_log("Direct3D: the deko3d renderer (nothing is drawn yet)");
+		platform_log("Direct3D: the deko3d renderer");
 		device.created = TRUE;
 	}
 	*returned_device = device_pointer();
@@ -753,7 +756,7 @@ static void targets_used(void)
 	resource_used(device.depth_stencil);
 }
 
-static void draw_resources_used(BOOL indexed)
+static void draw_resources_used(BOOL indexed, BOOL streamed)
 {
 	unsigned long index;
 	int stage;
@@ -766,7 +769,8 @@ static void draw_resources_used(BOOL indexed)
 		resource_used(device.textures[stage]);
 		resource_used(device.palettes[stage]);
 	}
-	for (index = 0; device.vertex_shader && index < device.vertex_shader->element_count; index++)
+	/* (immediate mode reads no buffer) */
+	for (index = 0; streamed && device.vertex_shader && index < device.vertex_shader->element_count; index++)
 		resource_used(device.streams[device.vertex_shader->elements[index].stream].buffer);
 	if (indexed)
 		resource_used(device.index_buffer);
@@ -1434,18 +1438,558 @@ void WINAPI D3DDevice_SetIndices(D3DIndexBuffer *index_data, UINT base_vertex_in
 	CreateIndexBuffer ordinary memory, which the move leaves alone */
 	D3D__IndexData = index_data ? (WORD *)PORT_WINDOW_REBASE(index_data->Data) : NULL;
 }
+/* ---------- drawing (DEKO3D.md, phase 6)
+
+The device reads Direct3D's state at each draw as d3d8_gl.c's prepare_draw
+does and writes it to the command stream (dk_commands.h) - but only what the
+host does not already hold: the host keeps the state, the shaders, the
+uniforms and the vertex format it was last told, so a draw that changes one of
+them writes one command, and a draw that changes nothing writes the draw. */
+
+static struct
+{
+	unsigned long draws, immediate_draws, skipped_no_program, skipped_no_target, skipped_shader, skipped_texture,
+		skipped_size;
+} stats;
+
+/* what the host holds */
+static struct dk_draw_state state_told;
+static BOOL state_known;
+static uint32_t shaders_told[2];
+static BOOL shaders_known;
+static struct dk_vertex_parameters vertex_parameters_told;
+static struct dk_pixel_parameters pixel_parameters_told;
+static BOOL parameters_known;
+static struct dk_vertex_format format_told;
+static BOOL format_known;
+static unsigned long constants_told;
+static BOOL constants_known;
+
+/* the state the uniform blocks above come from: when none of it has changed
+they need no converting (most draws share it with the draw before) */
+#define DRAW_UNIFORM_INPUT_COUNT (4 + 4 + 16 + 1 + 16 + 2 + 4 + 1 + 1 + 6 * D3DTSS_MAXSTAGES)
+
+static DWORD draw_uniform_inputs[DRAW_UNIFORM_INPUT_COUNT];
+static BOOL draw_uniform_inputs_known;
+
+static unsigned long stage_texture_mode(int stage)
+{
+	return (D3D__RenderState[D3DRS_PSTEXTUREMODES] >> (5 * stage)) & 0x1f;
+}
+
+/* the pixel edge of a coordinate in the targets' units (which are the game's
+here: the host's targets are as big as the game's) */
+static int target_pixel(float coordinate)
+{
+	return (int)floorf(coordinate + 0.5f);
+}
+
+static uint32_t blend_equation(DWORD operation)
+{
+	switch (operation)
+	{
+	case D3DBLENDOP_SUBTRACT: return DK_BLEND_SUBTRACT;
+	case D3DBLENDOP_REVSUBTRACT:
+	case D3DBLENDOP_REVSUBTRACTSIGNED: return DK_BLEND_REVERSE_SUBTRACT;
+	case D3DBLENDOP_MIN: return DK_BLEND_MIN;
+	case D3DBLENDOP_MAX: return DK_BLEND_MAX;
+	default: return DK_BLEND_ADD;
+	}
+}
+
+/* d3d8_gl.c's apply_raster_state, as a description of what it would set */
+static void draw_state_make(BOOL has_depth, struct dk_draw_state *state)
+{
+	DWORD *rs = D3D__RenderState;
+	DWORD write = rs[D3DRS_COLORWRITEENABLE];
+	BOOL depth_test = has_depth && rs[D3DRS_ZENABLE];
+
+	memset(state, 0, sizeof(*state));
+	state->viewport[0] = target_pixel((float)device.viewport.X);
+	state->viewport[1] = target_pixel((float)device.viewport.Y);
+	state->viewport[2] = target_pixel((float)(device.viewport.X + device.viewport.Width)) - state->viewport[0];
+	state->viewport[3] = target_pixel((float)(device.viewport.Y + device.viewport.Height)) - state->viewport[1];
+	state->depth_range[0] = device.viewport.MinZ;
+	state->depth_range[1] = device.viewport.MaxZ;
+	/* the game never issues a scissor rectangle, and the NV2A scissor register
+	defaults to the viewport, so fragment clipping follows the viewport: this is
+	what keeps a split-screen window's geometry from bleeding across the divider */
+	memcpy(state->scissor, state->viewport, sizeof(state->scissor));
+
+	state->depth_test = depth_test;
+	if (depth_test)
+	{
+		state->depth_function = rs[D3DRS_ZFUNC] ? rs[D3DRS_ZFUNC] : D3DCMP_NEVER;
+		state->depth_write = rs[D3DRS_ZWRITEENABLE] != 0;
+	}
+
+	state->stencil_test = has_depth && rs[D3DRS_STENCILENABLE];
+	if (state->stencil_test)
+	{
+		state->stencil_function = rs[D3DRS_STENCILFUNC] ? rs[D3DRS_STENCILFUNC] : D3DCMP_NEVER;
+		state->stencil_reference = rs[D3DRS_STENCILREF];
+		state->stencil_mask = rs[D3DRS_STENCILMASK];
+		state->stencil_write_mask = rs[D3DRS_STENCILWRITEMASK];
+		state->stencil_fail = rs[D3DRS_STENCILFAIL];
+		state->stencil_depth_fail = rs[D3DRS_STENCILZFAIL];
+		state->stencil_pass = rs[D3DRS_STENCILPASS];
+	}
+
+	state->blend = rs[D3DRS_ALPHABLENDENABLE] != 0;
+	if (state->blend)
+	{
+		state->blend_source = rs[D3DRS_SRCBLEND];
+		state->blend_destination = rs[D3DRS_DESTBLEND];
+		state->blend_equation = blend_equation(rs[D3DRS_BLENDOP]);
+		color_to_vec4(rs[D3DRS_BLENDCOLOR], state->blend_color);
+	}
+	state->color_mask = ((write & D3DCOLORWRITEENABLE_RED) ? 1 : 0) | ((write & D3DCOLORWRITEENABLE_GREEN) ? 2 : 0) |
+		((write & D3DCOLORWRITEENABLE_BLUE) ? 4 : 0) | ((write & D3DCOLORWRITEENABLE_ALPHA) ? 8 : 0);
+
+	/* the cull mode names the winding to discard; FRONTFACE names the front
+	winding */
+	if (rs[D3DRS_CULLMODE] != D3DCULL_NONE)
+		state->cull = rs[D3DRS_CULLMODE] == rs[D3DRS_FRONTFACE] ? DK_CULL_FRONT : DK_CULL_BACK;
+	state->front_face_ccw = rs[D3DRS_FRONTFACE] == D3DFRONT_CCW;
+	state->fill_mode = rs[D3DRS_FILLMODE] == D3DFILL_WIREFRAME ? DK_FILL_LINE :
+		rs[D3DRS_FILLMODE] == D3DFILL_POINT ? DK_FILL_POINT : DK_FILL_SOLID;
+
+	/* D3DRS_ZBIAS is expressed in these states (D3DDevice_SetRenderState_ZBias) */
+	state->offset_enable = rs[D3DRS_SOLIDOFFSETENABLE] != 0;
+	if (state->offset_enable)
+	{
+		state->offset_slope = dword_to_float(rs[D3DRS_POLYGONOFFSETZSLOPESCALE]);
+		state->offset_units = dword_to_float(rs[D3DRS_POLYGONOFFSETZOFFSET]);
+	}
+}
+
+static void draw_state_send(BOOL has_depth)
+{
+	struct dk_draw_state state;
+
+	draw_state_make(has_depth, &state);
+	if (state_known && !memcmp(&state, &state_told, sizeof(state)))
+		return;
+	{
+		struct dk_command_state *command = stream_command(DK_COMMAND_STATE, sizeof(*command));
+
+		command->state = state;
+	}
+	state_told = state;
+	state_known = TRUE;
+}
+
+/* the vertex constants the host does not have yet: the registers changed since
+the serial it was told, as one run (d3d8_gl.c's prepare_draw does the same
+for a program's own registers) */
+static void draw_constants_send(void)
+{
+	unsigned long first = XGPU_VERTEX_CONSTANT_COUNT, last = 0, index;
+	struct dk_command_constants *command;
+
+	if (constants_known && constants_told == constants_serial)
+		return;
+	if (!constants_known)
+	{
+		first = 0;
+		last = XGPU_VERTEX_CONSTANT_COUNT - 1;
+	}
+	else if (constants_serial - constants_told <= CONSTANT_LOG_SIZE)
+	{
+		unsigned long serial;
+
+		for (serial = constants_told + 1; serial <= constants_serial; serial++)
+		{
+			index = constant_log[serial % CONSTANT_LOG_SIZE];
+			if (first > index)
+				first = index;
+			if (last < index)
+				last = index;
+		}
+	}
+	else
+	{
+		for (index = 0; index < XGPU_VERTEX_CONSTANT_COUNT; index++)
+		{
+			if (constant_serials[index] > constants_told)
+			{
+				if (first > index)
+					first = index;
+				last = index;
+			}
+		}
+	}
+	constants_told = constants_serial;
+	constants_known = TRUE;
+	if (first >= XGPU_VERTEX_CONSTANT_COUNT)
+		return;
+	command = stream_command(DK_COMMAND_CONSTANTS, sizeof(*command) + (last - first + 1) * 4 * sizeof(float));
+	command->first = (uint32_t)first;
+	command->count = (uint32_t)(last - first + 1);
+	memcpy(command->data, device.constants[first], (last - first + 1) * 4 * sizeof(float));
+}
+
+/* the uniforms that are not the vertex constants (d3d8_gl.c's
+draw_uniforms), converted when the state they come from has changed, and
+written when the host does not hold the result */
+static void draw_parameters_send(float texture_scale[4][4])
+{
+	DWORD inputs[DRAW_UNIFORM_INPUT_COUNT];
+	unsigned long count = 0;
+	int stage;
+
+	memcpy(&inputs[count], device.viewport_scale, sizeof(device.viewport_scale));
+	count += 4;
+	memcpy(&inputs[count], device.viewport_offset, sizeof(device.viewport_offset));
+	count += 4;
+	memcpy(&inputs[count], texture_scale, 16 * sizeof(float));
+	count += 16;
+	inputs[count++] = D3D__RenderState[D3DRS_POINTSIZE];
+	for (stage = 0; stage < 8; stage++)
+	{
+		inputs[count++] = D3D__RenderState[D3DRS_PSCONSTANT0_0 + stage];
+		inputs[count++] = D3D__RenderState[D3DRS_PSCONSTANT1_0 + stage];
+	}
+	inputs[count++] = D3D__RenderState[D3DRS_PSFINALCOMBINERCONSTANT0];
+	inputs[count++] = D3D__RenderState[D3DRS_PSFINALCOMBINERCONSTANT1];
+	inputs[count++] = D3D__RenderState[D3DRS_FOGCOLOR];
+	inputs[count++] = D3D__RenderState[D3DRS_FOGSTART];
+	inputs[count++] = D3D__RenderState[D3DRS_FOGEND];
+	inputs[count++] = D3D__RenderState[D3DRS_FOGDENSITY];
+	inputs[count++] = D3D__RenderState[D3DRS_ALPHAREF];
+	inputs[count++] = (DWORD)UI_OFFSET;
+	for (stage = 0; stage < D3DTSS_MAXSTAGES; stage++)
+	{
+		DWORD *state = D3D__TextureState[stage];
+
+		inputs[count++] = state[D3DTSS_BUMPENVMAT00];
+		inputs[count++] = state[D3DTSS_BUMPENVMAT01];
+		inputs[count++] = state[D3DTSS_BUMPENVMAT10];
+		inputs[count++] = state[D3DTSS_BUMPENVMAT11];
+		inputs[count++] = state[D3DTSS_BUMPENVLSCALE];
+		inputs[count++] = state[D3DTSS_BUMPENVLOFFSET];
+	}
+	if (draw_uniform_inputs_known && !memcmp(inputs, draw_uniform_inputs, sizeof(inputs)))
+		return;
+	memcpy(draw_uniform_inputs, inputs, sizeof(inputs));
+	draw_uniform_inputs_known = TRUE;
+	{
+		struct dk_vertex_parameters vertex;
+		struct dk_pixel_parameters pixel;
+
+		memset(&vertex, 0, sizeof(vertex));
+		memset(&pixel, 0, sizeof(pixel));
+		memcpy(vertex.viewport_scale, device.viewport_scale, sizeof(vertex.viewport_scale));
+		memcpy(vertex.viewport_offset, device.viewport_offset, sizeof(vertex.viewport_offset));
+		vertex.point_and_screen[0] = D3D__RenderState[D3DRS_POINTSIZE] ?
+			dword_to_float(D3D__RenderState[D3DRS_POINTSIZE]) : 1.0f;
+		vertex.point_and_screen[1] = (float)UI_OFFSET;
+
+		for (stage = 0; stage < 8; stage++)
+		{
+			color_to_vec4(D3D__RenderState[D3DRS_PSCONSTANT0_0 + stage], pixel.ps_c0[stage]);
+			color_to_vec4(D3D__RenderState[D3DRS_PSCONSTANT1_0 + stage], pixel.ps_c1[stage]);
+		}
+		color_to_vec4(D3D__RenderState[D3DRS_PSFINALCOMBINERCONSTANT0], pixel.ps_final_c0);
+		color_to_vec4(D3D__RenderState[D3DRS_PSFINALCOMBINERCONSTANT1], pixel.ps_final_c1);
+		color_to_vec4(D3D__RenderState[D3DRS_FOGCOLOR], pixel.fog_color);
+		pixel.fog_parameters[0] = dword_to_float(D3D__RenderState[D3DRS_FOGSTART]);
+		pixel.fog_parameters[1] = dword_to_float(D3D__RenderState[D3DRS_FOGEND]);
+		pixel.fog_parameters[2] = dword_to_float(D3D__RenderState[D3DRS_FOGDENSITY]);
+		pixel.alpha_reference[0] = (float)(D3D__RenderState[D3DRS_ALPHAREF] & 0xff);
+		memcpy(pixel.texture_scale, texture_scale, sizeof(pixel.texture_scale));
+		for (stage = 0; stage < D3DTSS_MAXSTAGES; stage++)
+		{
+			DWORD *state = D3D__TextureState[stage];
+
+			pixel.bump_matrix[stage][0] = dword_to_float(state[D3DTSS_BUMPENVMAT00]);
+			pixel.bump_matrix[stage][1] = dword_to_float(state[D3DTSS_BUMPENVMAT01]);
+			pixel.bump_matrix[stage][2] = dword_to_float(state[D3DTSS_BUMPENVMAT10]);
+			pixel.bump_matrix[stage][3] = dword_to_float(state[D3DTSS_BUMPENVMAT11]);
+			pixel.bump_luminance[stage][0] = dword_to_float(state[D3DTSS_BUMPENVLSCALE]);
+			pixel.bump_luminance[stage][1] = dword_to_float(state[D3DTSS_BUMPENVLOFFSET]);
+		}
+		if (!parameters_known || memcmp(&vertex, &vertex_parameters_told, sizeof(vertex)))
+		{
+			struct dk_command_vertex_parameters *command = stream_command(DK_COMMAND_VERTEX_PARAMETERS, sizeof(*command));
+
+			command->parameters = vertex;
+			vertex_parameters_told = vertex;
+		}
+		if (!parameters_known || memcmp(&pixel, &pixel_parameters_told, sizeof(pixel)))
+		{
+			struct dk_command_pixel_parameters *command = stream_command(DK_COMMAND_PIXEL_PARAMETERS, sizeof(*command));
+
+			command->parameters = pixel;
+			pixel_parameters_told = pixel;
+		}
+		parameters_known = TRUE;
+	}
+}
+
+static void draw_shaders_send(uint32_t vertex, uint32_t pixel)
+{
+	if (shaders_known && shaders_told[0] == vertex && shaders_told[1] == pixel)
+		return;
+	{
+		struct dk_command_shaders *command = stream_command(DK_COMMAND_SHADERS, sizeof(*command));
+
+		command->vertex = vertex;
+		command->pixel = pixel;
+	}
+	shaders_told[0] = vertex;
+	shaders_told[1] = pixel;
+	shaders_known = TRUE;
+}
+
+static void draw_format_send(const struct dk_vertex_format *format)
+{
+	if (format_known && !memcmp(format, &format_told, sizeof(*format)))
+		return;
+	{
+		struct dk_command_vertex_format *command = stream_command(DK_COMMAND_VERTEX_FORMAT, sizeof(*command));
+
+		command->format = *format;
+	}
+	format_told = *format;
+	format_known = TRUE;
+}
+
+/* The pixel shader's key as prepare_draw builds it. The textures the stages
+sample are not yet the host's to bind: a draw that needs one is not drawn. */
+static BOOL pixel_key_make(struct nv2a_pixel_shader_key *key, float texture_scale[4][4])
+{
+	int stage;
+
+	memset(key, 0, sizeof(*key));
+	memcpy(key->combiner_state, D3D__RenderState, sizeof(key->combiner_state));
+	/* constants are uniforms, not part of the program */
+	memset(&key->combiner_state[D3DRS_PSCONSTANT0_0], 0, 16 * sizeof(DWORD));
+	key->combiner_state[D3DRS_PSFINALCOMBINERCONSTANT0] = 0;
+	key->combiner_state[D3DRS_PSFINALCOMBINERCONSTANT1] = 0;
+	key->texture_modes = D3D__RenderState[D3DRS_PSTEXTUREMODES];
+	for (stage = 0; stage < D3DTSS_MAXSTAGES; stage++)
+	{
+		D3DBaseTexture *texture = device.textures[stage];
+		unsigned long mode = stage_texture_mode(stage);
+
+		texture_scale[stage][0] = texture_scale[stage][1] = 1.0f;
+		texture_scale[stage][2] = texture_scale[stage][3] = 1.0f;
+		if (mode == 0x11 || (texture && texture->Data && mode != 0 && mode != 0x04 && mode != 0x05))
+			return FALSE;
+		key->sampler_type[stage] = _xgpu_sampler_none;
+		key->alpha_kill[stage] = D3D__TextureState[stage][D3DTSS_ALPHAKILL] == D3DTALPHAKILL_ENABLE;
+		key->color_sign[stage] = (unsigned char)((D3D__TextureState[stage][D3DTSS_COLORSIGN] >> 28) & 0xf);
+	}
+	key->alpha_test_function = D3D__RenderState[D3DRS_ALPHATESTENABLE] ? D3D__RenderState[D3DRS_ALPHAFUNC] : 0;
+	key->fog_enable = D3D__RenderState[D3DRS_FOGENABLE] != 0;
+	key->fog_table_mode = (unsigned char)D3D__RenderState[D3DRS_FOGTABLEMODE];
+	return TRUE;
+}
+
+/* d3d8_gl.c's prepare_draw: everything a draw needs but its vertices, written
+to the stream. FALSE if there is nothing to draw into, or a shader the draw
+needs is not ready (skipped, as decided: DEKO3D.md, "Decisions"). */
+static BOOL draw_prepare(BOOL immediate)
+{
+	struct vertex_shader_object *program = current_program();
+	struct dk_vertex_key vertex_key;
+	struct nv2a_pixel_shader_key pixel_key;
+	float texture_scale[4][4];
+	uint32_t vertex_shader, pixel_shader;
+	BOOL has_depth = FALSE;
+
+	if (!program || !device.vertex_shader || !program->instructions)
+	{
+		stats.skipped_no_program++;
+		return FALSE;
+	}
+	if (!targets_bind(&has_depth))
+	{
+		stats.skipped_no_target++;
+		return FALSE;
+	}
+	if (!pixel_key_make(&pixel_key, texture_scale))
+	{
+		stats.skipped_texture++;
+		return FALSE;
+	}
+	memset(&vertex_key, 0, sizeof(vertex_key));
+	vertex_key.program_hash = program->program_hash;
+	vertex_key.packed_mask = immediate ? 0 : (uint32_t)device.vertex_shader->packed_mask;
+	/* (both are asked for, so that both are queued if neither is ready) */
+	vertex_shader = dk_shader_for_draw(DK_SHADER_STAGE_VERTEX, &vertex_key);
+	pixel_shader = dk_shader_for_draw(DK_SHADER_STAGE_PIXEL, &pixel_key);
+	if (!vertex_shader || !pixel_shader)
+	{
+		stats.skipped_shader++;
+		return FALSE;
+	}
+	if (immediate)
+		stats.immediate_draws++;
+	else
+		stats.draws++;
+	draw_state_send(has_depth);
+	draw_shaders_send(vertex_shader, pixel_shader);
+	draw_constants_send();
+	draw_parameters_send(texture_scale);
+	return TRUE;
+}
+
+static uint32_t attribute_format(const struct vertex_element *element)
+{
+	switch (element->type)
+	{
+	case D3DVSDT_FLOAT1: return DK_ATTRIBUTE_FLOAT1;
+	case D3DVSDT_FLOAT2: return DK_ATTRIBUTE_FLOAT2;
+	case D3DVSDT_FLOAT3:
+	case D3DVSDT_FLOAT2H: return DK_ATTRIBUTE_FLOAT3;
+	case D3DVSDT_FLOAT4: return DK_ATTRIBUTE_FLOAT4;
+	case D3DVSDT_D3DCOLOR: return DK_ATTRIBUTE_COLOR;
+	case D3DVSDT_SHORT1: return DK_ATTRIBUTE_SHORT1;
+	case D3DVSDT_SHORT2: return DK_ATTRIBUTE_SHORT2;
+	case D3DVSDT_SHORT3: return DK_ATTRIBUTE_SHORT3;
+	case D3DVSDT_SHORT4: return DK_ATTRIBUTE_SHORT4;
+	case D3DVSDT_NORMSHORT1: return DK_ATTRIBUTE_NORMSHORT1;
+	case D3DVSDT_NORMSHORT2: return DK_ATTRIBUTE_NORMSHORT2;
+	case D3DVSDT_NORMSHORT3: return DK_ATTRIBUTE_NORMSHORT3;
+	case D3DVSDT_NORMSHORT4: return DK_ATTRIBUTE_NORMSHORT4;
+	case D3DVSDT_PBYTE1: return DK_ATTRIBUTE_BYTE1;
+	case D3DVSDT_PBYTE2: return DK_ATTRIBUTE_BYTE2;
+	case D3DVSDT_PBYTE3: return DK_ATTRIBUTE_BYTE3;
+	case D3DVSDT_PBYTE4: return DK_ATTRIBUTE_BYTE4;
+	case D3DVSDT_NORMPACKED3: return DK_ATTRIBUTE_PACKED;
+	default: return DK_ATTRIBUTE_FLOAT4;
+	}
+}
+
+/* the declaration's registers and the streams' strides, with the unfed
+registers at the values SetVertexData last gave them (setup_streams in
+d3d8_gl.c); only those values are kept, so that a change to a register the
+declaration feeds does not make a new format */
+static void format_from_declaration(struct dk_vertex_format *format)
+{
+	struct vertex_shader_object *declaration = device.vertex_shader;
+	unsigned long index;
+
+	memset(format, 0, sizeof(*format));
+	for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
+	{
+		if (declaration->packed_mask & (1UL << index))
+		{
+			format->attributes[index].format = DK_ATTRIBUTE_UNFED_PACKED;
+		}
+		else
+		{
+			format->attributes[index].format = DK_ATTRIBUTE_UNFED;
+			memcpy(format->constants[index], device.attributes[index], sizeof(format->constants[index]));
+		}
+	}
+	for (index = 0; index < declaration->element_count; index++)
+	{
+		const struct vertex_element *element = &declaration->elements[index];
+
+		if (!device.streams[element->stream].data || element->type == D3DVSDT_NONE)
+			continue;
+		memset(format->constants[element->reg], 0, sizeof(format->constants[element->reg]));
+		format->attributes[element->reg].format = attribute_format(element);
+		format->attributes[element->reg].stream = element->stream;
+		format->attributes[element->reg].offset = element->offset;
+		format->strides[element->stream] = device.streams[element->stream].stride;
+		format->stream_mask |= 1UL << element->stream;
+	}
+}
+
+static uint32_t primitive_of(D3DPRIMITIVETYPE type)
+{
+	switch (type)
+	{
+	case D3DPT_POINTLIST: return DK_PRIMITIVE_POINTS;
+	case D3DPT_LINELIST: return DK_PRIMITIVE_LINES;
+	case D3DPT_LINELOOP: return DK_PRIMITIVE_LINE_LOOP;
+	case D3DPT_LINESTRIP: return DK_PRIMITIVE_LINE_STRIP;
+	case D3DPT_TRIANGLESTRIP:
+	case D3DPT_QUADSTRIP: return DK_PRIMITIVE_TRIANGLE_STRIP;
+	case D3DPT_TRIANGLEFAN:
+	case D3DPT_POLYGON: return DK_PRIMITIVE_TRIANGLE_FAN;
+	case D3DPT_QUADLIST: return DK_PRIMITIVE_QUADS;
+	default: return DK_PRIMITIVE_TRIANGLES;
+	}
+}
+
+/* what the draws of a stream read: the vertices [first, first + count), and
+the bytes a stride-0 stream (one value for every vertex) is given */
+#define STRIDELESS_STREAM_BYTES 64
+
+/* writes the draw of vertices [first, first + count) of the streams the
+format reads (a lowest vertex of first, so a stream's data starts there);
+indices, if not NULL, is the guest address of the draw's indices */
+static void draw_write(D3DPRIMITIVETYPE type, unsigned long count, unsigned long first, unsigned long vertex_count,
+	const WORD *indices, long vertex_offset)
+{
+	struct dk_command_draw *command;
+	unsigned long stream, streams = 0, slot = 0;
+
+	for (stream = 0; stream < DK_STREAM_COUNT; stream++)
+		streams += (format_told.stream_mask >> stream) & 1;
+	command = stream_command(DK_COMMAND_DRAW, sizeof(*command) + streams * 2 * sizeof(uint32_t));
+	command->primitive = primitive_of(type);
+	command->count = (uint32_t)count;
+	command->index_address = (uint32_t)(uintptr_t)indices;
+	command->vertex_offset = (int32_t)vertex_offset;
+	command->inline_bytes = 0;
+	command->stream_count = (uint32_t)streams;
+	for (stream = 0; stream < DK_STREAM_COUNT; stream++)
+	{
+		unsigned long stride = device.streams[stream].stride;
+
+		if (!((format_told.stream_mask >> stream) & 1))
+			continue;
+		command->streams[slot][0] = (uint32_t)(uintptr_t)PLATFORM_PHYSICAL_TO_VIRTUAL(device.streams[stream].data) +
+			(uint32_t)(first * stride);
+		command->streams[slot][1] = (uint32_t)(stride ? stride * vertex_count : STRIDELESS_STREAM_BYTES);
+		slot++;
+	}
+	/* (after the command: writing it may have handed the stream over, and the
+	draw is in the submission it is written to) */
+	draw_resources_used(indices != NULL, TRUE);
+}
+
 void WINAPI D3DDevice_DrawVertices(D3DPRIMITIVETYPE primitive_type, UINT start_vertex, UINT vertex_count)
 {
-	(void)primitive_type;
-	(void)start_vertex;
-	(void)vertex_count;
+	struct dk_vertex_format format;
+
+	if (primitive_type == D3DPT_QUADLIST)
+		vertex_count &= ~3U;
+	if (!vertex_count || !draw_prepare(FALSE))
+		return;
+	format_from_declaration(&format);
+	draw_format_send(&format);
+	draw_write(primitive_type, vertex_count, start_vertex, vertex_count, NULL, 0);
 }
 
 void WINAPI D3DDevice_DrawIndexedVertices(D3DPRIMITIVETYPE primitive_type, UINT vertex_count, CONST WORD *index_data)
 {
-	(void)primitive_type;
-	(void)vertex_count;
-	(void)index_data;
+	struct dk_vertex_format format;
+	unsigned long index, minimum = 0xffff, maximum = 0;
+
+	if (primitive_type == D3DPT_QUADLIST)
+		vertex_count &= ~3U;
+	if (!vertex_count || !index_data || !draw_prepare(FALSE))
+		return;
+	/* the streams are read from the lowest vertex the indices name, to the
+	highest (index i is vertex base + i) */
+	for (index = 0; index < vertex_count; index++)
+	{
+		if (index_data[index] < minimum)
+			minimum = index_data[index];
+		if (index_data[index] > maximum)
+			maximum = index_data[index];
+	}
+	format_from_declaration(&format);
+	draw_format_send(&format);
+	draw_write(primitive_type, vertex_count, device.base_vertex_index + minimum, maximum - minimum + 1, index_data,
+		-(long)minimum);
 }
 
 /* ---------- immediate mode */
@@ -1472,8 +2016,50 @@ static void immediate_emit(void)
 }
 void WINAPI D3DDevice_End(void)
 {
+	/* every register's four floats, a vertex at a time, as immediate_emit
+	keeps them */
+	unsigned long stride = XGPU_VERTEX_ATTRIBUTE_COUNT * 4 * sizeof(float);
+	unsigned long count = device.immediate_count, index;
+	D3DPRIMITIVETYPE type = device.immediate_type;
+	struct dk_vertex_format format;
+	struct dk_command_draw *command;
+
 	device.immediate_active = FALSE;
 	device.immediate_count = 0;
+	if (type == D3DPT_QUADLIST)
+		count &= ~3UL;
+	if (!count)
+		return;
+	/* the vertices go in the stream with the draw: the next Begin reuses
+	the buffer they are in before the stream is handed over */
+	if (count * stride + 4096 > STREAM_SIZE)
+	{
+		stats.skipped_size++;
+		return;
+	}
+	if (!draw_prepare(TRUE))
+		return;
+	memset(&format, 0, sizeof(format));
+	for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
+	{
+		format.attributes[index].format = DK_ATTRIBUTE_FLOAT4;
+		format.attributes[index].stream = 0;
+		format.attributes[index].offset = (uint32_t)(index * 4 * sizeof(float));
+	}
+	format.strides[0] = (uint32_t)stride;
+	format.stream_mask = 1;
+	draw_format_send(&format);
+	command = stream_command(DK_COMMAND_DRAW, sizeof(*command) + 2 * sizeof(uint32_t) + count * stride);
+	command->primitive = primitive_of(type);
+	command->count = (uint32_t)count;
+	command->index_address = 0;
+	command->vertex_offset = 0;
+	command->inline_bytes = (uint32_t)(count * stride);
+	command->stream_count = 1;
+	command->streams[0][0] = 0;
+	command->streams[0][1] = (uint32_t)(count * stride);
+	memcpy(&command->streams[1], device.immediate_vertices, count * stride);
+	draw_resources_used(FALSE, FALSE);
 }
 
 static void set_attribute(INT reg, float a, float b, float c, float d)
@@ -1542,7 +2128,7 @@ void WINAPI D3DDevice_Clear(DWORD count, CONST D3DRECT *rectangles, DWORD flags,
 		clear_flags |= DK_CLEAR_DEPTH;
 	if (flags & D3DCLEAR_STENCIL)
 		clear_flags |= DK_CLEAR_STENCIL;
-	if (!clear_flags || !targets_bind())
+	if (!clear_flags || !targets_bind(NULL))
 		return;
 	command = stream_command(DK_COMMAND_CLEAR, sizeof(*command) + (count && rectangles ? count : 1) * 4 * sizeof(uint32_t));
 	/* (after the command: writing it may have handed the stream over, and the
@@ -1585,6 +2171,59 @@ void WINAPI D3DDevice_Clear(DWORD count, CONST D3DRECT *rectangles, DWORD flags,
 
 /* ---------- presentation */
 
+/* debug.screenshot_every: every that many frames the host reads the back
+buffer back into a buffer the guest gives (dk_command_present), and the
+frame is written as a BMP in debug.screenshot_directory, as d3d8_gl.c does */
+static long screenshot_every = -1;
+static int statistics_enabled = -1;
+static unsigned char *screenshot_pixels;
+static uint32_t screenshot_width, screenshot_height;
+
+static void screenshot_write(void)
+{
+	const char *directory = config_string("debug.screenshot_directory");
+	unsigned long width = screenshot_width, height = screenshot_height;
+	unsigned long image_size = width * height * 4, pixel;
+	unsigned char header[54] = { 'B', 'M' };
+	char path[512];
+	FILE *file;
+
+	/* the host's RGBA, as BGRA; the display ignores destination alpha, which
+	the game uses as scratch, and image viewers would show it as transparency */
+	for (pixel = 0; pixel < width * height; pixel++)
+	{
+		unsigned char red = screenshot_pixels[pixel * 4];
+
+		screenshot_pixels[pixel * 4] = screenshot_pixels[pixel * 4 + 2];
+		screenshot_pixels[pixel * 4 + 2] = red;
+		screenshot_pixels[pixel * 4 + 3] = 0xff;
+	}
+	snprintf(path, sizeof(path), "%s/frame%05lu.bmp", directory, device.frame);
+	file = fopen(path, "wb");
+	if (!file)
+		return;
+	*(unsigned int *)(header + 2) = (unsigned int)(54 + image_size);
+	*(unsigned int *)(header + 10) = 54;
+	*(unsigned int *)(header + 14) = 40;
+	*(int *)(header + 18) = (int)width;
+	*(int *)(header + 22) = -(int)height; /* rows from the top, as read */
+	*(unsigned short *)(header + 26) = 1;
+	*(unsigned short *)(header + 28) = 32;
+	*(unsigned int *)(header + 34) = (unsigned int)image_size;
+	fwrite(header, 1, sizeof(header), file);
+	fwrite(screenshot_pixels, 1, image_size, file);
+	fclose(file);
+}
+
+/* debug.gpu_stats: what the draws of the last second came to */
+static void draw_statistics_log(void)
+{
+	platform_log("frame %lu: %lu draws, %lu immediate; skipped %lu no program, %lu no target, %lu shader not ready, "
+		"%lu textured, %lu too big", device.frame, stats.draws, stats.immediate_draws, stats.skipped_no_program,
+		stats.skipped_no_target, stats.skipped_shader, stats.skipped_texture, stats.skipped_size);
+	memset(&stats, 0, sizeof(stats));
+}
+
 void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destination_rectangle,
 	void *unused, void *unused2)
 {
@@ -1604,12 +2243,33 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 	}
 	/* the startup pass, a few keys a frame (dk_shaders.c) */
 	dk_shader_frame();
+	if (screenshot_every < 0)
+		screenshot_every = config_integer("debug.screenshot_every");
+	if (statistics_enabled < 0)
+		statistics_enabled = config_boolean("debug.gpu_stats");
+	if (statistics_enabled > 0 && device.frame % 60 == 0)
+		draw_statistics_log();
 	{
 		struct dk_command_present *command = stream_command(DK_COMMAND_PRESENT, sizeof(*command));
 
 		surface_describe(&device.back_buffer, FALSE, &command->back_buffer);
+		command->screenshot = 0;
+		if (screenshot_every > 0 && device.frame % (unsigned long)screenshot_every == 0 && command->back_buffer.width &&
+			*config_string("debug.screenshot_directory"))
+		{
+			screenshot_width = command->back_buffer.width;
+			screenshot_height = command->back_buffer.height;
+			screenshot_pixels = malloc((unsigned long)screenshot_width * screenshot_height * 4);
+			command->screenshot = (uint32_t)(uintptr_t)screenshot_pixels;
+		}
 	}
 	stream_flush();
+	if (screenshot_pixels)
+	{
+		screenshot_write();
+		free(screenshot_pixels);
+		screenshot_pixels = NULL;
+	}
 	/* the host starts the next frame with nothing bound */
 	targets_known = FALSE;
 	/* the stand-in window's swap: holds the frame to the display's rate
