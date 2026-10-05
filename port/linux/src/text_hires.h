@@ -57,7 +57,7 @@ unsigned int text_hires_atlas_texture(unsigned long data);
 /* d3d8_gl.c: the display's pixels for each of the 480 lines */
 float halo_screen_pixel_scale(void);
 
-#ifdef HALO_SWITCH
+#if defined(HALO_SWITCH) || defined(HALO_ANDROID)
 /* the deko3d renderer's text_hires_atlas_texture: the atlas's coverage (*size
 texels square, a byte each) if data is its placeholder bitmap's, else NULL,
 and the rows written since the last call, [*top, *bottom) (empty if *top >=
