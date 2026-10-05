@@ -46,6 +46,8 @@ struct host_vk
 	char (*extensions)[VK_MAX_EXTENSION_NAME_SIZE];
 	uint32_t extension_count;
 	int validation;
+	/* VkPhysicalDeviceDriverProperties.driverID, 0 if the driver does not say (names the pipeline cache's file) */
+	uint32_t driver_id;
 	VkDebugUtilsMessengerEXT messenger;
 	/* the log line of the decision: which driver and device, for the device-lost report */
 	char line[600];
@@ -78,7 +80,9 @@ as a Vulkan function */
 	X(vkCreateGraphicsPipelines) X(vkDestroyPipeline) X(vkCreatePipelineLayout) X(vkDestroyPipelineLayout) \
 	X(vkCreateSwapchainKHR) X(vkDestroySwapchainKHR) X(vkGetSwapchainImagesKHR) X(vkAcquireNextImageKHR) \
 	X(vkCreateBuffer) X(vkDestroyBuffer) X(vkGetBufferMemoryRequirements) X(vkBindBufferMemory) X(vkMapMemory) \
-	X(vkUnmapMemory) X(vkCmdCopyImageToBuffer) X(vkCmdBindVertexBuffers)
+	X(vkUnmapMemory) X(vkCmdCopyImageToBuffer) X(vkCmdBindVertexBuffers) \
+	X(vkCreateDescriptorSetLayout) X(vkDestroyDescriptorSetLayout) X(vkCreatePipelineCache) X(vkDestroyPipelineCache) \
+	X(vkGetPipelineCacheData)
 
 #define X(name) extern PFN_##name name __attribute__((visibility("hidden")));
 HOST_VK_DEVICE_FUNCTIONS(X)
@@ -159,6 +163,12 @@ struct host_vk_backend
 	unsigned lost_attempts;
 	unsigned presented_since_lost;
 
+	/* what every draw's pipeline is made with (host_vk_shaders.c): set 0 as vk_shaders.h's bindings say, and the one
+	cache every pipeline is made in, saved per driver */
+	VkDescriptorSetLayout draw_set_layout;
+	VkPipelineLayout draw_layout;
+	VkPipelineCache pipeline_cache;
+
 	/* the built-in pipeline of clears of some channels only */
 	VkPipelineLayout clear_layout;
 	VkShaderModule clear_vertex, clear_fragment;
@@ -170,6 +180,7 @@ struct host_vk_backend
 		unsigned frames, hand_overs, targets, clears, presents, clears_drawn, clears_attachments, target_changes;
 		unsigned recreations;
 		unsigned data_records, data_bytes;
+		unsigned draws_ready, draws_skipped_shader, draws_skipped_pipeline;
 	} counts;
 };
 
@@ -204,6 +215,27 @@ void host_vk_data_frame_end(void);
 unsigned host_vk_data_buffers(void);
 /* a buffer of host-visible, coherent memory, mapped; 0 (said) if it cannot be made */
 int host_vk_buffer_make(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer *buffer, VkDeviceMemory *memory, void **mapped);
+
+/* glslang (host_vk_shaders.c), one at a time: GLSL (a vertex or a fragment shader) to SPIR-V for Vulkan 1.0, in memory
+malloc'd for the caller; 0 with glslang's message otherwise. Loaded on first use from libhalo_glslang.so */
+int host_vk_glslang_compile(const char *source, int fragment, uint32_t **words, size_t *count, char *message,
+	size_t message_size);
+
+/* the shader and pipeline services (host_vk_shaders.c). Started at the device's creation, with the draw layout
+and the pipeline cache made by the caller */
+void host_vk_services_start(void);
+/* the pipeline a draw asks for (VK_COMMAND_PIPELINE); B.lock is held */
+void host_vk_pipeline_command(const struct vk_command_pipeline *command);
+/* the statistics line's part, and the services' tick (a frame): the cache is saved every five minutes if pipelines
+were made since */
+void host_vk_services_statistics(char *text, size_t size);
+void host_vk_services_tick(void);
+/* the pipeline cache is written to the device (why says what asked: the log's line) */
+void host_vk_pipeline_cache_save(const char *why);
+/* host_vk_render.c: the device made if it is not yet, B.lock held */
+void host_vk_device_ensure_locked(void);
+/* the backend's device is made, if it can be: the services' imports need it. 1 if it is ready */
+int host_vk_backend_ensure(void);
 
 /* host_vk_present.c */
 /* the surface and swapchain for the window as it is now; 0 if there is no window to make one on */

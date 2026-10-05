@@ -635,7 +635,7 @@ def generate_android_build(n: Writer, sln: Any) -> None:
     # ---------- glslang, for the Vulkan probe: loaded with dlopen, never linked
 
     glslang_build = BUILD / "glslang-build"
-    libglslang = glslang_build / "libglslang_probe.so"
+    libglslang = glslang_build / "libhalo_glslang.so"
     n.rule(
         name="android_glslang",
         command=(f"cmake -S {PROBE_DIR}/glslang -B {glslang_build} -G Ninja "
@@ -643,7 +643,7 @@ def generate_android_build(n: Writer, sln: Any) -> None:
                  f"-DCMAKE_TOOLCHAIN_FILE={ndk}/build/cmake/android.toolchain.cmake "
                  f"-DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-{ANDROID_API} -DCMAKE_BUILD_TYPE=Release "
                  f"-DANDROID_STL=c++_static "
-                 f"> {BUILD}/glslang-configure.log && ninja -C {glslang_build} glslang_probe "
+                 f"> {BUILD}/glslang-configure.log && ninja -C {glslang_build} halo_glslang "
                  f"> {BUILD}/glslang-build.log"),
         description="ANDROID GLSLANG",
         pool="console",
@@ -688,6 +688,8 @@ def generate_android_build(n: Writer, sln: Any) -> None:
         "-O2", "-g", "-fPIC", "-Wall", "-Wno-unused-function", "-D_GNU_SOURCE",
         f"-I{PORT_DIR}/include", f"-I{PORT_DIR}/host", f"-I{SDL_DIR}/include", f"-I{LINUX_DIR}/src",
         f"-I{TOML_DIR}", f"-I{GLSLANG_DIR}", f"-I{BUILD / 'host'}",
+        # the folder of the SPIR-V cache is named for the compiler (host_vk_shaders.c)
+        f"-DHOST_VK_GLSLANG_TAG='\"{GLSLANG_TAG}\"'",
     ])
     # the probe's report names the build it is from (host_vk_probe.c includes probe_build.h): written at every
     # build, not at configure time, and restat so that an unchanged name recompiles nothing
@@ -754,7 +756,10 @@ def generate_android_build(n: Writer, sln: Any) -> None:
     # the Vulkan probe's shader compiler, its shaders and, only when asked
     # for, the validation layer (a debuggable app's loader finds a layer in
     # the app's own native library folder)
-    staged_glslang = jni_dir / "libglslang_probe.so"
+    staged_glslang = jni_dir / "libhalo_glslang.so"
+    # (it was libglslang_probe.so until phase 5: an old copy would ride along in the APK)
+    if (jni_dir / "libglslang_probe.so").exists():
+        (jni_dir / "libglslang_probe.so").unlink()
     n.build(outputs=staged_glslang, rule="android_copy", inputs=libglslang)
     probe_staged = [staged_glslang]
     for built in adrenotools_built:

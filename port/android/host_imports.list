@@ -60,3 +60,5 @@ host_errno
 # the Vulkan renderer (port/android/guest/d3d8_vk.c, port/android/host/host_vk*.c)
 host_vk_submit
 host_vk_retired
+host_vk_shader_find
+host_vk_shader_compile
