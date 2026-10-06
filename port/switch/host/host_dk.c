@@ -1408,6 +1408,47 @@ static uint32_t level_bytes(const struct dk_command_texture *command, uint32_t l
 	return ((width + 3) / 4) * ((height + 3) / 4) * (command->format == DK_TEXTURE_BC1 ? 8 : 16) * depth;
 }
 
+/* The tile height of a 2D (or cube) image whose level 0 is height rows of
+blocks (4 texels each for the compressed formats).
+
+deko3d chooses one from the height times 1.5 (dkImageLayoutInitialize's
+pickTileSize), and its level offsets (calcLevelOffset) shrink it again for
+level 0 where the level is shorter than the tile (adjustTileSize), but its
+copies into level 0 and the image's descriptor use it unshrunk. For an image
+6 to 8 rows of blocks tall - 21 to 32 texels in DXT - level 0 then fills
+twice the room its offsets leave it: level 1's copy landed on the second half
+of level 0's first row, and the GPU sampled the levels from where they were
+not (the pause menu's panels and its selection frame; DXT textures decoded
+to BGRA, 6 to 8 texels tall instead, drew right). Given already shrunk,
+every one of them agrees. */
+static uint32_t tile_height(uint32_t height)
+{
+	uint32_t gobs = (height + height / 2 + 7) / 8;
+	uint32_t shift = gobs >= 16 ? 4 : gobs >= 8 ? 3 : gobs >= 4 ? 2 : gobs >= 2 ? 1 : 0;
+
+	/* (deko3d's adjustTileSize, for the unit of a GOB's 8 rows) */
+	if (shift && (8u << (shift - 1)) >= height)
+	{
+		uint32_t rows = 8u << (shift - 1);
+
+		while (--shift)
+		{
+			rows >>= 1;
+			if (rows < height)
+				break;
+		}
+	}
+	return shift;
+}
+
+/* the maker's tile height set from tile_height, for a 2D or cube image of
+height texels in blocks of block rows */
+static void tile_height_set(DkImageLayoutMaker *maker, uint32_t height, uint32_t block)
+{
+	maker->flags |= DkImageFlags_CustomTileSize;
+	maker->tileSize = (DkTileSize)tile_height((height + block - 1) / block);
+}
+
 /* makes the image for a texture command, in the table's entry */
 static int texture_make(struct texture *texture, const struct dk_command_texture *command)
 {
@@ -1431,6 +1472,8 @@ static int texture_make(struct texture *texture, const struct dk_command_texture
 	maker.dimensions[1] = command->height;
 	maker.dimensions[2] = command->kind == DK_TEXTURE_CUBE ? 6 : command->kind == DK_TEXTURE_3D ? command->depth : 0;
 	maker.mipLevels = command->levels;
+	if (command->kind != DK_TEXTURE_3D)
+		tile_height_set(&maker, command->height, command->format == DK_TEXTURE_BGRA ? 1 : 4);
 	dkImageLayoutInitialize(&layout, &maker);
 	size = (uint32_t)dkImageLayoutGetSize(&layout);
 	alignment = dkImageLayoutGetAlignment(&layout);
@@ -1477,6 +1520,104 @@ static void textures_fence(int before_writes)
 	dkCmdBufBarrier(dk.commands, DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_Descriptors);
 	tex.written_unfenced = 0;
 	tex.draws_unfenced = 0;
+}
+
+/* debug.texture_verify_compressed: reads a compressed texture's levels back
+out of its image, waiting for the GPU, and says where they differ from the
+game's bytes; whether the copy into the image is right, or the fault is in
+how the image is sampled */
+static void texture_verify(struct texture *texture, const struct dk_command_texture *command)
+{
+	static DkMemBlock readback;
+	static void *readback_cpu;
+	static DkGpuAddr readback_gpu;
+	static unsigned long verified, mismatched;
+	uint32_t faces = command->kind == DK_TEXTURE_CUBE ? 6 : 1;
+	uint32_t face, level;
+
+	if (!readback)
+	{
+		readback = memory_block(STAGING_SLICE_SIZE, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached, NULL);
+		if (!readback)
+			return;
+		readback_cpu = dkMemBlockGetCpuAddr(readback);
+		readback_gpu = dkMemBlockGetGpuAddr(readback);
+	}
+	if (command->source_bytes > STAGING_SLICE_SIZE)
+		return;
+	dkCmdBufBarrier(dk.commands, DkBarrier_Full, 0);
+	{
+		uint32_t at = 0;
+
+		for (face = 0; face < faces; face++)
+		{
+			for (level = 0; level < command->levels; level++)
+			{
+				DkImageView view;
+				DkImageRect rectangle;
+				DkCopyBuf copy;
+
+				dkImageViewDefaults(&view, &texture->image);
+				view.mipLevelOffset = (uint8_t)level;
+				view.mipLevelCount = 1;
+				if (command->kind == DK_TEXTURE_CUBE)
+				{
+					view.layerOffset = (uint16_t)face;
+					view.layerCount = 1;
+				}
+				rectangle.x = rectangle.y = rectangle.z = 0;
+				rectangle.width = level_size(command->width, level);
+				rectangle.height = level_size(command->height, level);
+				rectangle.depth = command->kind == DK_TEXTURE_3D ? level_size(command->depth, level) : 1;
+				copy.addr = readback_gpu + at;
+				copy.rowLength = 0;
+				copy.imageHeight = 0;
+				dkCmdBufCopyImageToBuffer(dk.commands, &view, &rectangle, &copy, 0);
+				at += level_bytes(command, level);
+			}
+		}
+	}
+	commands_submit_partial();
+	dkQueueWaitIdle(dk.queue);
+	{
+		const uint8_t *game = (const uint8_t *)(uintptr_t)command->source;
+		const uint8_t *image = (const uint8_t *)readback_cpu;
+		uint32_t at = 0;
+		int bad = 0;
+
+		for (face = 0; face < faces && !bad; face++)
+		{
+			uint32_t offset = face * command->face_bytes;
+
+			for (level = 0; level < command->levels && !bad; level++)
+			{
+				uint32_t bytes = level_bytes(command, level), index;
+
+				for (index = 0; index < bytes; index++)
+				{
+					if (game[offset + index] != image[at + index])
+					{
+						bad = 1;
+						if (mismatched < 64)
+							host_logf(HOST_LOG_WARN, "texture verify: image %u (BC%u %ux%ux%u, %u levels, kind %u) "
+								"differs at face %u level %u (%ux%u, %u bytes), byte %u: %02x in the image, %02x in the "
+								"game's", (unsigned)command->id, (unsigned)command->format, (unsigned)command->width,
+								(unsigned)command->height, (unsigned)command->depth, (unsigned)command->levels,
+								(unsigned)command->kind, (unsigned)face, (unsigned)level,
+								(unsigned)level_size(command->width, level), (unsigned)level_size(command->height, level),
+								(unsigned)bytes, (unsigned)index, image[at + index], game[offset + index]);
+						break;
+					}
+				}
+				offset += bytes;
+				at += bytes;
+			}
+		}
+		verified++;
+		mismatched += bad;
+		if (verified % 100 == 0)
+			host_logf(HOST_LOG_INFO, "texture verify: %lu compressed textures checked, %lu differ", verified, mismatched);
+	}
 }
 
 /* copies the command's texels into the image: every face, every level */
@@ -1548,6 +1689,8 @@ static void texture_write(struct texture *texture, const struct dk_command_textu
 	}
 	tex.written_unfenced = 1;
 	dk.recorded = 1;
+	if (host_dk_verify_compressed && !host_texels && command->format != DK_TEXTURE_BGRA)
+		texture_verify(texture, command);
 }
 
 static int texture_command_valid(const struct dk_command_texture *command)
@@ -1570,6 +1713,12 @@ static int texture_command_valid(const struct dk_command_texture *command)
 		levels_possible++;
 	return command->levels <= levels_possible;
 }
+
+
+/* debug.texture_verify_compressed: each compressed texture's levels copied
+back out of its image after it is written, and compared with the game's
+bytes (texture_verify) */
+int host_dk_verify_compressed;
 
 static void texture_receive(const struct dk_command_texture *command)
 {
@@ -1866,6 +2015,7 @@ static void composite_receive(const struct dk_command_composite *command)
 	maker.dimensions[0] = command->width;
 	maker.dimensions[1] = command->height;
 	maker.mipLevels = command->levels;
+	tile_height_set(&maker, command->height, 1);
 	dkImageLayoutInitialize(&layout, &maker);
 	if (!image_memory(&layout, &block, &offset))
 	{

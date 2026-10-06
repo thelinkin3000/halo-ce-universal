@@ -712,6 +712,23 @@ static unsigned config_profile_hz(const char *path)
 	return hz;
 }
 
+/* a boolean of config.toml's, or 0 */
+static int config_flag(const char *path, const char *name)
+{
+	toml_result_t result = toml_parse_file_ex(path);
+	int value = 0;
+
+	if (!result.ok)
+		return 0;
+	{
+		toml_datum_t datum = toml_seek(result.toptab, name);
+
+		value = datum.type == TOML_BOOLEAN && datum.u.boolean;
+	}
+	toml_free(result);
+	return value;
+}
+
 /* debug.sample_seconds from config.toml, as text for the sampler, or 0 */
 static int config_sample_seconds(const char *path, char *text, size_t size)
 {
@@ -964,6 +981,10 @@ static void *game_main(void *unused)
 		if (config_sample_seconds(path, seconds, sizeof(seconds)))
 			host_debug_start_sampler(seconds);
 		host_debug_start_profiler(config_profile_hz(path), "halo_guest.elf");
+		host_dk_verify_compressed = config_flag(path, "debug.texture_verify_compressed");
+		if (host_dk_verify_compressed)
+			host_logf(HOST_LOG_WARN, "deko3d: compressed textures are read back and checked "
+				"(debug.texture_verify_compressed)");
 	}
 	log_marker("marker: building the guest's boot structure");
 	boot = make_boot(&environment);
