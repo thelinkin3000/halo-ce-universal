@@ -483,6 +483,8 @@ static void surface_describe(const D3DSurface *surface, BOOL depth_only, struct 
 	scale_out[1] = scale[1];
 }
 
+static void rendered_note(const D3DSurface *surface);
+
 /* the targets the host has bound, as last told it; cleared when a frame starts there anew */
 static struct vk_command_targets targets_told;
 static BOOL targets_known;
@@ -519,15 +521,65 @@ static BOOL targets_bind(BOOL *has_depth)
 		command->depth = targets.depth;
 		targets_told = targets;
 		targets_known = TRUE;
+		if (targets.color.kind != VK_SURFACE_NONE)
+			rendered_note(device.render_target);
 	}
 	*has_depth = targets.depth.kind != VK_SURFACE_NONE;
 	return TRUE;
 }
 
-struct xgpu_render_target *xgpu_render_target_find(unsigned long data)
+/* the colour surfaces the game has bound as targets, by address, and when each was last bound: a texture whose data is one samples
+the target, not the game's memory (where the GPU never writes). As d3d8_gl.c's xgpu_render_target_find: the one bound last. */
+#define RENDERED_MAXIMUM 256
+
+static struct
 {
-	(void)data;
-	return NULL;
+	unsigned long data, width, height, clock;
+} rendered[RENDERED_MAXIMUM];
+static unsigned rendered_count;
+static unsigned long rendered_clock;
+
+static void rendered_note(const D3DSurface *surface)
+{
+	unsigned long width, height, index;
+	BOOL depth;
+
+	if (!surface || !surface->Data)
+		return;
+	surface_dimensions(surface, &width, &height, &depth);
+	if (depth)
+		return;
+	for (index = 0; index < rendered_count; index++)
+	{
+		if (rendered[index].data == surface->Data && rendered[index].width == width && rendered[index].height == height)
+		{
+			rendered[index].clock = ++rendered_clock;
+			return;
+		}
+	}
+	if (rendered_count == RENDERED_MAXIMUM)
+		return;
+	rendered[rendered_count].data = surface->Data;
+	rendered[rendered_count].width = width;
+	rendered[rendered_count].height = height;
+	rendered[rendered_count++].clock = ++rendered_clock;
+}
+
+/* the target last bound at a texture's data, or NULL */
+static const void *rendered_find(unsigned long data, unsigned long *width, unsigned long *height)
+{
+	unsigned long index, best = RENDERED_MAXIMUM;
+
+	for (index = 0; index < rendered_count; index++)
+	{
+		if (rendered[index].data == data && (best == RENDERED_MAXIMUM || rendered[index].clock > rendered[best].clock))
+			best = index;
+	}
+	if (best == RENDERED_MAXIMUM)
+		return NULL;
+	*width = rendered[best].width;
+	*height = rendered[best].height;
+	return &rendered[best];
 }
 
 /* xbox_textures.c, hud_hires.c and text_hires.c call this after their own GL
@@ -2342,6 +2394,41 @@ static void sampler_state_make(int stage, BOOL mipmapped, BOOL hires, struct vk_
 		(float)state[D3DTSS_MAXANISOTROPY] : 1.0f;
 }
 
+/* the mip composite of a texture the game renders a level at a time: sent to the host once for each (data, size, levels) */
+#define COMPOSITES_MAXIMUM 256
+
+static struct
+{
+	unsigned long data, width, height, levels;
+} composites_sent[COMPOSITES_MAXIMUM];
+static unsigned composites_sent_count;
+
+static void composite_send(unsigned long data, const struct xgpu_texture_description *description)
+{
+	struct vk_command_composite *command;
+	unsigned long index;
+
+	for (index = 0; index < composites_sent_count; index++)
+	{
+		if (composites_sent[index].data == data && composites_sent[index].width == description->width &&
+			composites_sent[index].height == description->height && composites_sent[index].levels == description->levels)
+			return;
+	}
+	if (composites_sent_count == COMPOSITES_MAXIMUM || description->levels > VK_COMPOSITE_LEVELS)
+		return;
+	composites_sent[composites_sent_count].data = data;
+	composites_sent[composites_sent_count].width = description->width;
+	composites_sent[composites_sent_count].height = description->height;
+	composites_sent[composites_sent_count++].levels = description->levels;
+	command = stream_command(VK_COMMAND_COMPOSITE, sizeof(*command));
+	command->data = (uint32_t)data;
+	command->width = (uint32_t)description->width;
+	command->height = (uint32_t)description->height;
+	command->levels = (uint32_t)description->levels;
+	for (index = 0; index < description->levels; index++)
+		command->level_data[index] = (uint32_t)(data + xgpu_texture_level_offset(description, index));
+}
+
 /* what each stage samples, and the scale a linear texture's coordinates get */
 static void textures_make(struct vk_command_draw *draw, const struct nv2a_pixel_shader_key *key, float texture_scale[4][4])
 {
@@ -2361,9 +2448,39 @@ static void textures_make(struct vk_command_draw *draw, const struct nv2a_pixel_
 			struct xgpu_texture_description description;
 			const D3DCOLOR *palette = device.palettes[stage] && device.palettes[stage]->Data ?
 				(const D3DCOLOR *)PLATFORM_PHYSICAL_TO_VIRTUAL(device.palettes[stage]->Data) : NULL;
+			unsigned long target_width, target_height;
 			int kind;
-			uint32_t id = vk_texture_get((const DWORD *)texture, palette, &kind, &description);
+			uint32_t id;
 
+			/* a texture whose data is a render target's samples the target (render-to-texture); linear ones have their
+			coordinates scaled by the target's size */
+			if (rendered_find(texture->Data, &target_width, &target_height))
+			{
+				unsigned long levels = 1;
+
+				xgpu_texture_describe(texture->Format, texture->Size, &description);
+				out->kind = VK_TEXTURE_TARGET;
+				out->id = texture->Data;
+				if (description.linear)
+				{
+					texture_scale[stage][0] = 1.0f / (float)target_width;
+					texture_scale[stage][1] = 1.0f / (float)target_height;
+				}
+				/* the water renders a texture a mip level at a time, each a surface of its own: the levels are put together
+				in a composite (mip_composite_get) */
+				if (!description.linear && !description.cube_map && description.levels > 1 &&
+					target_width == description.width && target_height == description.height)
+				{
+					levels = description.levels;
+					composite_send(texture->Data, &description);
+				}
+				out->levels = (uint32_t)levels;
+				out->width = (uint32_t)description.width;
+				out->height = (uint32_t)description.height;
+				sampler_state_make(stage, levels > 1, FALSE, &out->sampler);
+				continue;
+			}
+			id = vk_texture_get((const DWORD *)texture, palette, &kind, &description);
 			if (!id)
 				continue;
 			if (description.linear)

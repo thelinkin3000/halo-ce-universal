@@ -36,6 +36,7 @@ enum
 	VK_COMMAND_TEXTURE,
 	VK_COMMAND_TEXTURE_DATA,
 	VK_COMMAND_TEXTURE_FREE,
+	VK_COMMAND_COMPOSITE,
 };
 
 /* a surface's kind, as the host makes its image */
@@ -201,6 +202,9 @@ struct vk_draw_texture
 	/* the pixel shader's sampler: 1 2D, 2 3D, 3 cube (the dummy has this type when kind is NONE) */
 	uint32_t sampler_type;
 	struct vk_sampler_state sampler;
+	/* VK_TEXTURE_TARGET only: more than 1 is a mip composite (VK_COMMAND_COMPOSITE) of this many levels, of this size, whose
+	top level's data is id */
+	uint32_t levels, width, height;
 };
 
 struct vk_command_draw
@@ -247,6 +251,22 @@ struct vk_command_draw
 #define VK_VERTEX_FORMAT_R32G32_SFLOAT 103
 #define VK_VERTEX_FORMAT_R32G32B32_SFLOAT 106
 #define VK_VERTEX_FORMAT_R32G32B32A32_SFLOAT 109
+
+/* ---------- the mip composite (phase 6, step 5)
+
+The water renders a texture one mip level at a time, each level a render target of its own, at an address: a mipmapped image the
+levels are copied into when they have been drawn into since, the levels below the last drawn made by halving. Sent once for each
+(data, width, height, levels) a draw asks for; a draw then names it by them (vk_draw_texture) */
+
+#define VK_COMPOSITE_LEVELS 16
+
+struct vk_command_composite
+{
+	struct vk_command_header header;
+	uint32_t data, width, height, levels;
+	/* the physical address of each level's target */
+	uint32_t level_data[VK_COMPOSITE_LEVELS];
+};
 
 /* ---------- textures (phase 6, step 2)
 
