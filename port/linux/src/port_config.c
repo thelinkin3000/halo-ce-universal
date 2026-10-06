@@ -96,17 +96,19 @@ static const struct config_setting config_settings[] =
 		"Xbox's 4:3." },
 #ifndef HALO_SWITCH
 	/* read by the Android host (port/android/host/host_vk_driver.c) */
-	{ "display.vk_driver", _config_string, "\"\"", "HALO_VK_DRIVER", _environment_value, _platform_android,
-		"The Vulkan driver the Vulkan renderer runs on: empty for the phone's own,\n"
-		"or the name of a driver archive (an adrenotools zip) left in the game's\n"
-		"folder, for example a Turnip build for Adreno GPUs. One that does not load\n"
-		"is logged and the phone's own is used." },
+	{ "display.vk_driver", _config_string, "\"auto\"", "HALO_VK_DRIVER", _environment_value, _platform_android,
+		"The Vulkan driver the Vulkan renderer runs on: \"auto\" for Turnip on an Adreno\n"
+		"(the app downloads the build for its series) and the phone's own on any\n"
+		"other GPU; empty for the phone's own; or the name of a driver archive (an\n"
+		"adrenotools zip) left in the game's folder. One that does not load is logged\n"
+		"and the phone's own is used." },
 	/* read by the Android host before the game starts, to choose the game
 	image built with that renderer (port/android/VULKAN.md) */
-	{ "display.renderer", _config_string, "\"gl\"", "HALO_RENDERER", _environment_value, _platform_android,
-		"How the game draws: \"gl\" (OpenGL ES over the phone's driver) or \"vulkan\"\n"
-		"(in development). Takes effect the next time the game starts. See the\n"
-		"Android README, \"Graphics: OpenGL ES and Vulkan\"." },
+	{ "display.renderer", _config_string, "\"vulkan\"", "HALO_RENDERER", _environment_value, _platform_android,
+		"How the game draws: \"vulkan\" (over display.vk_driver; OpenGL ES if Vulkan\n"
+		"cannot start) or \"gl\" (OpenGL ES over the phone's driver). Takes effect the\n"
+		"next time the game starts. See the Android README, \"Graphics: OpenGL ES and\n"
+		"Vulkan\"." },
 #endif
 #ifdef HALO_SWITCH
 	/* read by the Switch host before the game starts, to choose the game
