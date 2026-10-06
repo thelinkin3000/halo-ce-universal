@@ -165,6 +165,10 @@ swapchain. (The OpenGL-over-Mesa paths it skips are what is left of the
 OpenGL image the Switch no longer builds.) */
 extern int host_renderer_deko3d;
 
+/* debug.texture_verify_compressed: each compressed texture read back out
+of its image and compared with the game's bytes, and the differences logged */
+extern int host_dk_verify_compressed;
+
 /* host_dk.c: runs a frame's commands from the deko3d renderer's guest half
 (port/switch/guest/dk_commands.h); commands is a guest address */
 void host_dk_submit(uint32_t commands, uint32_t size);
