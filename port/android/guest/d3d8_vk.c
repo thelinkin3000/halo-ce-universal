@@ -1633,7 +1633,7 @@ static void dump_vertex_shader(const char *folder, const struct vertex_shader_ob
 	dump_vertex_count++;
 	snprintf(what, sizeof(what), "vertex shader %lu, %lu instructions, packed mask %lx", program->id,
 		program->instruction_count, mask);
-	text = nv2a_vk_vertex_shader_to_glsl(program->instructions, program->instruction_count, mask);
+	text = nv2a_vk_vertex_shader_to_glsl((const uint32_t *)program->instructions, program->instruction_count, mask);
 	snprintf(name, sizeof(name), "vs_%lu_%lx.vert", program->id, mask);
 	dump_text(folder, name, text, what);
 	free(text);
@@ -1756,7 +1756,7 @@ static uint32_t shader_handle(uint32_t stage, uint64_t hash, const struct vertex
 	if (status == VK_SHADER_STATUS_UNKNOWN && entry->sent < 3)
 	{
 		char *glsl = stage == VK_SHADER_STAGE_VERTEX ?
-			nv2a_vk_vertex_shader_to_glsl(program->instructions, program->instruction_count, mask) :
+			nv2a_vk_vertex_shader_to_glsl((const uint32_t *)program->instructions, program->instruction_count, mask) :
 			nv2a_vk_pixel_shader_to_glsl(key);
 
 		if (glsl)
