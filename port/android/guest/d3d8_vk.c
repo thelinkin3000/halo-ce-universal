@@ -2197,12 +2197,12 @@ static void element_decode(unsigned long type, const unsigned char *source, floa
 		out[3] = source[3] / 255.0f;
 		return;
 	case D3DVSDT_SHORT1: case D3DVSDT_SHORT2: case D3DVSDT_SHORT3: case D3DVSDT_SHORT4:
-		count = type - D3DVSDT_SHORT1 + 1;
+		count = type >> 4; /* the type's high nibble is its component count */
 		for (index = 0; index < count; index++)
 			out[index] = (float)s[index];
 		return;
 	case D3DVSDT_NORMSHORT1: case D3DVSDT_NORMSHORT2: case D3DVSDT_NORMSHORT3: case D3DVSDT_NORMSHORT4:
-		count = type - D3DVSDT_NORMSHORT1 + 1;
+		count = type >> 4;
 		for (index = 0; index < count; index++)
 		{
 			float value = s[index] / 32767.0f;
@@ -2211,7 +2211,7 @@ static void element_decode(unsigned long type, const unsigned char *source, floa
 		}
 		return;
 	case D3DVSDT_PBYTE1: case D3DVSDT_PBYTE2: case D3DVSDT_PBYTE3: case D3DVSDT_PBYTE4:
-		count = type - D3DVSDT_PBYTE1 + 1;
+		count = type >> 4;
 		for (index = 0; index < count; index++)
 			out[index] = source[index] / 255.0f;
 		return;
