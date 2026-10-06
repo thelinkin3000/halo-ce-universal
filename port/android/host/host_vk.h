@@ -86,7 +86,7 @@ as a Vulkan function */
 	X(vkCreateDescriptorPool) X(vkDestroyDescriptorPool) X(vkResetDescriptorPool) X(vkAllocateDescriptorSets) \
 	X(vkUpdateDescriptorSets) X(vkCmdBindDescriptorSets) X(vkCmdBindIndexBuffer) X(vkCmdDrawIndexed) X(vkCmdSetDepthBias) \
 	X(vkCmdSetBlendConstants) X(vkCmdSetStencilCompareMask) X(vkCmdSetStencilWriteMask) X(vkCmdSetStencilReference) \
-	X(vkCreateSampler) X(vkDestroySampler) X(vkCmdCopyBufferToImage)
+	X(vkCreateSampler) X(vkDestroySampler) X(vkCmdCopyBufferToImage) X(vkCmdCopyImage)
 
 #define X(name) extern PFN_##name name __attribute__((visibility("hidden")));
 HOST_VK_DEVICE_FUNCTIONS(X)
@@ -108,6 +108,9 @@ struct host_vk_target
 	VkImageView view;
 	VkImageLayout layout;
 	VkImageAspectFlags aspect;
+	/* the number of the latest command that bound it (B.target_clock): which target a texture's address names, and whether a mip
+	composite is out of date */
+	uint64_t bound;
 	struct host_vk_target *next_in_bucket;
 };
 
@@ -163,6 +166,7 @@ struct host_vk_backend
 	struct host_vk_target *buckets[HOST_VK_TARGET_BUCKETS];
 	unsigned images;
 	struct host_vk_target *color, *depth; /* bound now (NULL: none) */
+	uint64_t target_clock;
 	struct host_vk_target *last_color, *last_depth; /* the pair a command last named, for the statistics */
 	int rendering; /* a rendering is open on them */
 	uint32_t area_width, area_height; /* its render area */
@@ -219,6 +223,11 @@ void host_vk_texture_frame_reset(unsigned slot);
 struct host_vk_image *host_vk_image_get(uint32_t id);
 unsigned host_vk_texture_images(void);
 unsigned host_vk_texture_megabytes(void);
+
+/* host_vk_draw.c (phase 6): the mip composites */
+void host_vk_composite_command(const struct vk_command_composite *command);
+/* the colour target bound last at a physical address (NULL if none) */
+struct host_vk_target *host_vk_target_at(uint32_t data);
 
 /* host_vk_draw.c (phase 6): the draws */
 void host_vk_command_draw(const struct vk_command_draw *draw, uint32_t size);

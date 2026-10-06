@@ -274,6 +274,222 @@ static VkDescriptorSet set_allocate(struct host_vk_frame *frame)
 	}
 }
 
+/* ---------- render targets as textures, and the mip composite */
+
+/* the colour target bound last at an address: what a texture whose data is a render target's samples (xgpu_render_target_find in
+d3d8_gl.c: the one last rendered to) */
+struct host_vk_target *host_vk_target_at(uint32_t data)
+{
+	struct host_vk_target *target, *best = NULL;
+	unsigned bucket;
+
+	for (bucket = 0; bucket < HOST_VK_TARGET_BUCKETS; bucket++)
+	{
+		for (target = B.buckets[bucket]; target; target = target->next_in_bucket)
+		{
+			if (target->key.data == data && target->key.kind == VK_SURFACE_COLOR && (!best || target->bound > best->bound))
+				best = target;
+		}
+	}
+	return best;
+}
+
+struct composite
+{
+	uint32_t data, width, height, levels;
+	uint32_t level_data[VK_COMPOSITE_LEVELS];
+	VkImage image;
+	VkDeviceMemory memory;
+	VkImageView view;
+	VkImageLayout layout[VK_COMPOSITE_LEVELS];
+	/* the newest `bound` of the level targets when it was last copied; 0: never */
+	uint64_t stamp;
+	struct composite *next;
+};
+
+static struct composite *composites;
+
+static unsigned dimension(unsigned base, unsigned level)
+{
+	unsigned value = base >> level;
+
+	return value ? value : 1;
+}
+
+static void level_barrier(VkCommandBuffer command, struct composite *composite, unsigned level, VkImageLayout to)
+{
+	VkImageMemoryBarrier barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+
+	if (composite->layout[level] == to)
+		return;
+	barrier.srcAccessMask = composite->layout[level] == VK_IMAGE_LAYOUT_UNDEFINED ? 0 :
+		VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+	barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+	barrier.oldLayout = composite->layout[level];
+	barrier.newLayout = to;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.image = composite->image;
+	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barrier.subresourceRange.baseMipLevel = level;
+	barrier.subresourceRange.levelCount = 1;
+	barrier.subresourceRange.layerCount = 1;
+	vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL,
+		1, &barrier);
+	composite->layout[level] = to;
+}
+
+static struct composite *composite_find(uint32_t data, uint32_t width, uint32_t height, uint32_t levels)
+{
+	struct composite *composite;
+
+	for (composite = composites; composite; composite = composite->next)
+	{
+		if (composite->data == data && composite->width == width && composite->height == height && composite->levels == levels)
+			return composite;
+	}
+	return NULL;
+}
+
+void host_vk_composite_command(const struct vk_command_composite *command)
+{
+	struct composite *composite;
+	VkImageCreateInfo info = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+	VkImageViewCreateInfo view = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+	VkMemoryRequirements requirements;
+	VkMemoryAllocateInfo allocation = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+	unsigned index;
+
+	if (!command->width || !command->height || command->levels < 2 || command->levels > VK_COMPOSITE_LEVELS ||
+		composite_find(command->data, command->width, command->height, command->levels))
+		return;
+	composite = calloc(1, sizeof(*composite));
+	if (!composite)
+		return;
+	composite->data = command->data;
+	composite->width = command->width;
+	composite->height = command->height;
+	composite->levels = command->levels;
+	memcpy(composite->level_data, command->level_data, sizeof(composite->level_data));
+	for (index = 0; index < VK_COMPOSITE_LEVELS; index++)
+		composite->layout[index] = VK_IMAGE_LAYOUT_UNDEFINED;
+	info.imageType = VK_IMAGE_TYPE_2D;
+	info.format = B.color_format;
+	info.extent.width = command->width;
+	info.extent.height = command->height;
+	info.extent.depth = 1;
+	info.mipLevels = command->levels;
+	info.arrayLayers = 1;
+	info.samples = VK_SAMPLE_COUNT_1_BIT;
+	info.tiling = VK_IMAGE_TILING_OPTIMAL;
+	info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	if (!HOST_VK_CHECK(vkCreateImage(B.device, &info, NULL, &composite->image)))
+		goto fail;
+	vkGetImageMemoryRequirements(B.device, composite->image, &requirements);
+	allocation.allocationSize = requirements.size;
+	allocation.memoryTypeIndex = host_vk_memory_type(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	if (allocation.memoryTypeIndex == UINT32_MAX || !HOST_VK_CHECK(vkAllocateMemory(B.device, &allocation, NULL,
+		&composite->memory)) || !HOST_VK_CHECK(vkBindImageMemory(B.device, composite->image, composite->memory, 0)))
+		goto fail;
+	view.image = composite->image;
+	view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	view.format = info.format;
+	view.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	view.subresourceRange.levelCount = command->levels;
+	view.subresourceRange.layerCount = 1;
+	if (!HOST_VK_CHECK(vkCreateImageView(B.device, &view, NULL, &composite->view)))
+		goto fail;
+	composite->next = composites;
+	composites = composite;
+	return;
+fail:
+	if (composite->view)
+		vkDestroyImageView(B.device, composite->view, NULL);
+	if (composite->memory)
+		vkFreeMemory(B.device, composite->memory, NULL);
+	if (composite->image)
+		vkDestroyImage(B.device, composite->image, NULL);
+	free(composite);
+}
+
+/* the composite's view, its levels copied from the targets the game drew them in when one has been bound since the last copy
+(mip_composite_get in d3d8_gl.c copies at every bind), the levels below the last drawn made by halving; NULL if no level has a
+target. Outside a rendering: the one open is ended when a copy is made. */
+static VkImageView composite_sampled(struct composite *composite)
+{
+	struct host_vk_target *targets[VK_COMPOSITE_LEVELS];
+	unsigned level, rendered = 0;
+	uint64_t newest = 0;
+	VkCommandBuffer command;
+
+	for (level = 0; level < composite->levels; level++)
+	{
+		unsigned width = dimension(composite->width, level), height = dimension(composite->height, level);
+		struct host_vk_target *target = host_vk_target_at(composite->level_data[level]);
+
+		if (!target || target->key.width != width || target->key.height != height || target->key.pixel_width != width ||
+			target->key.pixel_height != height)
+			break;
+		targets[level] = target;
+		if (target->bound > newest)
+			newest = target->bound;
+		rendered++;
+	}
+	if (!rendered)
+		return VK_NULL_HANDLE;
+	if (composite->stamp == newest && composite->layout[0] == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+		return composite->view;
+	host_vk_rendering_end();
+	command = host_vk_frame_command();
+	for (level = 0; level < composite->levels; level++)
+		level_barrier(command, composite, level, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+	for (level = 0; level < rendered; level++)
+	{
+		VkImageCopy copy;
+
+		host_vk_target_transition(command, targets[level], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		memset(&copy, 0, sizeof(copy));
+		copy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		copy.srcSubresource.layerCount = 1;
+		copy.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		copy.dstSubresource.mipLevel = level;
+		copy.dstSubresource.layerCount = 1;
+		copy.extent.width = dimension(composite->width, level);
+		copy.extent.height = dimension(composite->height, level);
+		copy.extent.depth = 1;
+		vkCmdCopyImage(command, targets[level]->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, composite->image,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+	}
+	/* the levels the game did not render come from the last it did, halved */
+	for (level = rendered; level < composite->levels; level++)
+	{
+		VkImageBlit blit;
+
+		level_barrier(command, composite, level - 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		memset(&blit, 0, sizeof(blit));
+		blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		blit.srcSubresource.mipLevel = level - 1;
+		blit.srcSubresource.layerCount = 1;
+		blit.srcOffsets[1].x = (int32_t)dimension(composite->width, level - 1);
+		blit.srcOffsets[1].y = (int32_t)dimension(composite->height, level - 1);
+		blit.srcOffsets[1].z = 1;
+		blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		blit.dstSubresource.mipLevel = level;
+		blit.dstSubresource.layerCount = 1;
+		blit.dstOffsets[1].x = (int32_t)dimension(composite->width, level);
+		blit.dstOffsets[1].y = (int32_t)dimension(composite->height, level);
+		blit.dstOffsets[1].z = 1;
+		vkCmdBlitImage(command, composite->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, composite->image,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+	}
+	for (level = 0; level < composite->levels; level++)
+		level_barrier(command, composite, level, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	composite->stamp = newest;
+	return composite->view;
+}
+
 /* ---------- a draw */
 
 static void skipped(unsigned *counter, const char *why)
@@ -295,6 +511,8 @@ void host_vk_command_draw(const struct vk_command_draw *draw, uint32_t size)
 	VkDescriptorSet set;
 	VkDescriptorBufferInfo buffer_infos[3];
 	VkDescriptorImageInfo image_infos[VK_DRAW_TEXTURE_STAGES];
+	VkImageView views[VK_DRAW_TEXTURE_STAGES];
+	int textured[VK_DRAW_TEXTURE_STAGES];
 	VkWriteDescriptorSet writes[7];
 	VkViewport viewport;
 	VkRect2D scissor;
@@ -359,6 +577,54 @@ void host_vk_command_draw(const struct vk_command_draw *draw, uint32_t size)
 		B.counts.draws_skipped_other++;
 		return;
 	}
+	/* what each stage samples: its image, a render target (made readable, which ends the rendering), a mip composite, or a
+	dummy of the shader's type when there is none (counted when a texture was asked for) */
+	for (index = 0; index < VK_DRAW_TEXTURE_STAGES; index++)
+	{
+		const struct vk_draw_texture *texture = &draw->textures[index];
+		int type = texture->sampler_type >= 1 && texture->sampler_type <= 3 ? (int)texture->sampler_type - 1 : 0;
+
+		views[index] = dummies.view[type];
+		if (texture->kind == VK_TEXTURE_IMAGE)
+		{
+			const struct host_vk_image *image = host_vk_image_get(texture->id);
+
+			if (image && image->kind == texture->sampler_type)
+				views[index] = image->view;
+		}
+		else if (texture->kind == VK_TEXTURE_TARGET && texture->sampler_type == 1)
+		{
+			VkImageView view = VK_NULL_HANDLE;
+
+			if (texture->levels > 1)
+			{
+				struct composite *composite = composite_find(texture->id, texture->width, texture->height, texture->levels);
+
+				if (composite)
+					view = composite_sampled(composite);
+			}
+			else
+			{
+				struct host_vk_target *target = host_vk_target_at(texture->id);
+
+				/* the target being drawn into cannot be sampled in the same rendering */
+				if (target && target != B.color)
+				{
+					if (target->layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+					{
+						host_vk_rendering_end();
+						host_vk_target_transition(host_vk_frame_command(), target, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+					}
+					view = target->view;
+				}
+			}
+			if (view)
+				views[index] = view;
+		}
+		textured[index] = views[index] != dummies.view[type];
+		if (texture->kind != VK_TEXTURE_NONE && !textured[index])
+			B.counts.draws_texture_missing++;
+	}
 	if (!host_vk_rendering_begin())
 	{
 		B.counts.draws_skipped_target++;
@@ -389,21 +655,11 @@ void host_vk_command_draw(const struct vk_command_draw *draw, uint32_t size)
 	for (index = 0; index < VK_DRAW_TEXTURE_STAGES; index++)
 	{
 		const struct vk_draw_texture *texture = &draw->textures[index];
-		int type = texture->sampler_type >= 1 && texture->sampler_type <= 3 ? (int)texture->sampler_type - 1 : 0;
 		struct vk_sampler_state none;
 
-		const struct host_vk_image *image = texture->kind == VK_TEXTURE_IMAGE ? host_vk_image_get(texture->id) : NULL;
-
-		/* a stage with no texture, or one whose image is not there or is not the type the shader samples, is a dummy of
-		the shader's type */
 		memset(&none, 0, sizeof(none));
-		if (texture->kind != VK_TEXTURE_NONE && (!image || image->kind != texture->sampler_type))
-		{
-			B.counts.draws_texture_missing++;
-			image = NULL;
-		}
-		image_infos[index].sampler = sampler_get(image ? &texture->sampler : &none);
-		image_infos[index].imageView = image ? image->view : dummies.view[type];
+		image_infos[index].sampler = sampler_get(textured[index] ? &texture->sampler : &none);
+		image_infos[index].imageView = views[index];
 		image_infos[index].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		writes[3 + index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		writes[3 + index].dstSet = set;
