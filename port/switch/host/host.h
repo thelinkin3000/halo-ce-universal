@@ -158,11 +158,11 @@ void host_thread_place_on_helper_core(void);
 
 /* ---------- the renderer (host_main.c)
 
-config.toml's display.renderer: "gl" (the default) runs halo_guest.elf,
-whose renderer is OpenGL over Mesa; "deko3d" runs halo_guest_dk.elf, whose
-renderer drives deko3d (port/switch/DEKO3D.md). Under deko3d the host makes
-no EGL surface: the guest's SDL window and GL context are stand-ins, so the
-display is left for deko3d's swapchain. Set once, before the guest starts. */
+The game image, halo_guest.elf, draws with deko3d (port/switch/DEKO3D.md),
+and this is always set. The host makes no EGL surface under it: the guest's
+SDL window and GL context are stand-ins, so the display is left for deko3d's
+swapchain. (The OpenGL-over-Mesa paths it skips are what is left of the
+OpenGL image the Switch no longer builds.) */
 extern int host_renderer_deko3d;
 
 /* host_dk.c: runs a frame's commands from the deko3d renderer's guest half
