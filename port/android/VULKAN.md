@@ -2325,6 +2325,29 @@ Newest first.
 
 ### Phase 6 — progress (under way; each step's result, newest first)
 
+**Step 5, render targets: written and built, only partly tried on the device (the rest is for the user).**
+*Render-to-texture.* The guest notes every colour surface it binds as a target (`rendered_note`, by address, with a clock) and a stage
+whose texture's data is one names that target instead of an image (`VK_TEXTURE_TARGET`, the address, `xgpu_render_target_find`'s choice:
+the one bound last), with the linear-texture scale from the target's size. The host (`host_vk_target_at`, `host_vk_draw.c`) takes the
+colour target bound last at that address (`host_vk_target.bound`, a clock the targets command stamps), ends the rendering, and
+transitions it to the shader-read layout with a full barrier (rendering_begin puts it back when it is drawn into again); a target
+that is the one being drawn into gets a dummy and is counted as a texture missing.
+*The mip composite.* A texture the game renders a level at a time (not linear, not a cube, more than one level, its top level the
+size of the target drawn there: `bind_textures`'s test) sends `VK_COMMAND_COMPOSITE` once (the levels' addresses by
+`xgpu_texture_level_offset`) and is sampled through a mipmapped image the host keeps for it (`composite_sampled`): each level the game drew
+is copied from its target (`vkCmdCopyImage`, same format and size), the levels below the last drawn are made by halving
+(`vkCmdBlitImage`, linear), each level's layout tracked, outside rendering; copied again only when a level's target has been bound since.
+**Deviation:** copies rather than blits for the levels the game drew, since the formats and sizes are equal.
+
+What was seen (phone's driver, validation on, the first map's opening, 7,680 frames): validation errors 0, nothing skipped, **the soft
+blob shadows under the marines are back** (they were missing before this step, which is what a shadow drawn through a render target
+looks like). **Not seen, for the user:** (1) **Turnip** with this step; (2) **the wake-up flash** when the cryo tube opens (GL ES goes
+white and blurred, Vulkan showed black before this step; the sheet of screenshots taken around it was not finished); (3) **the water**
+(the mip composite: a map with water, for example the Silent Cartographer, and ripples that look like GL ES's); (4) **the sniper
+rifle's zoom** and the other screen effects; (5) **split screen** (a second controller: look for each window's geometry and clears
+staying inside its half). The composite's barriers are the part most likely to draw wrongly or to draw a validation error: run with
+`debug.vk_validation = true` and look for `[error]` lines.
+
 **Step 4, a map: done on the device, both drivers, with what is left listed.** The first campaign map from a new game, no code
 changed for it: the opening cinematic and the cryo bay draw through Vulkan as under GL ES, upright, with no face drawn inside out (the
 desktop front-face rule of `raster_state_make` needed no flip) and depth right (the marines, the Warthogs, the Pelican, the consoles and
