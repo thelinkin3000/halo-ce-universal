@@ -14,13 +14,13 @@ That project is a fork of [punpckhdq/halo](https://github.com/punpckhdq/halo).
 
 ## Download
 
-GitHub Actions builds the game for each commit. These links download the
-builds of the latest release:
+GitHub Actions builds the game for Android and the Switch for each commit
+(for Linux and Windows, see the upstream project,
+[OpenCE](https://github.com/OpenCommunityEdition/OpenCE)). These links
+download the builds of the latest release:
 
 | Platform | Release | Debug |
 | --- | --- | --- |
-| Linux | [halo-linux-release.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/halo-linux-release.zip) | [halo-linux-debug.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/halo-linux-debug.zip) |
-| Windows | [halo-windows-release.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/halo-windows-release.zip) | [halo-windows-debug.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/halo-windows-debug.zip) |
 | Android | [halo-android-release.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/halo-android-release.zip) | [halo-android-debug.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/halo-android-debug.zip) |
 | Nintendo Switch | [halo-switch-release.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/halo-switch-release.zip) | [halo-switch-debug.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/halo-switch-debug.zip) |
 
