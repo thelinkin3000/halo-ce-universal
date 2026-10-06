@@ -43,7 +43,7 @@ def main() -> int:
     # (and internet play's brokers, which a release carries beside the
     # game: without them the server browser lists nothing)
     files = args.files or [Path("build/switch/halo.nro"), Path("build/switch/halo_guest.elf"),
-                          Path("build/switch/halo_guest_dk.elf"), Path("port/assets/network/brokers.txt")]
+                          Path("port/assets/network/brokers.txt")]
     missing = [str(path) for path in files if not path.is_file()]
     if missing:
         print("not built: " + ", ".join(missing), file=sys.stderr)

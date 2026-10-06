@@ -689,25 +689,8 @@ static void environment_copy_halo(struct environment *environment)
 	}
 }
 
-int host_renderer_deko3d;
-
-/* whether the game draws with deko3d (host.h): the default, unless
-config.toml's display.renderer asks for "gl", OpenGL over Mesa */
-static int config_renderer_is_deko3d(const char *path)
-{
-	toml_result_t result = toml_parse_file_ex(path);
-	int deko3d = 1;
-
-	if (!result.ok)
-		return 1;
-	{
-		toml_datum_t renderer = toml_seek(result.toptab, "display.renderer");
-
-		deko3d = !(renderer.type == TOML_STRING && !strcmp(renderer.u.s, "gl"));
-	}
-	toml_free(result);
-	return deko3d;
-}
+/* the game draws with deko3d (host.h) */
+int host_renderer_deko3d = 1;
 
 /* the profiler's rate from config.toml: 0 unless debug.profiler is true,
 then debug.profile_hz, or 500 if that is not set */
@@ -920,24 +903,12 @@ static void *game_main(void *unused)
 	time_zone(zone, sizeof(zone));
 	environment_set(&environment, "TZ", zone);
 
-	/* the renderer decides the image: each is built with one (host.h) */
-	snprintf(path, sizeof(path), "%s/config.toml", data_root);
-	host_renderer_deko3d = config_renderer_is_deko3d(path);
 	setting = getenv("HALO_GUEST_IMAGE");
 	if (setting && *setting)
 		snprintf(path, sizeof(path), "%s", setting);
 	else
-	{
-		snprintf(path, sizeof(path), "%s/%s", executable_root,
-			host_renderer_deko3d ? "halo_guest_dk.elf" : "halo_guest.elf");
-		if (host_renderer_deko3d && access(path, R_OK) != 0)
-		{
-			host_logf(HOST_LOG_WARN, "the renderer is deko3d, but there is no %s; using OpenGL", path);
-			host_renderer_deko3d = 0;
-			snprintf(path, sizeof(path), "%s/halo_guest.elf", executable_root);
-		}
-	}
-	host_logf(HOST_LOG_INFO, "renderer: %s (%s)", host_renderer_deko3d ? "deko3d" : "OpenGL over Mesa", path);
+		snprintf(path, sizeof(path), "%s/halo_guest.elf", executable_root);
+	host_logf(HOST_LOG_INFO, "renderer: deko3d (%s)", path);
 	image = read_file(path, &image_size);
 	probe_window_capacity();
 	log_marker("marker: reading the guest image");
@@ -992,8 +963,7 @@ static void *game_main(void *unused)
 
 		if (config_sample_seconds(path, seconds, sizeof(seconds)))
 			host_debug_start_sampler(seconds);
-		host_debug_start_profiler(config_profile_hz(path),
-			host_renderer_deko3d ? "halo_guest_dk.elf" : "halo_guest.elf");
+		host_debug_start_profiler(config_profile_hz(path), "halo_guest.elf");
 	}
 	log_marker("marker: building the guest's boot structure");
 	boot = make_boot(&environment);
