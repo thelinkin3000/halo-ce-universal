@@ -172,7 +172,7 @@ struct host_settings
 	char sample_seconds[32]; /* as text for the sampler; empty for none */
 	int profile_hz;
 	char vk_probe[128]; /* empty: the game runs */
-	char vk_driver[256]; /* display.vk_driver: "auto" (the default), empty for the phone's own driver, or an archive */
+	char vk_driver[256]; /* display.vk_driver: empty (the default) for the phone's own driver, "auto", or an archive */
 	char renderer[32]; /* display.renderer: "vulkan" (the default, also when empty) or "gl" */
 	int vk_validation; /* debug.vk_validation */
 	int gpu_stats; /* debug.gpu_stats */
@@ -186,7 +186,6 @@ static void config_read(const char *path, struct host_settings *settings)
 
 	memset(settings, 0, sizeof(*settings));
 	/* the defaults of port_config.c's rows, for a file not written yet (the first start) or without them */
-	snprintf(settings->vk_driver, sizeof(settings->vk_driver), "auto");
 	snprintf(settings->renderer, sizeof(settings->renderer), "vulkan");
 	if (!result.ok)
 	{

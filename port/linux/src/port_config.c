@@ -95,12 +95,12 @@ static const struct config_setting config_settings[] =
 		"Xbox's 4:3." },
 #ifndef HALO_SWITCH
 	/* read by the Android host (port/android/host/host_vk_driver.c) */
-	{ "display.vk_driver", _config_string, "\"auto\"", "HALO_VK_DRIVER", _environment_value, _platform_android,
-		"The Vulkan driver the Vulkan renderer runs on: \"auto\" for Turnip on an Adreno\n"
-		"(the app downloads the build for its series) and the phone's own on any\n"
-		"other GPU; empty for the phone's own; or the name of a driver archive (an\n"
-		"adrenotools zip) left in the game's folder. One that does not load is logged\n"
-		"and the phone's own is used." },
+	{ "display.vk_driver", _config_string, "\"\"", "HALO_VK_DRIVER", _environment_value, _platform_android,
+		"The Vulkan driver the Vulkan renderer runs on: empty for the phone's own;\n"
+		"\"auto\" for Turnip, the open-source driver, on an Adreno GPU (the app\n"
+		"downloads the build for its series; the phone's own on any other GPU); or the\n"
+		"name of a driver archive (an adrenotools zip) left in the game's folder. One\n"
+		"that does not load is logged and the phone's own is used." },
 	/* read by the Android host before the game starts, to choose the game
 	image built with that renderer (port/android/VULKAN.md) */
 	{ "display.renderer", _config_string, "\"vulkan\"", "HALO_RENDERER", _environment_value, _platform_android,
