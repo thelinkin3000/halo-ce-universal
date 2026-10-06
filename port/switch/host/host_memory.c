@@ -228,10 +228,16 @@ int host_memory_range_is_reserved(uint64_t address, uint64_t size)
 	return range_claimed(address, size);
 }
 
+/* the guest image's range, held from the start until the image claims it
+(host_memory_hold_image_range); 0 to 0 when nothing is held */
+static uint64_t image_hold_base, image_hold_end;
+
 static int range_claimed(uint64_t address, uint64_t size)
 {
 	int index;
 
+	if (address < image_hold_end && image_hold_base < address + size)
+		return 1;
 	for (index = 0; index < reservation_count; index++)
 	{
 		if (address < reservations[index].base + reservations[index].size &&
@@ -289,12 +295,21 @@ uint64_t host_memory_reserved_region(uint64_t size)
  * thing.
  *
  * Held for the whole run: libnx does not mind reservations that overlap, so
- * the image's own reservation simply lands on top of this one. */
+ * the image's own reservation simply lands on top of this one.
+ *
+ * Held from this port's own memory too (range_claimed), until the image
+ * claims it. A pool is placed where the kernel says the space is free, and
+ * the kernel knows nothing of libnx's reservations: one run put pool 0 at
+ * 0x30036000, whose 256 MB end at 0x40036000, and the image could never be
+ * loaded at 0x40000000. */
 #define IMAGE_HOLD_SIZE (32u * 1024 * 1024)
 
 void host_memory_hold_image_range(void)
 {
 	VirtmemReservation *hold;
+
+	image_hold_base = HALO_GUEST_IMAGE_BASE;
+	image_hold_end = (uint64_t)HALO_GUEST_IMAGE_BASE + IMAGE_HOLD_SIZE;
 
 	virtmemLock();
 	hold = virtmemAddReservation((void *)(uintptr_t)HALO_GUEST_IMAGE_BASE, IMAGE_HOLD_SIZE);
@@ -432,6 +447,8 @@ static uint64_t find_gap(uint64_t size, uint64_t minimum, uint64_t alignment)
 					return start;
 				/* step past whatever is already claimed at this point */
 				move = start;
+				if (image_hold_base <= move && move < image_hold_end)
+					move = image_hold_end;
 				for (int index = 0; index < reservation_count; index++)
 				{
 					if (reservations[index].base <= move &&
@@ -538,6 +555,8 @@ int host_memory_initialize(uint32_t base, uint32_t size)
 	search hands back the image's own address */
 	image_base = base;
 	image_end = base + round_up(size);
+	/* (the image's own reservation stands for the hold from here) */
+	image_hold_base = image_hold_end = 0;
 	/* Claiming the image's fixed address can lose a race with the console's
 	 * own low-memory manager, which places mappings below 4 GB from the
 	 * bottom up and does not know this program wants 0x40000000. Where the
