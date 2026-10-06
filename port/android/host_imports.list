@@ -64,3 +64,4 @@ host_vk_shader_compile
 host_vk_format_supported
 host_vk_bc_supported
 host_vk_visibility
+host_vk_driver_name
