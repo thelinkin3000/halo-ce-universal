@@ -686,9 +686,45 @@ static int open_archive(const char *setting, void **library, char *description, 
 	return 1;
 }
 
+/* display.vk_driver = "auto": the archive vk_driver_auto.txt names, if it is in the external files folder; else empty */
+static void auto_resolve(char *out, size_t size)
+{
+	const char *external = SDL_GetAndroidExternalStoragePath();
+	char path[1024], line[256] = "";
+	struct stat archive;
+	FILE *file;
+
+	out[0] = 0;
+	if (!external)
+		return;
+	snprintf(path, sizeof(path), "%s/vk_driver_auto.txt", external);
+	file = fopen(path, "r");
+	if (file)
+	{
+		if (!fgets(line, sizeof(line), file))
+			line[0] = 0;
+		fclose(file);
+	}
+	line[strcspn(line, "\r\n")] = 0;
+	if (line[0])
+	{
+		snprintf(path, sizeof(path), "%s/%s", external, line);
+		if (name_is_safe(line) && !strchr(line, '/') && !stat(path, &archive))
+			snprintf(out, size, "%s", line);
+	}
+	if (out[0])
+		host_logf(HOST_LOG_INFO, "vk driver: auto: %s", out);
+	else if (!file)
+		host_logf(HOST_LOG_INFO, "vk driver: auto: the phone's own (the launcher has not chosen one yet)");
+	else if (line[0])
+		host_logf(HOST_LOG_INFO, "vk driver: auto: the phone's own (%s is not in the data folder)", line);
+	else
+		host_logf(HOST_LOG_INFO, "vk driver: auto: the phone's own (no Turnip build for this GPU)");
+}
+
 PFN_vkGetInstanceProcAddr host_vk_driver_open(const char *setting, char *description, size_t size)
 {
-	char error[512] = "", custom_description[384] = "";
+	char error[512] = "", custom_description[384] = "", auto_setting[256];
 	void *library = NULL;
 	PFN_vkGetInstanceProcAddr function;
 
@@ -702,6 +738,13 @@ PFN_vkGetInstanceProcAddr host_vk_driver_open(const char *setting, char *descrip
 		snprintf(description, size, "the Vulkan driver was closed; it cannot be opened again in this process");
 		host_logf(HOST_LOG_ERROR, "vk driver: %s", description);
 		return NULL;
+	}
+	/* "auto": the archive the launcher chose for this phone's GPU (LauncherActivity, Updater.java), named in
+	vk_driver_auto.txt; the phone's own driver when it names none or the archive is not there */
+	if (setting && !strcmp(setting, "auto"))
+	{
+		auto_resolve(auto_setting, sizeof(auto_setting));
+		setting = auto_setting;
 	}
 	if (setting && setting[0])
 	{
