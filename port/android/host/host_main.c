@@ -172,8 +172,8 @@ struct host_settings
 	char sample_seconds[32]; /* as text for the sampler; empty for none */
 	int profile_hz;
 	char vk_probe[128]; /* empty: the game runs */
-	char vk_driver[256]; /* display.vk_driver: empty is the phone's own Vulkan driver */
-	char renderer[32]; /* display.renderer: "gl" (also when empty) or "vulkan" */
+	char vk_driver[256]; /* display.vk_driver: "auto" (the default), empty for the phone's own driver, or an archive */
+	char renderer[32]; /* display.renderer: "vulkan" (the default, also when empty) or "gl" */
 	int vk_validation; /* debug.vk_validation */
 	int gpu_stats; /* debug.gpu_stats */
 	int vk_present_marker; /* debug.vk_present_marker */
@@ -185,6 +185,9 @@ static void config_read(const char *path, struct host_settings *settings)
 	toml_result_t result = toml_parse_file_ex(path);
 
 	memset(settings, 0, sizeof(*settings));
+	/* the defaults of port_config.c's rows, for a file not written yet (the first start) or without them */
+	snprintf(settings->vk_driver, sizeof(settings->vk_driver), "auto");
+	snprintf(settings->renderer, sizeof(settings->renderer), "vulkan");
 	if (!result.ok)
 	{
 		host_logf(HOST_LOG_WARN, "cannot read %s: %s; the host's settings are the defaults", path, result.errmsg);
@@ -328,10 +331,12 @@ static void *game_main(void *unused)
 	as before, whatever the renderer is */
 	if (settings.vk_probe[0])
 		want_vulkan = 0;
-	else if (!strcmp(settings.renderer, "vulkan"))
+	else if (strcmp(settings.renderer, "gl"))
+	{
 		want_vulkan = 1;
-	else if (settings.renderer[0] && strcmp(settings.renderer, "gl"))
-		host_logf(HOST_LOG_WARN, "display.renderer \"%s\" is not \"gl\" or \"vulkan\"; using GL ES", settings.renderer);
+		if (settings.renderer[0] && strcmp(settings.renderer, "vulkan"))
+			host_logf(HOST_LOG_WARN, "display.renderer \"%s\" is not \"gl\" or \"vulkan\"; using Vulkan", settings.renderer);
+	}
 
 	image = SDL_LoadFile("halo_guest.elf", &image_size);
 	if (!image)

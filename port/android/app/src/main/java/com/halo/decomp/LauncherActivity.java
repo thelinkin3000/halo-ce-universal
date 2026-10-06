@@ -33,10 +33,10 @@ import java.nio.channels.FileChannel;
  * copies its maps folder there (XisoExtractor), as the desktop games do; or
  * they can push the maps folder with adb.
  *
- * Before the game starts, on an Adreno 6xx or 7xx whose data folder lacks
- * it, the open-source Vulkan driver the Vulkan renderer was tested with is
- * downloaded (Updater.driverDownload), its progress on screen, so that the
- * game finds it when it starts. A failed download does not stop the game,
+ * Before the game starts, on an Adreno whose data folder lacks it, the
+ * open-source Vulkan driver for its series is downloaded
+ * (Updater.driverDownload), its progress on screen, so that the game finds
+ * it when it starts (display.vk_driver = "auto", the default). A failed download does not stop the game,
  * and "Skip" starts it at once.
  */
 public class LauncherActivity extends Activity {
@@ -135,35 +135,37 @@ public class LauncherActivity extends Activity {
 
     private boolean driverStarted;
 
-    /** the game started once the driver is downloaded, when this phone wants it and lacks it */
+    /** the game started once this phone's driver is downloaded, when it has one and lacks it */
     private void startGameAfterDriver() {
         if (driverStarted)
             return;
         driverStarted = true;
-        if (Updater.driverPresent(dataRoot)) {
+        if (Updater.driverReady(dataRoot)) {
             startGame();
             return;
         }
         new Thread(() -> {
-            String gpu = Updater.driverGpu();
+            Updater.Choice choice = Updater.driverChoose(dataRoot);
 
-            if (gpu == null) {
+            if (choice == null || choice.driver == null || Updater.driverPresent(dataRoot, choice.driver)) {
                 handler.post(this::startGame);
                 return;
             }
-            handler.post(() -> buildDriverInterface(gpu));
+            handler.post(() -> buildDriverInterface(choice));
             try {
-                Updater.driverDownload(dataRoot, gpu, (received, total) -> report("Downloading the driver... ("
-                    + (received >> 10) + " of " + (total >> 10) + " KB)", total > 0 ? (int) (received * 1000 / total) : 0));
+                Updater.driverDownload(dataRoot, choice.driver, choice.gpu, (received, total) -> report(
+                    "Downloading the driver... (" + (received >> 10) + " of " + (total >> 10) + " KB)",
+                    total > 0 ? (int) (received * 1000 / total) : 0));
                 handler.post(this::startGame);
             } catch (Exception exception) {
-                report("The driver could not be downloaded: " + exception.getMessage() + "\nStarting the game.", -1);
+                report("The driver could not be downloaded: " + exception.getMessage()
+                    + "\nStarting the game on the phone's own Vulkan driver.", -1);
                 handler.postDelayed(this::startGame, 3000);
             }
         }, "driver download").start();
     }
 
-    private void buildDriverInterface(String gpu) {
+    private void buildDriverInterface(Updater.Choice choice) {
         if (gameStarted)
             return;
         LinearLayout layout = new LinearLayout(this);
@@ -180,10 +182,10 @@ public class LauncherActivity extends Activity {
         layout.addView(title);
 
         TextView message = new TextView(this);
-        message.setText("This phone's GPU (" + gpu + ") can run the game's Vulkan renderer on Turnip, the open-source "
-            + "Vulkan driver for Adreno GPUs. The tested build (about 3.5 MB) is downloaded once, into the game's data "
-            + "folder. Your settings are not changed: to use it, set renderer = \"vulkan\" and vk_driver = \""
-            + "Turnip_v26.0.0_R8.zip\" in config.toml.");
+        message.setText("The game draws with Vulkan. On this phone's GPU (" + choice.gpu + ") it uses Turnip, the "
+            + "open-source Vulkan driver for Adreno GPUs, which is downloaded once into the game's data folder (about "
+            + ((choice.driver.size + (1 << 19)) >> 20) + " MB).\n\nIn config.toml, vk_driver = \"\" uses the phone's own "
+            + "Vulkan driver instead, and renderer = \"gl\" draws with OpenGL ES.");
         message.setTextColor(Color.rgb(200, 205, 210));
         message.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
         message.setGravity(Gravity.CENTER);
