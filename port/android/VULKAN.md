@@ -2325,6 +2325,49 @@ Newest first.
 
 ### Phase 6 — progress (under way; each step's result, newest first)
 
+**Step 4, a map: done on the device, both drivers, with what is left listed.** The first campaign map from a new game, no code
+changed for it: the opening cinematic and the cryo bay draw through Vulkan as under GL ES, upright, with no face drawn inside out (the
+desktop front-face rule of `raster_state_make` needed no flip) and depth right (the marines, the Warthogs, the Pelican, the consoles and
+the HUD's "Use [right stick] to look around" prompt over the bay).
+
+**The open question, answered: yes, the opening cinematic reaches play under Vulkan, in the same time as under GL ES.** From the key that
+starts the new game to `object_create - 'cryotube_1' already exists` in `debug.txt` (the map's script reaching the cryo tube): Vulkan on the
+phone's driver 20:31:50 to 20:35:35, **3 min 45 s**; GL ES 20:37:48 to 20:41:33, **3 min 45 s**; screenshots every 20 s put the
+bay's "look around" prompt at the same shot (the 12th) in both, and both `debug.txt`s have the same lines in the same order (`too many lens
+flares submitted to frame`, two `fell outside world and was erased`: the game's own, as phase 1 found under GL ES). Phase 2's 14 minutes
+in a black picture were the black picture, not the game waiting. With `debug.test_input = "look:5"` the player looks around and the
+prompt changes to "Use [X] to exit the cryo-tube" under Vulkan too.
+
+| 7,680 frames of the map (128 statistics windows), validation on | Phone's driver | Turnip |
+|---|---|---|
+| draws made | 4,690,731 (about 610 a frame; 38,000 to 39,000 in a 60-frame window) | 4,696,417 |
+| skipped for a shader / data / target / other / a texture missing | 0 / 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 / 0 |
+| skipped for a pipeline not ready | 201 (first sight of a state; the pipeline cache was warm) | 241 |
+| images, texture memory | 117 images, 192 MB | the same |
+| validation errors, `[error]` lines, `vk: a draw is skipped` | 0, none, none | 0, none, none (the Turnip pipeline cache file was written by this run) |
+| vertex formats the device could not read | none: no expansion was needed | none |
+
+Shot for shot against GL ES (`g4_*` against `m2_*`, 20 s apart) the cinematic's scenes agree: the Pillar of Autumn's engines, the bridge and
+its consoles, the officers in red, the Pelican, the marines and the Warthogs, the crewman, the hands on the cryo controls. Differences
+seen, which are step 5's: **the soft blob shadows under the marines on the floor** (GL ES has them, Vulkan does not) and **the wake-up
+flash** (the picture goes white and blurs in GL ES at the moment the cryo tube opens, where Vulkan shows black with the "Reveille"
+caption): both are made through render targets, which are step 5.
+
+**The shader corpus from play** (`debug.gpu_dump_shaders` while playing, 847 files pulled to `build/shaders_play2`, `tools/vk_shader_check.py`):
+90 vertex shaders and **222 pixel shaders, 0 failed**, spirv-val on every module, the reflection and the GL ES comparison clean, 35
+of the key's 57 combiner words varying. **Not met, and not met by the menus either: fog, colour-signed textures and alpha kill on stages 1
+to 3** (`alpha_kill[1..3]`, `color_sign[0..3]`, `fog_enable`, `fog_table_mode` never vary in 222 keys). The reason is not the key: nothing
+the unattended input can do gets the game out of the cryo tube. `adb shell input` cannot press a gamepad button, a keyboard `X` does not
+exit the tube, and `debug.test_input = "bot:5"` also plays the menus (it ended in Load Game); so the corridors, where the fog and the
+bump-mapped materials are, were not reached. The phase-4 comparison of the generators with the GL ES ones is line for line there too,
+but nothing has compiled those paths.
+
+Left for step 4, for the user: walk the first corridors and the first outdoor area with the dump on (the same `debug.gpu_dump_shaders`
+folder, `tools/vk_shader_check.py` on it), and look for: decals (bullet holes, scorch marks: z bias, `vkCmdSetDepthBias`'s units against
+`glPolygonOffset`'s, not seen at all), fog in the distance, the cube-map reflections on shiny surfaces and an Elite's or a Marine's skin
+(skinned characters were seen: the marines are right), grass and other dynamic vertex data. A pipeline skipped for a state's first
+sight shows as a part of a scene missing for a frame or two the first time it is seen.
+
 **Step 3, the high-res HUD and text and the menus' art: done on the device, both drivers.** `xbox_textures_vk.c` makes the three
 replacements as images of its own from the same id allocator (`VK_HIRES 1`): the text's atlas (2048 square, white with the coverage as
 alpha; after the first upload only the rows written since, as `VK_COMMAND_TEXTURE_DATA`'s new `top` and `rows`), a menu's art (by
