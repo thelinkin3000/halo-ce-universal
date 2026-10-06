@@ -116,8 +116,8 @@ These settings are only for Android:
 | `display.screen_width` | The number of columns of the 480-line picture. `0` (the default): the shape of the display (1068 on a 20:9 phone). `640`: the 4:3 shape of the Xbox. |
 | `debug.sample_seconds` | Refer to "Find problems". |
 | `debug.profile_hz` | Refer to "Find problems". |
-| `display.renderer` | How the game draws: `"vulkan"` (the default; OpenGL ES if Vulkan cannot start) or `"gl"` (OpenGL ES over the phone's driver). Takes effect the next time the game starts. The line below the version number in the main menu shows the renderer that runs. Refer to "Graphics: OpenGL ES and Vulkan". |
-| `display.vk_driver` | The Vulkan driver of the Vulkan renderer (and of the Vulkan probe). Empty (the default): the phone's own. `"auto"`: Turnip on an Adreno, which the app downloads (refer to "Turn on Turnip"). Otherwise the file name of a driver archive in the data folder. |
+| `display.renderer` | How the game draws: `"vulkan"` (the default; OpenGL ES if Vulkan cannot start) or `"gl"` (OpenGL ES over the phone's driver). Takes effect the next time the game starts. The line below the version number in the main menu shows the renderer that runs. VIDEO SETUP's GRAPHICS BACKEND sets it. Refer to "Graphics: OpenGL ES and Vulkan". |
+| `display.vk_driver` | The Vulkan driver of the Vulkan renderer (and of the Vulkan probe). Empty (the default): the phone's own. `"auto"`: Turnip on an Adreno, which the app downloads (refer to "Turn on Turnip"). Otherwise the file name of a driver archive in the data folder. VIDEO SETUP's VULKAN DRIVER sets `""` (STOCK) or `"auto"` (TURNIP). |
 | `debug.vk_probe` | Refer to "Find problems". |
 | `debug.vk_validation` | Refer to "Find problems". |
 | `debug.vk_present_marker` | Under the Vulkan renderer, draws a red square at the top left and a green one at the top right of the picture, so that a screenshot shows which way up it is. Default `false`. |
@@ -133,6 +133,25 @@ The game can draw in two ways:
 | OpenGL ES | `"gl"` | The phone's own. |
 
 If Vulkan cannot start on a phone, the game uses OpenGL ES.
+
+### Change the renderer in the game
+
+1. In the main menu, open **SETTINGS**, choose a profile, and open
+   **VIDEO SETUP**.
+2. At the top of the screen:
+   - **GRAPHICS BACKEND:** `VULKAN` or `OPENGL` (OpenGL ES).
+   - **VULKAN DRIVER:** `STOCK` (the phone's own driver) or `TURNIP`
+     (refer to "Turn on Turnip"). This row shows only when the backend is
+     `VULKAN`.
+3. Select **OK**. The menu writes `display.renderer` and
+   `display.vk_driver` in `config.toml`.
+4. Close the game and start it again. The renderer and the driver change
+   only when the game starts, as the note below the rows says.
+
+**DEFAULTS** sets `VULKAN` and `STOCK`. A driver archive of your own (refer
+to "Try another Turnip build") is set in `config.toml` only: with one set,
+the menu shows `STOCK`, and the archive stays set unless you choose
+another driver and select **OK**.
 
 On some phones the phone's own driver draws the game with errors: shapes
 that stretch across the screen, textures that are missing or wrong. The
@@ -189,7 +208,9 @@ value after `=`, and keep the quotes.
    the build that we chose). It does this only one time. If the download
    fails or you push "Skip", the app tries again at the next start.
    The download does not turn Turnip on.
-2. Close the game.
+2. Set **VULKAN DRIVER** to `TURNIP` (refer to "Change the renderer in
+   the game"), select **OK**, close the game and start it again. Then go
+   to step 5. Or, to change `config.toml` instead, close the game.
 3. Open `config.toml` (refer to "Get to the settings file"). Find the
    `[display]` section. It has these lines, with comments above them:
 
@@ -221,7 +242,8 @@ writes its name in `vk_driver_auto.txt` in the data folder). Instead of
 `"auto"`, you can write the file name of the archive, for example
 `vk_driver = "Turnip_v26.0.0_R8.zip"`.
 
-To turn Turnip off, set `vk_driver = ""` again.
+To turn Turnip off, set **VULKAN DRIVER** to `STOCK` (or
+`vk_driver = ""` again).
 
 ### Try another Turnip build
 
@@ -249,14 +271,16 @@ You can keep more than one archive in the folder.
 
 ### Choose another renderer or driver
 
-In `config.toml`, in the `[display]` section:
+In **VIDEO SETUP**, or in `config.toml`, in the `[display]` section:
 
-| You want | Set |
-| --- | --- |
-| Vulkan on the phone's own driver (the default) | `renderer = "vulkan"` and `vk_driver = ""` |
-| Vulkan on Turnip (Adreno) | `renderer = "vulkan"` and `vk_driver = "auto"` |
-| Vulkan on a driver archive that you add | `renderer = "vulkan"` and `vk_driver = "<file name>.zip"` |
-| OpenGL ES | `renderer = "gl"` |
+| You want | In VIDEO SETUP | In `config.toml` |
+| --- | --- | --- |
+| Vulkan on the phone's own driver (the default) | `VULKAN`, `STOCK` | `renderer = "vulkan"` and `vk_driver = ""` |
+| Vulkan on Turnip (Adreno) | `VULKAN`, `TURNIP` | `renderer = "vulkan"` and `vk_driver = "auto"` |
+| Vulkan on a driver archive that you add | (not in the menu) | `renderer = "vulkan"` and `vk_driver = "<file name>.zip"` |
+| OpenGL ES | `OPENGL` | `renderer = "gl"` |
+
+Either way, the change applies the next time the game starts.
 
 When the app is updated to the version that makes Vulkan the default, it
 changes `renderer = "gl"` in an existing `config.toml` to `"vulkan"` one
@@ -279,8 +303,10 @@ enter `adb logcat -s halo`. Look for the lines that start with
 
 ### Go back to the defaults
 
-Set `renderer = "vulkan"` and `vk_driver = ""`, or delete `config.toml` to
-get all the defaults again.
+Select **DEFAULTS** and then **OK** in **VIDEO SETUP** (this resets every
+row of that screen), or set `renderer = "vulkan"` and `vk_driver = ""`, or
+delete `config.toml` to get all the defaults again. Then start the game
+again.
 
 ### What to expect from Vulkan
 
