@@ -301,8 +301,8 @@ Start the game.
 ### 4. Vulkan on Turnip (Adreno only)
 
 On an Adreno 6xx or 7xx, the app downloads the Turnip build that we tested,
-`Turnip_v26.0.0_R8.zip`, into the data folder when it starts and the file
-is not there (approximately 3.5 MB, from
+`Turnip_v26.0.0_R8.zip`, into the data folder when the app starts and the
+file is not there (approximately 3.5 MB, from
 [K11MCH1/AdrenoToolsDrivers](https://github.com/K11MCH1/AdrenoToolsDrivers/releases);
 the app keeps the file only if it is exactly the build that we tested).
 The app does not change your settings. To use the driver, set in
@@ -313,9 +313,11 @@ renderer = "vulkan"
 vk_driver = "Turnip_v26.0.0_R8.zip"
 ```
 
-The download is ready approximately one second after the app starts. If
-the game starts first, it uses the phone's driver for that run (the main
-menu shows `Vulkan` without a driver name). Start the game again.
+The app downloads the file before the game starts, and shows the
+progress. If the download fails, the game starts after a few seconds. If
+you push "Skip", the game starts at once; that run uses the phone's driver
+(the main menu shows `Vulkan` without a driver name), and the next start
+uses Turnip if the download finished.
 
 To try another Turnip build:
 
