@@ -90,8 +90,9 @@ final class Updater {
     screen, so that the game finds the driver on its first start.
 
     Which archive is this phone's is decided once, from the GPU's name, and written to vk_driver_auto.txt in the data folder
-    (the archive's name, or an empty line for a GPU that has none): display.vk_driver = "auto", the default, is that archive
-    (port/android/host/host_vk_driver.c), so an Adreno runs the Vulkan renderer on Turnip and any other GPU on its own driver. */
+    (the archive's name, or an empty line for a GPU that has none): display.vk_driver = "auto" is that archive
+    (port/android/host/host_vk_driver.c), so that a player turns Turnip on with one setting. The default driver is the
+    phone's own (display.vk_driver = ""): the archive is downloaded, not used, until the player sets "auto". */
 
     static final class Driver {
         final String name, url, sha256, series;
@@ -277,6 +278,18 @@ final class Updater {
     /* ---------- config.toml's update.auto */
 
     private static boolean autoUpdate(File config) {
+        String value = readSetting(config, "update", "auto");
+
+        return value == null || !value.startsWith("false");
+    }
+
+    /** update.auto = false written into config.toml (only its line changed) */
+    static boolean writeAutoUpdateOff(File config) {
+        return writeSetting(config, "update", "auto", "false");
+    }
+
+    /** a setting's value as config.toml has it (a string with its quotes), null when it is not there */
+    static String readSetting(File config, String wantedSection, String key) {
         String section = "";
 
         for (String line : readLines(config)) {
@@ -284,15 +297,15 @@ final class Updater {
 
             if (trimmed.startsWith("[") && trimmed.contains("]")) {
                 section = trimmed.substring(1, trimmed.indexOf(']')).trim();
-            } else if (section.equals("update") && isKey(trimmed, "auto")) {
-                return !trimmed.substring(trimmed.indexOf('=') + 1).trim().startsWith("false");
+            } else if (section.equals(wantedSection) && isKey(trimmed, key)) {
+                return trimmed.substring(trimmed.indexOf('=') + 1).trim();
             }
         }
-        return true;
+        return null;
     }
 
-    /** update.auto = false written into config.toml (only its line changed) */
-    static boolean writeAutoUpdateOff(File config) {
+    /** key = value written into config.toml's section (only its line changed; added when it is not there) */
+    static boolean writeSetting(File config, String wantedSection, String key, String value) {
         List<String> lines = readLines(config);
         List<String> out = new ArrayList<>();
         String section = "";
@@ -303,13 +316,13 @@ final class Updater {
 
             if (trimmed.startsWith("[") && trimmed.contains("]")) {
                 if (inSection && !written) {
-                    out.add("auto = false");
+                    out.add(key + " = " + value);
                     written = true;
                 }
                 section = trimmed.substring(1, trimmed.indexOf(']')).trim();
-                inSection = section.equals("update");
-            } else if (inSection && !written && isKey(trimmed, "auto")) {
-                out.add("auto = false");
+                inSection = section.equals(wantedSection);
+            } else if (inSection && !written && isKey(trimmed, key)) {
+                out.add(key + " = " + value);
                 written = true;
                 continue;
             }
@@ -318,9 +331,9 @@ final class Updater {
         if (!written) {
             if (!inSection) {
                 out.add("");
-                out.add("[update]");
+                out.add("[" + wantedSection + "]");
             }
-            out.add("auto = false");
+            out.add(key + " = " + value);
         }
         StringBuilder text = new StringBuilder();
         for (String line : out)
@@ -330,6 +343,36 @@ final class Updater {
             return true;
         } catch (IOException e) {
             return false;
+        }
+    }
+
+    /* ---------- Vulkan the default for every install
+
+    Until Vulkan became the default renderer, config.toml was written with display.renderer = "gl", and no earlier release
+    could draw with Vulkan: a "gl" there is the old default, not a choice. Once, it is changed to "vulkan"
+    (vulkan_default.txt marks that it was done), so that every install moves to the new default; a "gl" written after that
+    is the player's and stays. */
+
+    private static final String VULKAN_DEFAULT_MARK = "vulkan_default.txt";
+
+    static void moveToVulkanDefault(File root) {
+        if (root == null)
+            return;
+        File mark = new File(root, VULKAN_DEFAULT_MARK);
+        File config = new File(root, "config.toml");
+
+        if (mark.exists())
+            return;
+        if (config.isFile() && "\"gl\"".equals(readSetting(config, "display", "renderer"))) {
+            if (!writeSetting(config, "display", "renderer", "\"vulkan\""))
+                return;
+            android.util.Log.i("halo", "renderer: display.renderer = \"gl\" (the old default) changed to \"vulkan\", "
+                + "the new default; set it to \"gl\" again for OpenGL ES");
+        }
+        try (OutputStream out = new FileOutputStream(mark)) {
+            out.write("display.renderer was moved to the Vulkan default\n".getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            // tried again at the next start
         }
     }
 
