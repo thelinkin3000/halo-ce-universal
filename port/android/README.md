@@ -249,8 +249,9 @@ On some phones the OpenGL ES driver draws the game with errors: shapes
 that stretch across the screen, textures that are missing or wrong. The
 Vulkan renderer lets you try another driver. On phones with a Qualcomm
 Adreno GPU, that is usually Turnip, the open-source Vulkan driver for
-Adreno from the Mesa project. The game does not include a driver. You
-download one yourself.
+Adreno from the Mesa project. The game does not include a driver. On an
+Adreno 6xx or 7xx, the app downloads a Turnip build that we tested (step
+4); you can also download other builds yourself.
 
 To see which renderer and driver run, look at the main menu: the line
 below the game's version number (`01.01.14.2342`, at the lower right) says
@@ -298,6 +299,25 @@ vk_driver = ""
 Start the game.
 
 ### 4. Vulkan on Turnip (Adreno only)
+
+On an Adreno 6xx or 7xx, the app downloads the Turnip build that we tested,
+`Turnip_v26.0.0_R8.zip`, into the data folder when it starts and the file
+is not there (approximately 3.5 MB, from
+[K11MCH1/AdrenoToolsDrivers](https://github.com/K11MCH1/AdrenoToolsDrivers/releases);
+the app keeps the file only if it is exactly the build that we tested).
+The app does not change your settings. To use the driver, set in
+`config.toml`, in the `[display]` section:
+
+```toml
+renderer = "vulkan"
+vk_driver = "Turnip_v26.0.0_R8.zip"
+```
+
+The download is ready approximately one second after the app starts. If
+the game starts first, it uses the phone's driver for that run (the main
+menu shows `Vulkan` without a driver name). Start the game again.
+
+To try another Turnip build:
 
 1. Download a Turnip archive for your GPU. These sites release them (they
    are made by other people, not by this project):

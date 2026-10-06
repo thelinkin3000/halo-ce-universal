@@ -4,6 +4,12 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.net.Uri;
+import android.opengl.EGL14;
+import android.opengl.EGLConfig;
+import android.opengl.EGLContext;
+import android.opengl.EGLDisplay;
+import android.opengl.EGLSurface;
+import android.opengl.GLES20;
 import android.util.TypedValue;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -21,8 +27,12 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -45,6 +55,9 @@ import java.util.zip.ZipInputStream;
  *
  * Every build of main is signed with the same key (the workflow's), which an
  * app must keep for Android to install a new version over it.
+ *
+ * It also downloads the open-source Vulkan driver for Adreno GPUs
+ * (driverStart): see there.
  */
 final class Updater {
     private static final String REPOSITORY = "thelinkin3000/halo-ce-universal";
@@ -68,6 +81,118 @@ final class Updater {
             if (latest > BuildConfig.HALO_BUILD_NUMBER)
                 activity.runOnUiThread(() -> ask(activity, latest));
         }, "update check").start();
+    }
+
+    /* ---------- the open-source Vulkan driver for Adreno GPUs
+
+    On an Adreno 6xx or 7xx, the Turnip build (Mesa's Vulkan driver for Adreno) that the Vulkan renderer was tested with is
+    downloaded into the data folder when it is not there, from the project that releases it, so that a player only has to set
+    display.vk_driver to its name (port/android/README.md, "Graphics: OpenGL ES and Vulkan"). It is not chosen for the player:
+    config.toml is left as it is. The download must have the size and SHA-256 of the build that was tested, or it is dropped.
+    Every build looks, whatever update.auto says: the driver is not an update of the game. */
+
+    private static final String TURNIP_NAME = "Turnip_v26.0.0_R8.zip";
+    private static final String TURNIP_URL =
+        "https://github.com/K11MCH1/AdrenoToolsDrivers/releases/download/v26.0.0-rc08/" + TURNIP_NAME;
+    private static final long TURNIP_SIZE = 3478359;
+    private static final String TURNIP_SHA256 = "e634db0f929e2205e95511c769071817d0390180ec72c8e690bc76375e813715";
+
+    /** At the game's start: the driver downloaded in the background, on an Adreno 6xx or 7xx that lacks it. */
+    static void driverStart(Activity activity) {
+        File root = activity.getExternalFilesDir(null);
+
+        if (root == null || new File(root, TURNIP_NAME).length() == TURNIP_SIZE)
+            return;
+        new Thread(() -> {
+            String renderer = glRenderer();
+            int model = adrenoModel(renderer);
+
+            if (model < 600 || model > 799) {
+                android.util.Log.i("halo", "driver: not downloading " + TURNIP_NAME + ": the GPU is \"" + renderer
+                    + "\", not an Adreno 6xx or 7xx");
+                return;
+            }
+            File archive = new File(root, TURNIP_NAME);
+            File partial = new File(root, TURNIP_NAME + ".partial");
+
+            try {
+                android.util.Log.i("halo", "driver: downloading " + TURNIP_URL + " for the " + renderer);
+                download(TURNIP_URL, partial, (received, total) -> { });
+                if (partial.length() != TURNIP_SIZE || !TURNIP_SHA256.equals(sha256(partial)))
+                    throw new IOException("the download is not the build that was tested (" + partial.length()
+                        + " bytes)");
+                archive.delete();
+                if (!partial.renameTo(archive))
+                    throw new IOException("it could not be renamed to " + archive);
+                android.util.Log.i("halo", "driver: " + TURNIP_NAME + " is in the data folder; set display.vk_driver = \""
+                    + TURNIP_NAME + "\" (and display.renderer = \"vulkan\") to use it");
+            } catch (Exception e) {
+                partial.delete();
+                android.util.Log.i("halo", "driver: could not download " + TURNIP_NAME + ": " + e);
+            }
+        }, "driver download").start();
+    }
+
+    /** the number of an Adreno GPU from its OpenGL ES renderer string ("Adreno (TM) 750"), 0 for any other GPU */
+    private static int adrenoModel(String renderer) {
+        Matcher matcher = Pattern.compile("adreno\\D*(\\d{3})").matcher(renderer.toLowerCase(Locale.ROOT));
+
+        return matcher.find() ? Integer.parseInt(matcher.group(1)) : 0;
+    }
+
+    /**
+     * The GPU's OpenGL ES renderer string, from a context of its own on a 1x1 pbuffer ("" if none can be made). The display
+     * is not terminated: the game's renderer shares it.
+     */
+    private static String glRenderer() {
+        EGLDisplay display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
+        EGLContext context = EGL14.EGL_NO_CONTEXT;
+        EGLSurface surface = EGL14.EGL_NO_SURFACE;
+        int[] version = new int[2];
+
+        if (display == EGL14.EGL_NO_DISPLAY || !EGL14.eglInitialize(display, version, 0, version, 1))
+            return "";
+        try {
+            int[] attributes = { EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT, EGL14.EGL_SURFACE_TYPE,
+                EGL14.EGL_PBUFFER_BIT, EGL14.EGL_NONE };
+            EGLConfig[] configs = new EGLConfig[1];
+            int[] count = new int[1];
+
+            if (!EGL14.eglChooseConfig(display, attributes, 0, configs, 0, 1, count, 0) || count[0] < 1)
+                return "";
+            context = EGL14.eglCreateContext(display, configs[0], EGL14.EGL_NO_CONTEXT,
+                new int[] { EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE }, 0);
+            surface = EGL14.eglCreatePbufferSurface(display, configs[0],
+                new int[] { EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE }, 0);
+            if (context == EGL14.EGL_NO_CONTEXT || surface == EGL14.EGL_NO_SURFACE
+                || !EGL14.eglMakeCurrent(display, surface, surface, context))
+                return "";
+            String renderer = GLES20.glGetString(GLES20.GL_RENDERER);
+
+            return renderer != null ? renderer : "";
+        } finally {
+            EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
+            if (surface != EGL14.EGL_NO_SURFACE)
+                EGL14.eglDestroySurface(display, surface);
+            if (context != EGL14.EGL_NO_CONTEXT)
+                EGL14.eglDestroyContext(display, context);
+        }
+    }
+
+    private static String sha256(File file) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        StringBuilder text = new StringBuilder();
+
+        try (InputStream stream = new FileInputStream(file)) {
+            byte[] buffer = new byte[65536];
+            int count;
+
+            while ((count = stream.read(buffer)) > 0)
+                digest.update(buffer, 0, count);
+        }
+        for (byte b : digest.digest())
+            text.append(String.format(Locale.ROOT, "%02x", b));
+        return text.toString();
     }
 
     static File configFile(Activity activity) {
