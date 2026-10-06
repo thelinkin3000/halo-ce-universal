@@ -86,7 +86,9 @@ as a Vulkan function */
 	X(vkCreateDescriptorPool) X(vkDestroyDescriptorPool) X(vkResetDescriptorPool) X(vkAllocateDescriptorSets) \
 	X(vkUpdateDescriptorSets) X(vkCmdBindDescriptorSets) X(vkCmdBindIndexBuffer) X(vkCmdDrawIndexed) X(vkCmdSetDepthBias) \
 	X(vkCmdSetBlendConstants) X(vkCmdSetStencilCompareMask) X(vkCmdSetStencilWriteMask) X(vkCmdSetStencilReference) \
-	X(vkCreateSampler) X(vkDestroySampler) X(vkCmdCopyBufferToImage) X(vkCmdCopyImage)
+	X(vkCreateSampler) X(vkDestroySampler) X(vkCmdCopyBufferToImage) X(vkCmdCopyImage) \
+	X(vkCreateQueryPool) X(vkDestroyQueryPool) X(vkCmdResetQueryPool) X(vkCmdBeginQuery) X(vkCmdEndQuery) \
+	X(vkCmdCopyQueryPoolResults)
 
 #define X(name) extern PFN_##name name __attribute__((visibility("hidden")));
 HOST_VK_DEVICE_FUNCTIONS(X)
@@ -223,6 +225,19 @@ void host_vk_texture_frame_reset(unsigned slot);
 struct host_vk_image *host_vk_image_get(uint32_t id);
 unsigned host_vk_texture_images(void);
 unsigned host_vk_texture_megabytes(void);
+
+/* host_vk_visibility.c (phase 6): the visibility tests, as occlusion queries */
+void host_vk_visibility_start(void);
+void host_vk_visibility_begin(void);
+void host_vk_visibility_end(const struct vk_command_visibility_end *end);
+/* with a rendering open, at each draw: the query of a test being made is begun */
+void host_vk_visibility_draw(VkCommandBuffer command);
+/* a part of a test that is open is ended (before its rendering ends) */
+void host_vk_visibility_close(VkCommandBuffer command);
+/* the frame's end, outside a rendering: its tests' results are copied */
+void host_vk_visibility_frame_end(VkCommandBuffer command);
+/* the frame slot's fence has passed: its tests' counts become the slots' latest */
+void host_vk_visibility_retired(unsigned slot);
 
 /* host_vk_draw.c (phase 6): the mip composites */
 void host_vk_composite_command(const struct vk_command_composite *command);
