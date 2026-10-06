@@ -6,6 +6,9 @@
 	<widget name="main_menu/build_number" type="text" controller="1" width="150" height="20" font="ui\small_ui" color="#FFFF8000">
 		<data input="build number textbox only"/>
 	</widget>
+	<widget name="main_menu/renderer" type="text" controller="1" width="190" height="60" font="ui\small_ui" color="#FFFF8000">
+		<data input="port renderer textbox"/>
+	</widget>
 	<widget name="main_menu/current_profile_name" type="text" controller="1" left="10" top="446" width="340" height="34" font="ui\large_ui" color="#FFCCCCCC">
 	</widget>
 	<widget name="main_menu/halo_logo" controller="1" width="640" height="256" bitmap="ui\shell\main_menu\halo_logo">
@@ -17,6 +20,7 @@
 		<child widget="main_menu/halo_logo" y="28"/>
 		<child widget="main_menu/main_menu_select_list"/>
 		<child widget="main_menu/build_number" x="450" y="400"/>
+		<child widget="main_menu/renderer" x="450" y="420"/>
 	</widget>
 	<widget name="main_menu/main_menu_item_load_camp" type="text" width="256" height="33" bitmap="main_menu/menu_load_campaign" string_list="main_menu/main_menu_options" string_index="1" font="ui\small_ui" color="#000080FF">
 		<on event="a" run="new game if no plyr profiles" label="load_campaign" open="main_menu/campaign_select/campaign_menu" branch="true"/>

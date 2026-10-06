@@ -995,6 +995,29 @@ void WINAPI D3DDevice_InsertCallback(D3DCALLBACKTYPE type, D3DCALLBACK callback,
 		callback(context);
 }
 
+/* ---------- the main menu's line under the version number (menu_functions.c): this renderer, and the driver archive the host
+loaded, if it is not the phone's own driver (on a second line) */
+
+uint32_t host_vk_driver_name(uint32_t out, uint32_t size);
+
+char const *d3d8_renderer_description(void)
+{
+	static char description[64];
+
+	if (!description[0])
+	{
+		char driver[56];
+
+		driver[0] = 0;
+		host_vk_driver_name((uint32_t)(uintptr_t)driver, sizeof(driver));
+		if (driver[0])
+			snprintf(description, sizeof(description), "Vulkan\r%s", driver);
+		else
+			snprintf(description, sizeof(description), "Vulkan");
+	}
+	return description;
+}
+
 /* ---------- visibility (occlusion) tests (phase 6, step 6)
 
 The draws between Begin and End are the test's: the host counts the samples they pass (an occlusion query, host_vk_visibility.c)
