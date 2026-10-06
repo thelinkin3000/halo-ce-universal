@@ -2323,6 +2323,38 @@ Phase 0 was worked on the test device (Lenovo TB321FU, Adreno 750, Android 16,
 API 36, the phone's own driver). The reports are in `port/android/probe/reports/`.
 Newest first.
 
+### Phase 6 — audit (steps 1 to 6 as committed, `d4687ab2`)
+
+Read against the spec, `d3d8_gl.c` at this branch and the Vulkan rules: the guest's mapping tables (compare, stencil, blend
+factors and operations, topologies, polygon modes, address modes: the Xbox's OpenGL enumerants to Vulkan's numbers) are right
+entry by entry; the raster state, the uniforms and the visibility result follow `apply_raster_state`, `prepare_draw` and the
+desktop query path line for line; indexed draws put the vertices from the lowest index with the vertex offset its negative; the
+unfed attributes are put when they change; the memory watch is started; the texture decoders are `xbox_textures.c`'s (the one
+change there since the copy, `197c1994`, is a lookup speed-up, not a fix). The host's layouts, barriers, descriptor pools,
+graveyard and query resets are where the rules want them. Fixed, built (`ninja android_apk`, no new warnings), **not yet run on
+the device** (the user's testing was under way):
+
+1. **A visibility test left open at the frame's end wrote its count into the game's slot 1** (`host_vk_visibility_frame_end`
+   ended it as test 1): it is now closed and dropped; its `END`, in the next frame, finds no test, as before.
+2. **Two copies into one texture with no draw between them had no barrier between them** (the text atlas's rows, a texture
+   sent again in the same frame): copies are not ordered without one, so the older texels could land last. A transfer-to-transfer
+   barrier now separates them.
+3. **A compressed 3D texture went to the device as a BC image**, which Vulkan does not require a driver to make (2D and cube
+   ones it does): 3D ones are decoded to BGRA.
+4. **A render target sampled as a texture took its sampler type from the texture's description** (a cube or 3D one would have
+   drawn the dummy), where `bind_textures` makes it 2D whatever the description: the key now says 2D for a texture whose data is
+   a target, as there.
+5. **Wireframe and point fill without `fillModeNonSolid`** would make an invalid pipeline on a device that lacks it (both
+   Adreno drivers have it): filled there.
+6. The mip composite's halving blits use the filter the colour format allows (`B.blit_filter`), not linear unconditionally.
+
+Left as they are, for phase 7 if they show: the border colour as the nearest of Vulkan's three fixed ones (deviation 3; an
+exact one is `VK_EXT_custom_border_color`); a mip composite copied again only when one of its levels' targets is bound again,
+so draws into a level after it was sampled with no new `TARGETS` between are not seen until then (`mip_composite_get` copies at
+every bind); more than 1,024 visibility tests in one frame would reuse a group before its results are copied; one
+`VkSampler` per distinct state, with no limit against `maxSamplerAllocationCount`; composites, samplers and dummies are never
+destroyed (the device lives as long as the game).
+
 ### Phase 6 — summary
 
 Worked unattended on the test device (Adreno 750, validation layer on) as the `.vk` build; the user then took over the testing of what is

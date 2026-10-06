@@ -482,7 +482,7 @@ static VkImageView composite_sampled(struct composite *composite)
 		blit.dstOffsets[1].y = (int32_t)dimension(composite->height, level);
 		blit.dstOffsets[1].z = 1;
 		vkCmdBlitImage(command, composite->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, composite->image,
-			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, B.blit_filter);
 	}
 	for (level = 0; level < composite->levels; level++)
 		level_barrier(command, composite, level, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);

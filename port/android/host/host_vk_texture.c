@@ -433,6 +433,12 @@ void host_vk_texture_data_command(const struct vk_command_texture_data *command)
 		}
 		dirty[dirty_count++] = image;
 	}
+	else
+	{
+		/* another copy into it since the last draw (the atlas's rows, a texture sent again): copies are not ordered without a
+		barrier between them */
+		barrier(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+	}
 	memset(&copy, 0, sizeof(copy));
 	copy.bufferOffset = offset;
 	copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
