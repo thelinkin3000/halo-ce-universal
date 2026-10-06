@@ -4,9 +4,10 @@ The Switch port (port/switch/README.md) runs the same ILP32 AArch64 guest
 image as the Android port (port/android/README.md) inside an ordinary
 devkitA64 homebrew program. This graph builds
 
-- the guest image, build/switch/halo_guest.elf: exactly the Android guest,
-  byte for byte, since both are AArch64 code with 32-bit pointers and it is
-  built by the same clang for arm64_32 and the same linker script;
+- the guest image, build/switch/halo_guest.elf: the Android guest, AArch64
+  code with 32-bit pointers built by the same clang for arm64_32 and the
+  same linker script, with the deko3d renderer (port/switch/DEKO3D.md) in
+  place of the OpenGL one;
 - the host, build/switch/halo.nro: the Android host library
   (port/android/host) with three files replaced by port/switch/host, so that
   it answers the guest's SDL3 calls with devkitPro's SDL2 and links against
@@ -243,7 +244,6 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     platform_semantics_header = Path("build/linux/platform_msvc_semantics.h")
     prefix_header = LINUX_DIR / "include" / "halo_linux_prefix.h"
     image = BUILD / "halo_guest.elf"
-    dk_image = BUILD / "halo_guest_dk.elf"
     host_obj_dir = BUILD / "host" / "obj"
     nro = BUILD / "halo.nro"
     python = "$python"
@@ -483,20 +483,13 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
         f"-I{SDL_DIR}/include", f"-I{gl_include}", *libc_includes, f"-idirafter {XDK_INCLUDE}",
     ])
     guest_host_only = {"memory_watch.c"}  # replaced by guest_memory_watch.c
-    gl_renderer_object = None
-    gl_textures_object = None
-    gl_post_object = None
+    # the OpenGL renderer's device, texture cache and anti-aliasing passes:
+    # the deko3d renderer's take their place, below
+    opengl_only = {"d3d8_gl.c", "xbox_textures.c", "xgpu_post.c"}
     for source in sorted((LINUX_DIR / "src").glob("*.c")):
-        if source.name.startswith("posix_") or source.name in guest_host_only:
+        if source.name.startswith("posix_") or source.name in guest_host_only or source.name in opengl_only:
             continue
         objects.append(guest_object(source, platform_cflags))
-        if source.name == "d3d8_gl.c":
-            gl_renderer_object = objects[-1]
-        # (display.anti_aliasing's passes: the OpenGL renderer's)
-        if source.name == "xgpu_post.c":
-            gl_post_object = objects[-1]
-        if source.name == "xbox_textures.c":
-            gl_textures_object = objects[-1]
     for source in hud_assets_build(n, "switch", gen_dir / "hud_hires_assets.c"):
         objects.append(guest_object(source, platform_cflags))
     objects.append(guest_object(TOML_DIR / "tomlc17.c", platform_cflags))
@@ -556,26 +549,23 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
         rspfile="$out.rsp",
         rspfile_content="$in_newline",
     )
-    n.build(outputs=image, rule="switch_guest_link", inputs=objects, implicit=[libguestc, linker_script])
 
-    # The same game with the deko3d renderer (port/switch/DEKO3D.md): its
-    # device, port/switch/guest/d3d8_dk.c, takes the place of d3d8_gl.c, and
-    # every other object is shared. The host runs one image or the other, as
-    # config.toml's display.renderer says (port/switch/host/host.h).
-    dk_objects = [obj for obj in objects if obj not in (gl_renderer_object, gl_textures_object, gl_post_object)]
+    # The deko3d renderer (port/switch/DEKO3D.md), the Switch's only one: its
+    # device, port/switch/guest/d3d8_dk.c, takes the place of d3d8_gl.c
+    dk_objects = list(objects)
     dk_objects.append(guest_object(PORT_DIR / "guest" / "d3d8_dk.c", platform_cflags))
     # the texture cache, which decodes as xbox_textures.c does and sends the
     # texels to the host (DEKO3D.md, phase 6, step 2)
     dk_objects.append(guest_object(PORT_DIR / "guest" / "xbox_textures_dk.c", platform_cflags))
     # the deko3d renderer's GLSL generators (DEKO3D.md, phase 4); the
-    # OpenGL renderer's nv2a_vsh.c and nv2a_psh.c stay in both images, and
-    # the copies' names do not collide with them
+    # OpenGL renderer's nv2a_vsh.c and nv2a_psh.c stay in the image, and the
+    # copies' names do not collide with them
     dk_objects.append(guest_object(PORT_DIR / "guest" / "nv2a_vsh_dk.c", platform_cflags))
     dk_objects.append(guest_object(PORT_DIR / "guest" / "nv2a_psh_dk.c", platform_cflags))
     # the shader cache's guest half (DEKO3D.md, phase 5, step 4): the keys,
     # the key files, the import of the OpenGL records, the startup pass
     dk_objects.append(guest_object(PORT_DIR / "guest" / "dk_shaders.c", platform_cflags))
-    n.build(outputs=dk_image, rule="switch_guest_link", inputs=dk_objects, implicit=[libguestc, linker_script])
+    n.build(outputs=image, rule="switch_guest_link", inputs=dk_objects, implicit=[libguestc, linker_script])
 
     # ---------- the host, built with devkitA64
 
@@ -776,5 +766,5 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     )
     n.build(outputs=nro, rule="switch_nro", inputs=[elf, nacp, nro_icon])
 
-    n.build(outputs="switch", rule="phony", inputs=[nro, image, dk_image])
+    n.build(outputs="switch", rule="phony", inputs=[nro, image])
     n.newline()

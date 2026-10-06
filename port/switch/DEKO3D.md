@@ -59,15 +59,18 @@ So the renderer is split at the draw:
 The host reads guest memory directly (it is below 4 GB): vertex data,
 textures, `D3D__RenderState`.
 
-### Both renderers in one Switch build
+### The Switch's only renderer
 
-Two guest images, and the host runs one. `halo_guest.elf` is the game with
-the OpenGL renderer, built as before; `halo_guest_dk.elf` is the same objects
-with `port/switch/guest/d3d8_dk.c` in place of `d3d8_gl.c`. The host reads
-`display.renderer` from `config.toml` before it loads the guest and picks the
-image (`host_main.c`; falling back to OpenGL if the deko3d image is missing).
-No source of the OpenGL renderer is touched, and nothing in the guest has to
-choose at run time.
+Until deko3d was the only renderer, the Switch build made two guest images,
+and the host ran the one `display.renderer` named: `halo_guest.elf` with the
+OpenGL renderer and `halo_guest_dk.elf` with `port/switch/guest/d3d8_dk.c`
+in place of `d3d8_gl.c` (the phases below were measured that way, the one
+image against the other). The OpenGL image is no longer built:
+`halo_guest.elf` is the deko3d one, the host always loads it, and
+`display.renderer` is not a Switch setting. An update removes the
+`halo_guest_dk.elf` an older release left (`host_update.c`). The host's
+OpenGL-over-Mesa paths, which it skips under deko3d, are still there, to be
+taken out later.
 
 Under deko3d the host makes no EGL surface: SDL starts without video, and
 the guest's window and GL context are stand-ins (`host_sdl2.c`), so the
@@ -76,10 +79,6 @@ works as it does over Mesa, and the display is left for deko3d's swapchain.
 The guest's remaining GL calls (high-res HUD and text, menu art) have no
 context there, and Mesa does nothing with them, until their deko3d versions
 replace them.
-
-Config: `display.renderer = "deko3d"` (the default, since phase 6: also
-what a `config.toml` without the setting gets) or `"gl"`, the fallback,
-under `[display]`.
 
 ---
 
