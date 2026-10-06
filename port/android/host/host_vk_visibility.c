@@ -153,15 +153,12 @@ void host_vk_visibility_frame_end(VkCommandBuffer command)
 
 	if (!V.ready)
 		return;
-	/* a test left open at the frame's end is ended with it, counting what it had */
+	/* a test left open at the frame's end is dropped: its END, in the next frame, finds none (and its count would go to no
+	slot the game named) */
 	if (V.active)
 	{
-		struct vk_command_visibility_end end;
-
-		memset(&end, 0, sizeof(end));
-		end.index = 1;
-		end.area = 1.0f;
-		host_vk_visibility_end(&end);
+		host_vk_visibility_close(command);
+		V.active = 0;
 	}
 	if (!V.count[slot])
 		return;

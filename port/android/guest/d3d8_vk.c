@@ -1430,6 +1430,16 @@ static void key_textures(struct nv2a_pixel_shader_key *key)
 			key->sampler_type[stage] = mode == 0x11 ? _xgpu_sampler_2d : _xgpu_sampler_none;
 			continue;
 		}
+		/* a render target sampled as a texture is a 2D image whatever the texture says (bind_textures in d3d8_gl.c) */
+		{
+			unsigned long target_width, target_height;
+
+			if (rendered_find(texture->Data, &target_width, &target_height))
+			{
+				key->sampler_type[stage] = _xgpu_sampler_2d;
+				continue;
+			}
+		}
 		xgpu_texture_describe(texture->Format, texture->Size, &description);
 		if (stage == 0)
 		{
