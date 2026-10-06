@@ -575,6 +575,8 @@ static void command_targets(const struct vk_command_targets *command)
 	/* a change is a pair that differs from the one last named (the guest names its targets again after each present) */
 	if (color != B.last_color || depth != B.last_depth)
 		B.counts.target_changes++;
+	if (color)
+		color->bound = ++B.target_clock;
 	B.last_color = color;
 	B.last_depth = depth;
 	if (color != B.color || depth != B.depth)
@@ -1533,6 +1535,10 @@ void host_vk_submit(uint32_t commands, uint32_t size)
 		case VK_COMMAND_TEXTURE_FREE:
 			if (header->size >= sizeof(struct vk_command_texture_free))
 				host_vk_texture_free_command((const struct vk_command_texture_free *)header);
+			break;
+		case VK_COMMAND_COMPOSITE:
+			if (header->size >= sizeof(struct vk_command_composite))
+				host_vk_composite_command((const struct vk_command_composite *)header);
 			break;
 		case VK_COMMAND_TEST_DRAW:
 			if (header->size >= sizeof(struct vk_command_test_draw))
