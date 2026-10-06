@@ -133,6 +133,25 @@ void halo_screen_ui_offset(unsigned char centered)
 	ui_offset = centered ? (halo_screen_width() - 640) / 2 : 0;
 }
 
+/* display.shadow_resolution, display.per_pixel_lighting and
+display.anti_aliasing are the OpenGL renderer's (d3d8_gl.c): here the shadow
+maps stay the Xbox's 128x128, every draw is lit as its vertex shader lights
+it, and the 3D view is drawn as it is */
+long halo_shadow_map_scale(void)
+{
+	return 1;
+}
+
+void halo_vertex_shader_lighting(unsigned long handle)
+{
+	(void)handle;
+}
+
+void halo_screen_anti_alias(short x0, short y0, short x1, short y1)
+{
+	(void)x0; (void)y0; (void)x1; (void)y1;
+}
+
 /* ---------- state the XDK header's inline functions read and write */
 
 DWORD D3D__RenderState[D3DRS_MAX];
@@ -1575,7 +1594,7 @@ static char *gl_vertex_shader(const struct vertex_shader_object *program, unsign
 	char *text;
 
 	xgpu_capabilities.shading_language = "310 es";
-	text = nv2a_vertex_shader_to_glsl(program->instructions, program->instruction_count, mask);
+	text = nv2a_vertex_shader_to_glsl(program->instructions, program->instruction_count, mask, NULL);
 	xgpu_capabilities.shading_language = saved;
 	return text;
 }
