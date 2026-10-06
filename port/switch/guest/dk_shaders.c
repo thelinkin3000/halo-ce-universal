@@ -225,7 +225,22 @@ static unsigned long keys_read_file(const char *xbox_path)
 		}
 	}
 	else
+	{
 		platform_log("shader keys: %s is not a key file of this build", path);
+		/* This console's own file is started again, for console_write to
+		write with this build's header. Appended to, as it was, it stayed
+		the old build's file: refused at every start, so no key was known
+		and every shader was compiled or loaded at its first draw (the draw
+		skipped till then), the keys met appended where nothing would read
+		them. (Another's file, keys.dkk, is left as it was given.) */
+		if (!strcmp(xbox_path, DK_KEY_CONSOLE_FILE))
+		{
+			fclose(file);
+			if (remove(path) == 0)
+				platform_log("shader keys: %s removed, to be written again", path);
+			return 0;
+		}
+	}
 	fclose(file);
 	return added;
 }
