@@ -44,6 +44,7 @@ what tests the writer in this phase.
 #include "posix.h"
 
 #include <pthread.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -139,8 +140,14 @@ uint64_t dk_shader_hash_mix(uint64_t hash, const void *data, unsigned long size)
 
 /* the hash of a key: over the generators' version and the key's data, so a
 changed generator makes new hashes and a new set of names on the card. The
-pixel key is mixed whole (it has no padding); the vertex key's fields one
-by one, for the padding's sake */
+pixel key is mixed up to the fields the OpenGL renderer's settings added
+after it (per_pixel_lighting, alpha_test_samples: always 0 under deko3d,
+whose generator does not read them), and those only when they are not 0,
+so that its hashes stay the ones the cards' shaders were compiled under:
+mixed whole, their two bytes and the padding after them made every pixel
+shader on a card a stranger, compiled again one at a time while the game
+ran and its draws skipped till then. The vertex key's fields one by one,
+for the padding's sake */
 static uint64_t key_hash(uint32_t stage, const void *data)
 {
 	uint32_t version = DK_SHADER_GENERATOR_VERSION;
@@ -155,7 +162,16 @@ static uint64_t key_hash(uint32_t stage, const void *data)
 		hash = dk_shader_hash_mix(hash, &key->packed_mask, sizeof(key->packed_mask));
 	}
 	else
-		hash = dk_shader_hash_mix(hash, data, sizeof(struct nv2a_pixel_shader_key));
+	{
+		const struct nv2a_pixel_shader_key *key = data;
+
+		hash = dk_shader_hash_mix(hash, data, offsetof(struct nv2a_pixel_shader_key, per_pixel_lighting));
+		if (key->per_pixel_lighting || key->alpha_test_samples)
+		{
+			hash = dk_shader_hash_mix(hash, &key->per_pixel_lighting, sizeof(key->per_pixel_lighting));
+			hash = dk_shader_hash_mix(hash, &key->alpha_test_samples, sizeof(key->alpha_test_samples));
+		}
+	}
 	return hash;
 }
 
