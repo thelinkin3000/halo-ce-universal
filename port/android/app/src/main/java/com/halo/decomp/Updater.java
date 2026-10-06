@@ -56,8 +56,8 @@ import java.util.zip.ZipInputStream;
  * Every build of main is signed with the same key (the workflow's), which an
  * app must keep for Android to install a new version over it.
  *
- * It also downloads the open-source Vulkan driver for Adreno GPUs
- * (driverStart): see there.
+ * It also downloads the open-source Vulkan driver for Adreno GPUs, for
+ * LauncherActivity (driverDownload): see there.
  */
 final class Updater {
     private static final String REPOSITORY = "thelinkin3000/halo-ce-universal";
@@ -87,7 +87,8 @@ final class Updater {
     downloaded into the data folder when it is not there, from the project that releases it, so that a player only has to set
     display.vk_driver to its name (port/android/README.md, "Graphics: OpenGL ES and Vulkan"). It is not chosen for the player:
     config.toml is left as it is. The download must have the size and SHA-256 of the build that was tested, or it is dropped.
-    Every build looks, whatever update.auto says: the driver is not an update of the game. */
+    Every build looks, whatever update.auto says: the driver is not an update of the game. LauncherActivity does it before
+    the game starts, with the download's progress on screen, so that the game finds the driver on its first start. */
 
     private static final String TURNIP_NAME = "Turnip_v26.0.0_R8.zip";
     private static final String TURNIP_URL =
@@ -95,40 +96,43 @@ final class Updater {
     private static final long TURNIP_SIZE = 3478359;
     private static final String TURNIP_SHA256 = "e634db0f929e2205e95511c769071817d0390180ec72c8e690bc76375e813715";
 
-    /** At the game's start: the driver downloaded in the background, on an Adreno 6xx or 7xx that lacks it. */
-    static void driverStart(Activity activity) {
-        File root = activity.getExternalFilesDir(null);
+    /** whether the tested Turnip archive is in the data folder at root */
+    static boolean driverPresent(File root) {
+        return root == null || new File(root, TURNIP_NAME).length() == TURNIP_SIZE;
+    }
 
-        if (root == null || new File(root, TURNIP_NAME).length() == TURNIP_SIZE)
-            return;
-        new Thread(() -> {
-            String renderer = glRenderer();
-            int model = adrenoModel(renderer);
+    /** the GPU's name when it is an Adreno 6xx or 7xx, the GPUs the archive is for; null for any other (logged) */
+    static String driverGpu() {
+        String renderer = glRenderer();
+        int model = adrenoModel(renderer);
 
-            if (model < 600 || model > 799) {
-                android.util.Log.i("halo", "driver: not downloading " + TURNIP_NAME + ": the GPU is \"" + renderer
-                    + "\", not an Adreno 6xx or 7xx");
-                return;
-            }
-            File archive = new File(root, TURNIP_NAME);
-            File partial = new File(root, TURNIP_NAME + ".partial");
+        if (model >= 600 && model <= 799)
+            return renderer;
+        android.util.Log.i("halo", "driver: not downloading " + TURNIP_NAME + ": the GPU is \"" + renderer
+            + "\", not an Adreno 6xx or 7xx");
+        return null;
+    }
 
-            try {
-                android.util.Log.i("halo", "driver: downloading " + TURNIP_URL + " for the " + renderer);
-                download(TURNIP_URL, partial, (received, total) -> { });
-                if (partial.length() != TURNIP_SIZE || !TURNIP_SHA256.equals(sha256(partial)))
-                    throw new IOException("the download is not the build that was tested (" + partial.length()
-                        + " bytes)");
-                archive.delete();
-                if (!partial.renameTo(archive))
-                    throw new IOException("it could not be renamed to " + archive);
-                android.util.Log.i("halo", "driver: " + TURNIP_NAME + " is in the data folder; set display.vk_driver = \""
-                    + TURNIP_NAME + "\" (and display.renderer = \"vulkan\") to use it");
-            } catch (Exception e) {
-                partial.delete();
-                android.util.Log.i("halo", "driver: could not download " + TURNIP_NAME + ": " + e);
-            }
-        }, "driver download").start();
+    /** the archive downloaded into root (as a .partial file, renamed once it is checked); throws why it could not be */
+    static void driverDownload(File root, String gpu, Progress progress) throws Exception {
+        File archive = new File(root, TURNIP_NAME);
+        File partial = new File(root, TURNIP_NAME + ".partial");
+
+        try {
+            android.util.Log.i("halo", "driver: downloading " + TURNIP_URL + " for the " + gpu);
+            download(TURNIP_URL, partial, progress);
+            if (partial.length() != TURNIP_SIZE || !TURNIP_SHA256.equals(sha256(partial)))
+                throw new IOException("the download is not the build that was tested (" + partial.length() + " bytes)");
+            archive.delete();
+            if (!partial.renameTo(archive))
+                throw new IOException("it could not be renamed to " + archive);
+            android.util.Log.i("halo", "driver: " + TURNIP_NAME + " is in the data folder; set display.vk_driver = \""
+                + TURNIP_NAME + "\" (and display.renderer = \"vulkan\") to use it");
+        } catch (Exception e) {
+            partial.delete();
+            android.util.Log.i("halo", "driver: could not download " + TURNIP_NAME + ": " + e);
+            throw e;
+        }
     }
 
     /** the number of an Adreno GPU from its OpenGL ES renderer string ("Adreno (TM) 750"), 0 for any other GPU */
@@ -407,7 +411,7 @@ final class Updater {
         }, "update download").start();
     }
 
-    private interface Progress {
+    interface Progress {
         void report(long received, long total);
     }
 
