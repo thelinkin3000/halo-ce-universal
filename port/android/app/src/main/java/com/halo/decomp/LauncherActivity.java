@@ -32,6 +32,12 @@ import java.nio.channels.FileChannel;
  * the game (.xiso or .iso, any version) with the system file picker, and
  * copies its maps folder there (XisoExtractor), as the desktop games do; or
  * they can push the maps folder with adb.
+ *
+ * Before the game starts, on an Adreno 6xx or 7xx whose data folder lacks
+ * it, the open-source Vulkan driver the Vulkan renderer was tested with is
+ * downloaded (Updater.driverDownload), its progress on screen, so that the
+ * game finds it when it starts. A failed download does not stop the game,
+ * and "Skip" starts it at once.
  */
 public class LauncherActivity extends Activity {
     private static final int PICK_IMAGE = 1;
@@ -53,7 +59,7 @@ public class LauncherActivity extends Activity {
         passOnHardwareId();
         passOnInvite(getIntent());
         if (haveData()) {
-            startGame();
+            startGameAfterDriver();
             return;
         }
         buildInterface();
@@ -115,9 +121,98 @@ public class LauncherActivity extends Activity {
         return dataRoot != null && new File(dataRoot, "maps/ui.map").isFile();
     }
 
+    private boolean gameStarted;
+
     private void startGame() {
+        if (gameStarted)
+            return;
+        gameStarted = true;
         startActivity(new Intent(this, HaloActivity.class));
         finish();
+    }
+
+    /* ---------- the Vulkan driver, before the game */
+
+    private boolean driverStarted;
+
+    /** the game started once the driver is downloaded, when this phone wants it and lacks it */
+    private void startGameAfterDriver() {
+        if (driverStarted)
+            return;
+        driverStarted = true;
+        if (Updater.driverPresent(dataRoot)) {
+            startGame();
+            return;
+        }
+        new Thread(() -> {
+            String gpu = Updater.driverGpu();
+
+            if (gpu == null) {
+                handler.post(this::startGame);
+                return;
+            }
+            handler.post(() -> buildDriverInterface(gpu));
+            try {
+                Updater.driverDownload(dataRoot, gpu, (received, total) -> report("Downloading the driver... ("
+                    + (received >> 10) + " of " + (total >> 10) + " KB)", total > 0 ? (int) (received * 1000 / total) : 0));
+                handler.post(this::startGame);
+            } catch (Exception exception) {
+                report("The driver could not be downloaded: " + exception.getMessage() + "\nStarting the game.", -1);
+                handler.postDelayed(this::startGame, 3000);
+            }
+        }, "driver download").start();
+    }
+
+    private void buildDriverInterface(String gpu) {
+        if (gameStarted)
+            return;
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setGravity(Gravity.CENTER);
+        layout.setPadding(dp(48), dp(24), dp(48), dp(24));
+        layout.setBackgroundColor(Color.rgb(12, 16, 20));
+
+        TextView title = new TextView(this);
+        title.setText("Downloading the Vulkan driver");
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 24);
+        title.setGravity(Gravity.CENTER);
+        layout.addView(title);
+
+        TextView message = new TextView(this);
+        message.setText("This phone's GPU (" + gpu + ") can run the game's Vulkan renderer on Turnip, the open-source "
+            + "Vulkan driver for Adreno GPUs. The tested build (about 3.5 MB) is downloaded once, into the game's data "
+            + "folder. Your settings are not changed: to use it, set renderer = \"vulkan\" and vk_driver = \""
+            + "Turnip_v26.0.0_R8.zip\" in config.toml.");
+        message.setTextColor(Color.rgb(200, 205, 210));
+        message.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        message.setGravity(Gravity.CENTER);
+        message.setPadding(0, dp(16), 0, dp(16));
+        layout.addView(message);
+
+        progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        progress.setMax(1000);
+        LinearLayout.LayoutParams progressLayout = new LinearLayout.LayoutParams(dp(480),
+            LinearLayout.LayoutParams.WRAP_CONTENT);
+        progressLayout.topMargin = dp(16);
+        layout.addView(progress, progressLayout);
+
+        status = new TextView(this);
+        status.setText("Connecting...");
+        status.setTextColor(Color.rgb(160, 200, 160));
+        status.setGravity(Gravity.CENTER);
+        status.setPadding(0, dp(8), 0, dp(16));
+        layout.addView(status);
+
+        // (the download goes on; the game starting first uses the phone's driver for this run)
+        Button skip = new Button(this);
+        skip.setText("Skip");
+        skip.setOnClickListener(v -> startGame());
+        layout.addView(skip, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        setContentView(layout);
+        skip.requestFocus();
     }
 
     private int dp(float value) {
@@ -187,7 +282,7 @@ public class LauncherActivity extends Activity {
         super.onResume();
         // data pushed with adb while this screen was open
         if (pick != null && pick.isEnabled() && haveData())
-            startGame();
+            startGameAfterDriver();
     }
 
     @Override
@@ -204,8 +299,9 @@ public class LauncherActivity extends Activity {
 
     private void report(String text, int permille) {
         handler.post(() -> {
-            status.setText(text);
-            if (permille >= 0)
+            if (status != null)
+                status.setText(text);
+            if (permille >= 0 && progress != null)
                 progress.setProgress(permille);
         });
     }
@@ -232,7 +328,7 @@ public class LauncherActivity extends Activity {
             }
             handler.post(() -> {
                 if (haveData()) {
-                    startGame();
+                    startGameAfterDriver();
                 } else {
                     fail("The extraction finished but maps/ui.map is missing.");
                 }
