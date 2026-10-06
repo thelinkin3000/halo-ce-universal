@@ -35,8 +35,6 @@ public class HaloActivity extends SDLActivity {
         acquireMulticastLock();
         // a new version looked for while the game starts
         Updater.start(this);
-        // and, on an Adreno 6xx or 7xx, the open-source Vulkan driver downloaded if it is missing
-        Updater.driverStart(this);
     }
 
     @Override
