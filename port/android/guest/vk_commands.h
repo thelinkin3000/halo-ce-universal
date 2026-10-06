@@ -37,6 +37,8 @@ enum
 	VK_COMMAND_TEXTURE_DATA,
 	VK_COMMAND_TEXTURE_FREE,
 	VK_COMMAND_COMPOSITE,
+	VK_COMMAND_VISIBILITY_BEGIN,
+	VK_COMMAND_VISIBILITY_END,
 };
 
 /* a surface's kind, as the host makes its image */
@@ -228,8 +230,8 @@ struct vk_command_draw
 	struct vk_data_ref index_data;
 	int32_t vertex_offset;
 	uint32_t count;
-	/* the visibility test the draw is in (1 + the game's slot), 0 for none (phase 6, step 6) */
-	uint32_t visibility;
+	/* (the visibility tests are VK_COMMAND_VISIBILITY_*: the host knows a draw is in one from them) */
+	uint32_t reserved;
 };
 
 /* Vulkan's formats, the numbers the vertex input uses */
@@ -251,6 +253,19 @@ struct vk_command_draw
 #define VK_VERTEX_FORMAT_R32G32_SFLOAT 103
 #define VK_VERTEX_FORMAT_R32G32B32_SFLOAT 106
 #define VK_VERTEX_FORMAT_R32G32B32A32_SFLOAT 109
+
+/* ---------- visibility tests (phase 6, step 6)
+
+The draws between a VISIBILITY_BEGIN and the VISIBILITY_END that follows are the test's: the host counts the samples they pass
+(an occlusion query) and keeps the count, in the game's pixels, as the latest of the game's slot, which the guest asks for
+through host_vk_visibility. The area is the pixels of the test's target for each of the game's (the target's scale). */
+
+struct vk_command_visibility_end
+{
+	struct vk_command_header header;
+	uint32_t index;
+	float area;
+};
 
 /* ---------- the mip composite (phase 6, step 5)
 
