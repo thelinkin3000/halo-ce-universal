@@ -484,12 +484,16 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     guest_host_only = {"memory_watch.c"}  # replaced by guest_memory_watch.c
     gl_renderer_object = None
     gl_textures_object = None
+    gl_post_object = None
     for source in sorted((LINUX_DIR / "src").glob("*.c")):
         if source.name.startswith("posix_") or source.name in guest_host_only:
             continue
         objects.append(guest_object(source, platform_cflags))
         if source.name == "d3d8_gl.c":
             gl_renderer_object = objects[-1]
+        # (display.anti_aliasing's passes: the OpenGL renderer's)
+        if source.name == "xgpu_post.c":
+            gl_post_object = objects[-1]
         if source.name == "xbox_textures.c":
             gl_textures_object = objects[-1]
     for source in hud_assets_build(n, "switch", gen_dir / "hud_hires_assets.c"):
@@ -553,7 +557,7 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     # device, port/switch/guest/d3d8_dk.c, takes the place of d3d8_gl.c, and
     # every other object is shared. The host runs one image or the other, as
     # config.toml's display.renderer says (port/switch/host/host.h).
-    dk_objects = [obj for obj in objects if obj not in (gl_renderer_object, gl_textures_object)]
+    dk_objects = [obj for obj in objects if obj not in (gl_renderer_object, gl_textures_object, gl_post_object)]
     dk_objects.append(guest_object(PORT_DIR / "guest" / "d3d8_dk.c", platform_cflags))
     # the texture cache, which decodes as xbox_textures.c does and sends the
     # texels to the host (DEKO3D.md, phase 6, step 2)
