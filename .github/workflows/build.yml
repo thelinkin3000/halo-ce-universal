@@ -2,7 +2,9 @@ name: Build
 
 # Debug and release builds of the native ports (Linux, Windows, Android) for
 # every pushed commit, uploaded as artifacts. tools/ci_build.py does each
-# build; see it for the options.
+# build; see it for the options. This fork builds Android and the Switch
+# only: the Linux and Windows jobs are kept, upstream's, but do not run
+# (if: false), and the release and the notice go without them.
 #
 # Kept cheap:
 # - one job per platform builds both configurations, so its set-up (tools,
@@ -42,6 +44,8 @@ jobs:
   linux:
     # Arch Linux has what the build needs as packages: clang 22 (for the
     # profile-guided optimisation in pgo/) and 32-bit SDL 3.
+    # (not built by this fork: see the top)
+    if: false
     runs-on: ubuntu-24.04
     container: archlinux:latest
     timeout-minutes: 40
@@ -165,6 +169,8 @@ jobs:
   windows:
     # The runner image has LLVM, Python and Visual Studio's x86 libraries and
     # Windows SDK.
+    # (not built by this fork: see the top)
+    if: false
     runs-on: windows-2025
     timeout-minutes: 40
     defaults:
@@ -346,12 +352,12 @@ jobs:
           retention-days: 3
 
   release:
-    # The eight builds (and the Windows builds' PDBs) as a release, tagged
+    # The four builds (Android's and the Switch's) as a release, tagged
     # build-<run number> and marked latest
     # (every file keeps its name from release to release, for the README's
     # latest/download links); then all but the newest five build-* releases
     # go, tags and all. Only for main, and only when every platform built.
-    needs: [linux, android, windows, switch]
+    needs: [android, switch]
     if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -408,6 +414,8 @@ jobs:
       # for a personal token instead. A failed upload does not stop the
       # release.
       - name: Upload Windows symbols to Sentry
+        # (no Windows builds in this fork: see the top)
+        if: false
         continue-on-error: true
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
@@ -441,7 +449,7 @@ jobs:
     # without it): green when every platform built, red when one did not,
     # with each platform's result, this run's release (main only), and links
     # to the latest release's builds.
-    needs: [linux, android, windows, switch, release]
+    needs: [android, switch, release]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -449,9 +457,7 @@ jobs:
       - name: Post to Discord
         env:
           WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          LINUX: ${{ needs.linux.result }}
           ANDROID: ${{ needs.android.result }}
-          WINDOWS: ${{ needs.windows.result }}
           SWITCH: ${{ needs.switch.result }}
           RELEASE_TAG: ${{ needs.release.outputs.tag }}
           SERVER: ${{ github.server_url }}
@@ -475,13 +481,13 @@ jobs:
               *) echo "➖ Skipped" ;;
             esac
           }
-          if [ "$LINUX" = success ] && [ "$ANDROID" = success ] && [ "$WINDOWS" = success ] && [ "$SWITCH" = success ]; then
+          if [ "$ANDROID" = success ] && [ "$SWITCH" = success ]; then
             title="Build succeeded"; color=5763719
           else
             title="Build failed"; color=15548997
           fi
           latest="$SERVER/$REPOSITORY/releases/latest"
-          downloads="[Linux]($latest/download/halo-linux-release.zip) · [Windows]($latest/download/halo-windows-release.zip) · [Android]($latest/download/halo-android-release.zip) · [Switch]($latest/download/halo-switch-release.zip) ([all builds]($latest))"
+          downloads="[Android]($latest/download/halo-android-release.zip) · [Switch]($latest/download/halo-switch-release.zip) ([all builds]($latest))"
           if [ -n "$RELEASE_TAG" ]; then
             release="[$RELEASE_TAG]($SERVER/$REPOSITORY/releases/tag/$RELEASE_TAG)"
           else
@@ -492,14 +498,12 @@ jobs:
             --arg title "$title" --argjson color "$color" --arg url "$RUN_URL" \
             --arg description "[\`${SHA:0:7}\`]($COMMIT_URL) $subject — $ACTOR ($BRANCH)" \
             --arg release "$release" --arg downloads "$downloads" \
-            --arg linux "$(status "$LINUX")" --arg windows "$(status "$WINDOWS")" --arg android "$(status "$ANDROID")" \
+            --arg android "$(status "$ANDROID")" \
             --arg switch "$(status "$SWITCH")" \
             --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             '{embeds: [{
               title: $title, url: $url, color: $color, description: $description, timestamp: $timestamp,
               fields: [
-                {name: "Linux", value: $linux, inline: true},
-                {name: "Windows", value: $windows, inline: true},
                 {name: "Android", value: $android, inline: true},
                 {name: "Switch", value: $switch, inline: true},
                 {name: "Release", value: $release},
