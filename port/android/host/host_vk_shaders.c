@@ -824,7 +824,8 @@ static VkPipeline pipeline_make(const struct pipeline *wanted, VkShaderModule ve
 	assembly.topology = (VkPrimitiveTopology)state->topology;
 	viewport.viewportCount = 1;
 	viewport.scissorCount = 1;
-	raster.polygonMode = (VkPolygonMode)state->polygon_mode;
+	/* wireframe and point fill need fillModeNonSolid (a debug mode of the game's): filled where the device lacks it */
+	raster.polygonMode = B.fill_mode_non_solid ? (VkPolygonMode)state->polygon_mode : VK_POLYGON_MODE_FILL;
 	raster.cullMode = (VkCullModeFlags)state->cull_mode;
 	raster.frontFace = (VkFrontFace)state->front_face;
 	raster.depthBiasEnable = state->depth_bias ? VK_TRUE : VK_FALSE;
