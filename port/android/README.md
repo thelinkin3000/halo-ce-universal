@@ -152,7 +152,7 @@ These settings are only for Android:
 | `debug.sample_seconds` | Refer to "Find problems". |
 | `debug.memory_watch` | `true` (the default): the app notices the game's writes to textures and vertices by page protection. `false`: it compares page contents once a frame instead, which is slower. Refer to "Limits". |
 | `debug.profile_hz` | Refer to "Find problems". |
-| `display.renderer` | How the game draws: `"gl"` (the default: OpenGL ES over the phone's driver) or `"vulkan"` (in development). Takes effect the next time the game starts. Refer to "Graphics: OpenGL ES and Vulkan". |
+| `display.renderer` | How the game draws: `"gl"` (the default: OpenGL ES over the phone's driver) or `"vulkan"` (in development). Takes effect the next time the game starts. The line below the version number in the main menu shows the renderer that runs. Refer to "Graphics: OpenGL ES and Vulkan". |
 | `display.vk_driver` | The Vulkan driver of the Vulkan renderer (and of the Vulkan probe). Empty (the default): the phone's own. Otherwise the file name of a driver archive in the data folder. Refer to "Graphics: OpenGL ES and Vulkan". |
 | `debug.vk_probe` | Refer to "Find problems". |
 | `debug.vk_validation` | Refer to "Find problems". |
@@ -174,6 +174,11 @@ Vulkan renderer lets you try another driver. On phones with a Qualcomm
 Adreno GPU, that is usually Turnip, the open-source Vulkan driver for
 Adreno from the Mesa project. The game does not include a driver. You
 download one yourself.
+
+To see which renderer and driver run, look at the main menu: the line
+below the game's version number (`01.01.14.2342`, at the lower right) says
+`OpenGL ES`, `Vulkan`, or `Vulkan` and the name of the driver that you
+added. Refer to "5. Make sure that it operates".
 
 ### 1. Find your GPU
 
