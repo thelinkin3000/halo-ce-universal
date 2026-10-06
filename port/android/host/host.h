@@ -160,6 +160,8 @@ uint32_t host_vk_format_supported(uint32_t format);
 /* whether BC1 to BC3 images can be sampled with linear filtering and written by a copy (the guest sends them as they are if so,
 and decodes them to BGRA if not) */
 uint32_t host_vk_bc_supported(void);
+/* the latest count of the game's visibility test slot, in the game's pixels (host_vk_visibility.c); never waits */
+uint32_t host_vk_visibility(uint32_t index);
 /* the game's exit: what the backend keeps on the device is written */
 void host_vk_exit(void);
 /* errors the validation layer has reported so far */

@@ -137,6 +137,7 @@ VkCommandBuffer host_vk_frame_command(void)
 			frame->submitted = 0;
 		}
 		host_vk_draw_frame_reset(frame);
+		host_vk_visibility_retired((unsigned)(frame - B.frames));
 		HOST_VK_CHECK(vkResetCommandPool(B.device, frame->pool, 0));
 		begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 		if (HOST_VK_CHECK(vkBeginCommandBuffer(frame->command, &begin)))
@@ -403,6 +404,8 @@ void host_vk_rendering_end(void)
 {
 	if (B.rendering)
 	{
+		/* a query may not span the rendering's end */
+		host_vk_visibility_close(B.frames[B.frame].command);
 		host_vk_cmd_end_rendering(B.frames[B.frame].command);
 		B.rendering = 0;
 	}
@@ -1136,6 +1139,7 @@ static void command_present(const struct vk_command_present *command)
 	uint32_t image = UINT32_MAX;
 
 	host_vk_rendering_end();
+	host_vk_visibility_frame_end(cmd);
 	if (command->back_buffer.kind == VK_SURFACE_COLOR)
 		back_buffer = host_vk_target_get(&command->back_buffer);
 	/* the next frame starts with nothing bound (the guest tells the host its targets again) */
@@ -1415,6 +1419,7 @@ static int device_create(void)
 	}
 	B.state = 1;
 	host_vk_services_start();
+	host_vk_visibility_start();
 	if (host_vk_self_test)
 		clears_selftest();
 	host_logf(HOST_LOG_INFO, "vk: device ready: queue family %u, colour targets %s, depth targets %s, blit filter %s, "
@@ -1539,6 +1544,13 @@ void host_vk_submit(uint32_t commands, uint32_t size)
 		case VK_COMMAND_COMPOSITE:
 			if (header->size >= sizeof(struct vk_command_composite))
 				host_vk_composite_command((const struct vk_command_composite *)header);
+			break;
+		case VK_COMMAND_VISIBILITY_BEGIN:
+			host_vk_visibility_begin();
+			break;
+		case VK_COMMAND_VISIBILITY_END:
+			if (header->size >= sizeof(struct vk_command_visibility_end))
+				host_vk_visibility_end((const struct vk_command_visibility_end *)header);
 			break;
 		case VK_COMMAND_TEST_DRAW:
 			if (header->size >= sizeof(struct vk_command_test_draw))
