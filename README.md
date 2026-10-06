@@ -75,11 +75,31 @@ Each platform has its own instructions:
 | --- | --- |
 | Linux (32-bit x86 executable, OpenGL 4.5, SDL3) | [port/linux/README.md](port/linux/README.md) |
 | Windows (32-bit x86 executable, OpenGL 4.5, SDL3) | [port/windows/README.md](port/windows/README.md) |
-| Android (arm64 app, OpenGL ES 3, SDL3) | [port/android/README.md](port/android/README.md) |
-| Nintendo Switch (homebrew program, OpenGL ES 3, SDL2) | [port/switch/README.md](port/switch/README.md) |
+| Android (arm64 app, Vulkan or OpenGL ES 3, SDL3) | [port/android/README.md](port/android/README.md) |
+| Nintendo Switch (homebrew program, deko3d, SDL2) | [port/switch/README.md](port/switch/README.md) |
 
 The Linux README also gives the controls, the settings and the multiplayer
 functions. These are almost the same on all platforms.
+
+## Graphics backends
+
+On Android, the game can draw with Vulkan (the default) or with OpenGL ES.
+To change it, open **SETTINGS** from the main menu, choose a profile, and
+open **VIDEO SETUP**:
+
+- **GRAPHICS BACKEND:** `VULKAN` or `OPENGL`.
+- **VULKAN DRIVER** (only when the backend is `VULKAN`): `STOCK`, the
+  phone's own driver, or `TURNIP`, the open-source Mesa driver for
+  Qualcomm Adreno GPUs, which the app downloads.
+
+Select **OK**, then close the game and start it again: the backend and the
+driver change only when the game starts. The line below the version number
+in the main menu shows the backend and driver that run. For more, such as
+a driver archive of your own, refer to "Graphics: OpenGL ES and Vulkan" in
+[port/android/README.md](port/android/README.md).
+
+The Switch draws with deko3d, the console's own graphics interface, and
+has no backend setting. Linux and Windows draw with OpenGL.
 
 ## Multiplayer
 
