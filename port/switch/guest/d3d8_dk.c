@@ -2,9 +2,9 @@
 D3D8_DK.C
 
 The Xbox Direct3D 8 device for the Switch's deko3d renderer
-(port/switch/DEKO3D.md). Linked into halo_guest_dk.elf in place of
-port/linux/src/d3d8_gl.c, which the other builds and the Switch's OpenGL
-image keep unchanged.
+(port/switch/DEKO3D.md). Linked into the Switch's game image,
+halo_guest.elf, in place of port/linux/src/d3d8_gl.c, which the other builds
+keep unchanged.
 
 The parts of d3d8_gl.c that are not OpenGL are copied here as they are - the
 screen's width, the state the XDK's inline functions keep, the vertical
