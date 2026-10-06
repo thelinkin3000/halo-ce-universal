@@ -579,7 +579,8 @@ static void upload(uint32_t id, uint32_t kind, const struct xgpu_texture_descrip
 	struct format_information information = format_information(description->format);
 	unsigned long face_count = description->cube_map ? 6 : 1;
 	unsigned long face_size = xgpu_texture_face_size(description);
-	BOOL native = description->compressed && bc_native();
+	/* (a 3D image of a BC format is optional in Vulkan, where 2D and cube ones are not: a 3D one is decoded) */
+	BOOL native = description->compressed && description->depth <= 1 && bc_native();
 	struct vk_command_texture *command = vk_stream_command(VK_COMMAND_TEXTURE, sizeof(*command));
 	unsigned long face, level;
 	unsigned long *converted = NULL;
