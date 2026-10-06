@@ -54,6 +54,8 @@ static PFN_vkGetInstanceProcAddr opened_function;
 static char opened_description[512];
 /* the file name of the archive's library while a custom driver is open, else empty */
 static char custom_file[256];
+/* what the player calls that driver (meta.json's name, else the archive's), for the main menu: host_vk_driver_name */
+static char custom_name[160];
 /* host_vk_driver_close() was called: no driver may be opened again in this process */
 static int closed;
 
@@ -667,6 +669,16 @@ static int open_archive(const char *setting, void **library, char *description, 
 	/* libadrenotools stays loaded: its hooks are installed in the process */
 	*library = handle;
 	snprintf(custom_file, sizeof(custom_file), "%s", library_name);
+	if (name[0])
+		snprintf(custom_name, sizeof(custom_name), "%s", name);
+	else
+	{
+		size_t length = strlen(setting);
+
+		if (length > 4 && !strcmp(setting + length - 4, ".zip"))
+			length -= 4;
+		snprintf(custom_name, sizeof(custom_name), "%.*s", (int)length, setting);
+	}
 	/* the driver itself is loaded later, by the system loader at vkCreateInstance, through the hook:
 	host_vk_driver_verify says whether that happened */
 	snprintf(description, description_size, "%s%s%s%s%s (asked for %s through libadrenotools)", setting,
@@ -710,6 +722,7 @@ PFN_vkGetInstanceProcAddr host_vk_driver_open(const char *setting, char *descrip
 			for nothing, which is harmless, and the phone's own driver is opened below */
 			dlclose(library);
 			custom_file[0] = 0;
+			custom_name[0] = 0;
 		}
 		host_logf(HOST_LOG_ERROR, "vk driver: %s failed: %s; using the phone's driver", setting, error);
 	}
@@ -785,4 +798,16 @@ void host_vk_driver_close(void)
 	opened_description[0] = 0;
 	custom_file[0] = 0;
 	closed = 1;
+}
+
+/* the guest asks (the main menu, under the version number): the name of the driver archive in use into its buffer at out, of size
+bytes, or an empty string when the phone's own driver is (or no driver is open) */
+uint32_t host_vk_driver_name(uint32_t out, uint32_t size)
+{
+	char *text = (char *)(uintptr_t)out;
+
+	if (!text || !size)
+		return 0;
+	snprintf(text, size, "%s", opened_function && custom_file[0] ? custom_name : "");
+	return (uint32_t)strlen(text);
 }

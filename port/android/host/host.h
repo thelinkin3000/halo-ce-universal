@@ -162,6 +162,9 @@ and decodes them to BGRA if not) */
 uint32_t host_vk_bc_supported(void);
 /* the latest count of the game's visibility test slot, in the game's pixels (host_vk_visibility.c); never waits */
 uint32_t host_vk_visibility(uint32_t index);
+/* the name of the Vulkan driver archive in use (meta.json's), written into the guest's buffer at out of size bytes; an empty string
+for the phone's own driver (host_vk_driver.c). Returns its length */
+uint32_t host_vk_driver_name(uint32_t out, uint32_t size);
 /* the game's exit: what the backend keeps on the device is written */
 void host_vk_exit(void);
 /* errors the validation layer has reported so far */
