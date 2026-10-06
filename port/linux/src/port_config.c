@@ -105,8 +105,8 @@ static const struct config_setting config_settings[] =
 	image built with that renderer (port/android/VULKAN.md) */
 	{ "display.renderer", _config_string, "\"gl\"", "HALO_RENDERER", _environment_value, _platform_android,
 		"How the game draws: \"gl\" (OpenGL ES over the phone's driver) or \"vulkan\"\n"
-		"(in development: nothing is drawn yet). Takes effect the next time the game\n"
-		"starts." },
+		"(in development). Takes effect the next time the game starts. See the\n"
+		"Android README, \"Graphics: OpenGL ES and Vulkan\"." },
 #endif
 #ifdef HALO_SWITCH
 	/* read by the Switch host before the game starts, to choose the game
