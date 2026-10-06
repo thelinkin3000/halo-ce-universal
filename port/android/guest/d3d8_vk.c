@@ -995,28 +995,60 @@ void WINAPI D3DDevice_InsertCallback(D3DCALLBACKTYPE type, D3DCALLBACK callback,
 		callback(context);
 }
 
-/* ---------- visibility (occlusion) tests: none pass until the backend counts
-samples, so lens flares stay hidden */
+/* ---------- visibility (occlusion) tests (phase 6, step 6)
+
+The draws between Begin and End are the test's: the host counts the samples they pass (an occlusion query, host_vk_visibility.c)
+and keeps the count, in the game's pixels, for the slot End names. The result is asked for through an import that never waits (the
+latest count of the slot: from this test, or from an earlier one while the GPU is behind), as d3d8_gl.c's query buffer path gives. */
+
+#define VISIBILITY_TEST_SLOTS 4096
+
+uint32_t host_vk_visibility(uint32_t index);
+
+static BOOL visibility_pending[VISIBILITY_TEST_SLOTS];
 
 void WINAPI D3DDevice_BeginVisibilityTest(void)
 {
+	if (!device.video_ready || device.visibility_test_active)
+		return;
 	device.visibility_test_active = TRUE;
+	stream_command(VK_COMMAND_VISIBILITY_BEGIN, sizeof(struct vk_command_header));
 }
 
 HRESULT WINAPI D3DDevice_EndVisibilityTest(DWORD index)
 {
-	(void)index;
+	struct vk_command_visibility_end *command;
+
+	if (!device.video_ready || !device.visibility_test_active)
+		return S_OK;
 	device.visibility_test_active = FALSE;
+	index %= VISIBILITY_TEST_SLOTS;
+	if (!index)
+		index = 1;
+	command = stream_command(VK_COMMAND_VISIBILITY_END, sizeof(*command));
+	command->index = (uint32_t)index;
+	/* the target's pixels to a game pixel: the count is of the game's pixels (visibility_unscaled in d3d8_gl.c), which the game
+	divides by its own test's area (lens flares, rasterizer_lights.c), a split-screen window's or the screen's alike */
+	command->area = target_scale[0] * target_scale[1];
+	visibility_pending[index] = TRUE;
 	return S_OK;
 }
 
 HRESULT WINAPI D3DDevice_GetVisibilityTestResult(DWORD index, UINT *result, ULONGLONG *time_stamp)
 {
-	(void)index;
 	if (time_stamp)
 		*time_stamp = 0;
+	index %= VISIBILITY_TEST_SLOTS;
+	if (!index)
+		index = 1;
+	if (!device.video_ready || !visibility_pending[index])
+	{
+		if (result)
+			*result = 0;
+		return S_OK;
+	}
 	if (result)
-		*result = 0;
+		*result = host_vk_visibility((uint32_t)index);
 	return S_OK;
 }
 

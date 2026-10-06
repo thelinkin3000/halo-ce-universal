@@ -631,6 +631,8 @@ void host_vk_command_draw(const struct vk_command_draw *draw, uint32_t size)
 		return;
 	}
 	command = host_vk_frame_command();
+	/* a visibility test being made counts this draw's samples */
+	host_vk_visibility_draw(command);
 	set = set_allocate(frame);
 	if (!set)
 	{

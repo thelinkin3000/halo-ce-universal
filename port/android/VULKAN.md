@@ -24,7 +24,7 @@ the phone's driver; the results are in "Progress". Not tried: a second GPU
 family (a Mali). **Phase 1 is done on the test device and committed** (the
 Vulkan image, the host's choice and its decision, the stand-ins: the game
 runs under `display.renderer = "vulkan"` on the phone's driver and on
-Turnip, with a black screen as the phase says). **Phase 2 is done on the test device and committed** (the command stream, the device, the swapchain, the targets, clears and present: the game's clears are on the screen through Vulkan on both drivers). **Phase 3 is done on the test device and committed** (data records, the 4 MB stream, the upload rings and the data table; the data self-test is `ok` on both drivers). **Phase 4 is done on the test device and committed** (the GLSL generators for glslang, the pixel shader key, the dump, the PC check and the probe's `shaders` step: all 308 shaders of the corpus compile, validate and compare clean on both drivers and on the PC). **Phase 5 is done on the test device and committed** (glslang in the backend, the shader and pipeline services with their compile thread and the per-driver pipeline cache, tried cold and warm on both drivers). **Phase 6 is written out and next.** The
+Turnip, with a black screen as the phase says). **Phase 2 is done on the test device and committed** (the command stream, the device, the swapchain, the targets, clears and present: the game's clears are on the screen through Vulkan on both drivers). **Phase 3 is done on the test device and committed** (data records, the 4 MB stream, the upload rings and the data table; the data self-test is `ok` on both drivers). **Phase 4 is done on the test device and committed** (the GLSL generators for glslang, the pixel shader key, the dump, the PC check and the probe's `shaders` step: all 308 shaders of the corpus compile, validate and compare clean on both drivers and on the PC). **Phase 5 is done on the test device and committed** (glslang in the backend, the shader and pipeline services with their compile thread and the per-driver pipeline cache, tried cold and warm on both drivers). **Phase 6 is written (steps 1 to 4 tried on both drivers, step 5 on the phone's driver for the opening, step 6 not run) and waits for the user's testing: see the summary under Progress.** The
 work is on the `vulkan-backend` branch, which starts again from `main`. An
 earlier attempt, kept on the `vulkan-backend-old` branch, is not the base of
 this work and nothing here builds on it; see "Lessons from the earlier
@@ -2323,7 +2323,67 @@ Phase 0 was worked on the test device (Lenovo TB321FU, Adreno 750, Android 16,
 API 36, the phone's own driver). The reports are in `port/android/probe/reports/`.
 Newest first.
 
+### Phase 6 — summary
+
+Worked unattended on the test device (Adreno 750, validation layer on) as the `.vk` build; the user then took over the testing of what is
+marked below. Steps 1 to 4 were tried on the device on both drivers and each is its own entry below; **step 5 was tried on the phone's driver
+only, for the map's opening**; **step 6 was written and builds but has not been run at all**.
+
+| Step | Written | Tried on the device |
+|---|---|---|
+| 1 first draws | yes | both drivers, validation clean |
+| 2 textures | yes | both drivers, validation clean, Xbox menus match GL ES |
+| 3 high-res HUD, text, menu art | yes | both drivers, PC menus match GL ES, GL stub count 0 |
+| 4 a map | (no new code) | both drivers: the opening cinematic reaches play in the same 3 min 45 s as GL ES; 4.7 million draws, nothing skipped but first-sight pipelines, validation clean |
+| 5 render targets | yes | phone's driver, the opening: shadows back, validation clean; **Turnip, the flash, the water, the sniper zoom and split screen not tried** |
+| 6 visibility tests | yes | **not run** |
+
+**What the user should test, and what to look for**
+
+1. Build with `--android-vulkan-validation`, `debug.vk_validation = true`, `debug.gpu_stats = true`; look in logcat (tag `halo`) for `[error]`,
+   `validation errors N` (the statistics line) and `vk: a draw is skipped`. The data folder's `debug.txt` is the game's.
+2. **Step 6, lens flares** (the first map has lights through which they show): a flare should appear when its light is in view,
+   fade as something moves in front of it and not show when it is hidden, as under GL ES. If flares are too bright or never go
+   away the area division is the suspect (`vk_command_visibility_end.area`, `host_vk_visibility_retired`); if there is no flare at
+   all, the count is not reaching the game (`host_vk_visibility`, the guest's `visibility_pending`). The result arrives two frames
+   late, as the frame's fence passes. A validation error about a query ("not reset", "inside a render pass") means a test's
+   rendering ended while its query was open: `host_vk_rendering_end` closes it, and a test uses up to four queries.
+3. **Step 5**: the wake-up flash in the first map (GL ES: white and blurred as the cryo tube opens); the water (a map with
+   water, the ripples' mip composite: a wrong picture or a validation error from `composite_sampled`'s barriers); the sniper's zoom;
+   split screen (a second controller: each window's geometry and clears inside its half). On Turnip too.
+4. **The shader corpus**: walk the first corridors and the first outdoor area with `debug.gpu_dump_shaders` naming a folder, pull it, and
+   run `tools/vk_shader_check.py` on it (fog, colour-signed textures and alpha kill on stages 1 to 3 have never been compiled by
+   anything); watch decals (z bias), distant fog, reflections and grass.
+5. `display.renderer = "gl"` once at the end: the GL ES image was run after steps 3 and 4 and was as before; nothing in its objects has changed
+   since the accessor guards (the host library, which both images share, has).
+
+**Deviations from the spec in this phase**
+
+1. The format check of the vertex attributes is made lazily, the first time the guest meets each optional format
+   (`host_vk_format_supported`, an import), not at the device's creation. No format needed expanding on the phone's driver or Turnip.
+2. The device is created with `samplerAnisotropy`, `fillModeNonSolid`, `occlusionQueryPrecise` and `textureCompressionBC` where it has them.
+3. The sampler's border colour is the nearest of Vulkan's three fixed ones (transparent black, opaque black, opaque white), not
+   `VK_EXT_custom_border_color`: the game sets a border colour rarely, and none was seen.
+4. The texture images are suballocated from 64 MB blocks (a map has more textures than the 4,096 allocations Adreno allows).
+5. A mip composite copies the levels the game drew with `vkCmdCopyImage` (equal format and size) and blits only the halving.
+6. The visibility tests are driven by two commands (begin and end) rather than a field of each draw: the host keeps the test open
+   across draws, and ends and begins a query where a rendering ends; the draw record's `reserved` field is what the plan called
+   `visibility`.
+7. `d3d8_vk.c` and `xbox_textures_vk.c` are copies, not extractions, as decided; `xbox_textures_vk.c` replaces `xbox_textures.c` in the
+   Vulkan image's objects (`tools/android_build.py`).
+8. The only change to `port/linux/src` is the widened guards of the accessors (step 3, argued there).
+9. The cinematic's question (phase 2's open one) is answered in step 4: it reaches play, in the same time as GL ES.
+
 ### Phase 6 — progress (under way; each step's result, newest first)
+
+**Step 6, visibility tests: written and built, not run.** `host_vk_visibility.c`: a pool of 4,096 occlusion queries in groups of four. The
+guest sends `VK_COMMAND_VISIBILITY_BEGIN` at `BeginVisibilityTest` and `VK_COMMAND_VISIBILITY_END` (the game's slot and the target's scale
+area) at `EndVisibilityTest`. The host resets the test's group outside a rendering at its beginning, begins a query at the first draw
+inside a rendering, ends it at the test's end or where the rendering ends (`host_vk_rendering_end` closes it; the next draw opens the
+group's next query, up to four, added up); at the frame's end, outside rendering, `vkCmdCopyQueryPoolResults` (waiting) copies the tests'
+counts into a host-visible buffer of the frame's slot, and when that slot's fence has next passed the counts, divided by the scale
+area (`visibility_unscaled`), become the game's slot's latest, which `D3DDevice_GetVisibilityTestResult` asks for through the import
+`host_vk_visibility` and never waits for. Not seen on the device: see "Phase 6 - summary" for what to look for.
 
 **Step 5, render targets: written and built, only partly tried on the device (the rest is for the user).**
 *Render-to-texture.* The guest notes every colour surface it binds as a target (`rendered_note`, by address, with a clock) and a stage
