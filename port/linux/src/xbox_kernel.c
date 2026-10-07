@@ -639,7 +639,60 @@ VOID WINAPI Sleep(DWORD milliseconds)
 	SleepEx(milliseconds, FALSE);
 }
 
-/* ---------- time */
+/* ---------- time
+
+On Android and the Switch the game's clock reads are the CPU's own timer,
+read where the game runs: their guest's clock_gettime has no fast path and
+is a system call each time, through the host, and the game reads the clock
+thousands of times a frame (the collision code times each of its tests,
+collision_usage.c: a tenth of a busy multiplayer frame on a Nokia 8 went to
+that). ARM64 lets a program read its generic timer (Linux and Android give
+programs the virtual count, Horizon the physical one, which libnx reads),
+and says its rate. Both clocks below count from that timer, so the values
+the game compares stay of one clock; where the rate cannot be read they are
+clock_gettime's, as on the other ports. */
+
+#if defined(HALO_ANDROID) && defined(__aarch64__)
+#define PLATFORM_HAS_CPU_TIMER 1
+
+static unsigned long long cpu_timer_count(void)
+{
+	unsigned long long count;
+
+#ifdef HALO_SWITCH
+	__asm__ volatile("isb\n\tmrs %0, cntpct_el0" : "=r"(count) : : "memory");
+#else
+	__asm__ volatile("isb\n\tmrs %0, cntvct_el0" : "=r"(count) : : "memory");
+#endif
+	return count;
+}
+
+/* the timer's ticks a second, 0 if it does not say */
+static unsigned long long cpu_timer_frequency(void)
+{
+	static unsigned long long frequency;
+
+	if (!frequency)
+	{
+		unsigned long long value;
+
+		__asm__ volatile("mrs %0, cntfrq_el0" : "=r"(value));
+		frequency = value & 0xffffffffULL;
+	}
+	return frequency;
+}
+
+/* the timer's count in units of a second's divisor ticks, without
+overflowing in 64 bits */
+static unsigned long long cpu_timer_in(unsigned long long divisor)
+{
+	unsigned long long count = cpu_timer_count(), frequency = cpu_timer_frequency();
+
+	return count / frequency * divisor + count % frequency * divisor / frequency;
+}
+#else
+#define PLATFORM_HAS_CPU_TIMER 0
+#endif
 
 /* The game's clocks count from when it started, as the Xbox's count from
 power-on. Its code keeps times in signed 32-bit variables, which a host up
@@ -652,8 +705,17 @@ static unsigned long long platform_clock_nanoseconds(void)
 	struct timespec now;
 	unsigned long long value, expected = 0;
 
-	clock_gettime(CLOCK_MONOTONIC, &now);
-	value = (unsigned long long)now.tv_sec * 1000000000ULL + (unsigned long long)now.tv_nsec;
+#if PLATFORM_HAS_CPU_TIMER
+	if (cpu_timer_frequency())
+	{
+		value = cpu_timer_in(1000000000ULL);
+	}
+	else
+#endif
+	{
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		value = (unsigned long long)now.tv_sec * 1000000000ULL + (unsigned long long)now.tv_nsec;
+	}
 	__atomic_compare_exchange_n(&start, &expected, value - 10000000000ULL, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
 	return value - __atomic_load_n(&start, __ATOMIC_RELAXED);
 }
