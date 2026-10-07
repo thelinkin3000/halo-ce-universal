@@ -31,9 +31,21 @@ This header is included by both halves.
 	Java runtime already holds it, the Android host loads the image somewhere
 	free instead and moves its pointers (halo_guest.relocs, made by
 	tools/guest_relocations.py), and tells the guest how far
-	(halo_guest_boot.image_shift) */
-#define HALO_GUEST_IMAGE_BASE 0x40000000u
+	(halo_guest_boot.image_shift). The Switch's host loads it here always.
+
+	It is above the range Halo Custom Edition maps' tag data is linked to
+	(below), with room to spare for the largest image (the Vulkan one, 40
+	MB): at 0x40000000, where it was linked before, it covered that range,
+	and Custom Edition maps could not run */
+#define HALO_GUEST_IMAGE_BASE 0x42000000u
 #define HALO_GUEST_IMAGE_RESERVE 0x01000000u
+
+/* Custom Edition's tag cache (port/linux/game/cache_file_formats.h's
+	CUSTOM_EDITION_TAG_CACHE_ADDRESS and _BYTES), which the guest reserves at
+	start-up when game.custom_edition is on (port/linux/src/xbox_memory.c):
+	the Android host places neither the window nor a moved image across it */
+#define HALO_GUEST_CUSTOM_EDITION_BASE 0x40440000u
+#define HALO_GUEST_CUSTOM_EDITION_END 0x41b40000u
 
 /* the Xbox contiguous memory window (port/linux/src/platform.h). The game
 data is linked to the addresses of the window, so the host looks for free
