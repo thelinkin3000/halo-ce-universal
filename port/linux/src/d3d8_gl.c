@@ -33,6 +33,23 @@ Conventions carried over from the Xbox:
 #include <string.h>
 #include <time.h>
 
+/* whether two copies of a state are the same, compared a word at a time: the
+guest's C library (musl) compares a byte at a time, and every draw compares
+hundreds of bytes of state and shader keys against what GL has (as
+port/switch/guest/d3d8_dk.c does). What is compared is words throughout. */
+static int words_equal(const void *a, const void *b, size_t size)
+{
+	const uint32_t *x = a, *y = b;
+	size_t index;
+
+	for (index = 0; index < size / 4; index++)
+	{
+		if (x[index] != y[index])
+			return 0;
+	}
+	return size % 4 ? !memcmp((const char *)a + size - size % 4, (const char *)b + size - size % 4, size % 4) : 1;
+}
+
 void d3d8_surface_initialize(D3DSurface *surface, D3DFORMAT format, unsigned long width, unsigned long height);
 void d3d8_surface_resize(D3DSurface *surface, D3DFORMAT format, unsigned long width, unsigned long height);
 
@@ -854,7 +871,7 @@ static struct vertex_array_entry *vertex_array_get(const struct vertex_layout *l
 	bucket = &vertex_array_buckets[hash % VERTEX_ARRAY_BUCKET_COUNT];
 	for (entry = *bucket; entry; entry = entry->next)
 	{
-		if (entry->hash == hash && !memcmp(&entry->layout, layout, sizeof(*layout)))
+		if (entry->hash == hash && words_equal(&entry->layout, layout, sizeof(*layout)))
 			return entry;
 	}
 	entry = calloc(1, sizeof(*entry));
@@ -940,7 +957,7 @@ static void state_attribute_value(GLuint index, const float *value)
 	}
 #endif
 	if (gl_state.attribute_value_kind[index] == kind &&
-		(!value || !memcmp(gl_state.attribute_values[index], value, sizeof(gl_state.attribute_values[index]))))
+		(!value || words_equal(gl_state.attribute_values[index], value, sizeof(gl_state.attribute_values[index]))))
 	{
 		return;
 	}
@@ -1666,7 +1683,7 @@ static void constants_store(unsigned long first, const void *data, unsigned long
 
 	for (index = 0; index < count; index++)
 	{
-		if (memcmp(device.constants[first + index], values[index], sizeof(device.constants[0])))
+		if (!words_equal(device.constants[first + index], values[index], sizeof(device.constants[0])))
 		{
 			memcpy(device.constants[first + index], values[index], sizeof(device.constants[0]));
 			constant_serials[first + index] = ++constants_serial;
@@ -2570,14 +2587,14 @@ static GLuint fragment_shader_get(const struct nv2a_pixel_shader_key *key)
 
 	for (index = 0; index < RECENT_FRAGMENT_COUNT; index++)
 	{
-		if (recent[index] && !memcmp(&recent[index]->key, key, sizeof(*key)))
+		if (recent[index] && words_equal(&recent[index]->key, key, sizeof(*key)))
 			return recent[index]->shader;
 	}
 	hash = hash_words(key, sizeof(*key));
 	bucket = &fragment_buckets[hash % FRAGMENT_BUCKETS];
 	for (entry = *bucket; entry; entry = entry->next)
 	{
-		if (entry->hash == hash && !memcmp(&entry->key, key, sizeof(*key)))
+		if (entry->hash == hash && words_equal(&entry->key, key, sizeof(*key)))
 		{
 			recent[recent_next++ % RECENT_FRAGMENT_COUNT] = entry;
 			return entry->shader;
@@ -2792,7 +2809,7 @@ static GLuint sampler_get(int stage, const DWORD *inputs)
 		index = (hash + probe) % SAMPLER_CACHE_SIZE;
 		if (!sampler_cache[index].sampler)
 			break;
-		if (!memcmp(sampler_cache[index].inputs, inputs, sizeof(sampler_cache[index].inputs)))
+		if (words_equal(sampler_cache[index].inputs, inputs, sizeof(sampler_cache[index].inputs)))
 			return sampler_cache[index].sampler;
 	}
 	if (probe == SAMPLER_CACHE_SIZE || sampler_cache_count >= SAMPLER_CACHE_SIZE * 3 / 4)
@@ -2830,7 +2847,7 @@ static void configure_sampler(int stage, BOOL mipmapped, BOOL hires)
 	inputs[8] = state[D3DTSS_MAXANISOTROPY];
 	inputs[9] = state[D3DTSS_BORDERCOLOR];
 	inputs[10] = hires;
-	if (!configured_sampler[stage] || memcmp(configured[stage], inputs, sizeof(inputs)))
+	if (!configured_sampler[stage] || !words_equal(configured[stage], inputs, sizeof(inputs)))
 	{
 		memcpy(configured[stage], inputs, sizeof(inputs));
 		configured_sampler[stage] = sampler_get(stage, inputs);
@@ -3112,7 +3129,7 @@ static void apply_raster_state(BOOL has_depth)
 	viewport[1] = target_pixel((float)device.viewport.Y, 1);
 	viewport[2] = target_pixel((float)(device.viewport.X + device.viewport.Width), 0) - viewport[0];
 	viewport[3] = target_pixel((float)(device.viewport.Y + device.viewport.Height), 1) - viewport[1];
-	if (memcmp(gl_state.viewport, viewport, sizeof(viewport)))
+	if (!words_equal(gl_state.viewport, viewport, sizeof(viewport)))
 	{
 		memcpy(gl_state.viewport, viewport, sizeof(viewport));
 		glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
@@ -3122,7 +3139,7 @@ static void apply_raster_state(BOOL has_depth)
 	what keeps a split-screen window's geometry from bleeding across the divider */
 	/* (glScissor takes the corner and the size, as glViewport does) */
 	memcpy(scissor, viewport, sizeof(scissor));
-	if (memcmp(gl_state.scissor, scissor, sizeof(scissor)))
+	if (!words_equal(gl_state.scissor, scissor, sizeof(scissor)))
 	{
 		memcpy(gl_state.scissor, scissor, sizeof(scissor));
 		glScissor(scissor[0], scissor[1], scissor[2], scissor[3]);
@@ -3130,7 +3147,7 @@ static void apply_raster_state(BOOL has_depth)
 	state_enable(&gl_state.scissor_test, GL_SCISSOR_TEST, scissor[2] > 0 && scissor[3] > 0);
 	depth_range[0] = device.viewport.MinZ;
 	depth_range[1] = device.viewport.MaxZ;
-	if (memcmp(gl_state.depth_range, depth_range, sizeof(depth_range)))
+	if (!words_equal(gl_state.depth_range, depth_range, sizeof(depth_range)))
 	{
 		memcpy(gl_state.depth_range, depth_range, sizeof(depth_range));
 		glDepthRange(depth_range[0], depth_range[1]);
@@ -3174,7 +3191,7 @@ static void apply_raster_state(BOOL has_depth)
 		operations[0] = stencil_operation(rs[D3DRS_STENCILFAIL]);
 		operations[1] = stencil_operation(rs[D3DRS_STENCILZFAIL]);
 		operations[2] = stencil_operation(rs[D3DRS_STENCILPASS]);
-		if (memcmp(gl_state.stencil_operations, operations, sizeof(operations)))
+		if (!words_equal(gl_state.stencil_operations, operations, sizeof(operations)))
 		{
 			memcpy(gl_state.stencil_operations, operations, sizeof(operations));
 			glStencilOp(operations[0], operations[1], operations[2]);
@@ -3205,7 +3222,7 @@ static void apply_raster_state(BOOL has_depth)
 			glBlendEquation(equation);
 		}
 		color_to_vec4(rs[D3DRS_BLENDCOLOR], blend_color);
-		if (memcmp(gl_state.blend_color, blend_color, sizeof(blend_color)))
+		if (!words_equal(gl_state.blend_color, blend_color, sizeof(blend_color)))
 		{
 			memcpy(gl_state.blend_color, blend_color, sizeof(blend_color));
 			glBlendColor(blend_color[0], blend_color[1], blend_color[2], blend_color[3]);
@@ -3269,7 +3286,7 @@ static void apply_raster_state(BOOL has_depth)
 
 		offset[0] = dword_to_float(rs[D3DRS_POLYGONOFFSETZSLOPESCALE]);
 		offset[1] = dword_to_float(rs[D3DRS_POLYGONOFFSETZOFFSET]);
-		if (memcmp(gl_state.polygon_offset, offset, sizeof(offset)))
+		if (!words_equal(gl_state.polygon_offset, offset, sizeof(offset)))
 		{
 			memcpy(gl_state.polygon_offset, offset, sizeof(offset));
 			glPolygonOffset(offset[0], offset[1]);
@@ -3311,7 +3328,7 @@ static unsigned long draw_uniforms_serial;
 /* sets a program's uniform unless it already holds value */
 static void uniform_vec4(GLint location, float *shadow, const float *value, int count)
 {
-	if (location < 0 || !memcmp(shadow, value, (size_t)count * 4 * sizeof(float)))
+	if (location < 0 || words_equal(shadow, value, (size_t)count * 4 * sizeof(float)))
 		return;
 	memcpy(shadow, value, (size_t)count * 4 * sizeof(float));
 	glUniform4fv(location, count, value);
@@ -3319,7 +3336,7 @@ static void uniform_vec4(GLint location, float *shadow, const float *value, int 
 
 static void uniform_float(GLint location, float *shadow, float value)
 {
-	if (location < 0 || !memcmp(shadow, &value, sizeof(value)))
+	if (location < 0 || words_equal(shadow, &value, sizeof(value)))
 		return;
 	*shadow = value;
 	glUniform1f(location, value);
@@ -3581,7 +3598,7 @@ static struct program_entry *prepare_draw(BOOL immediate)
 			inputs[count++] = state[D3DTSS_BUMPENVLOFFSET];
 			inputs[count++] = state[D3DTSS_MIPMAPLODBIAS];
 		}
-		if (!draw_uniforms_serial || memcmp(inputs, draw_uniform_inputs, sizeof(inputs)))
+		if (!draw_uniforms_serial || !words_equal(inputs, draw_uniform_inputs, sizeof(inputs)))
 		{
 			struct draw_uniforms *converted = &draw_uniforms;
 
