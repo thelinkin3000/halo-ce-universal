@@ -4687,14 +4687,51 @@ void WINAPI D3DDevice_End(void)
 	if (!count || !prepare_draw(TRUE))
 		return;
 	trace_draw("immediate", type, count, device.immediate_vertices);
-	offset = stream_upload(device.immediate_vertices, count * stride);
 #ifdef HALO_GLES
+	/* The vertices at a whole number of vertices into the stream buffer, and
+	the attributes kept at its start, the draw starting at the vertex they
+	were put at: re-pointing the sixteen attributes for each of these draws
+	(the HUD, text and effects draw hundreds a frame) was most of the
+	frame's GL calls, and made the driver set the vertex fetch up again at
+	every draw. A quad list's indices need a base vertex for it (ES 3.2);
+	without one the attributes are pointed at the vertices, as before. */
+	if (type != D3DPT_QUADLIST || xgpu_capabilities.base_vertex)
+	{
+		unsigned long first;
+
+		stream_reserve(count * stride + stride);
+		device.stream_offset = (device.stream_offset + stride - 1) / stride * stride;
+		offset = stream_upload(device.immediate_vertices, count * stride);
+		first = offset / stride;
+		for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
+		{
+			state_attribute_stream(index, 0, device.stream_buffer, 4, GL_FLOAT, GL_FALSE, FALSE, (GLsizei)stride,
+				0, index * 4 * sizeof(float));
+		}
+		if (type == D3DPT_QUADLIST)
+		{
+			unsigned long index_count;
+			WORD *indices = quad_indices(NULL, count, &index_count);
+
+			glDrawElementsBaseVertex(GL_TRIANGLES, (GLsizei)index_count, GL_UNSIGNED_SHORT,
+				(const void *)index_upload(indices, index_count * sizeof(WORD)), (GLint)first);
+			free(indices);
+		}
+		else
+		{
+			glDrawArrays(primitive_mode(type), (GLint)first, (GLsizei)count);
+		}
+		gl_check_errors("immediate draw");
+		return;
+	}
+	offset = stream_upload(device.immediate_vertices, count * stride);
 	for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
 	{
 		state_attribute_stream(index, 0, device.stream_buffer, 4, GL_FLOAT, GL_FALSE, FALSE, (GLsizei)stride,
 			offset, index * 4 * sizeof(float));
 	}
 #else
+	offset = stream_upload(device.immediate_vertices, count * stride);
 	{
 		/* every attribute four floats, one after another */
 		static struct vertex_array_entry *immediate_array;
