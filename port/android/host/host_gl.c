@@ -69,10 +69,49 @@ __asm__(
 	".endr\n");
 extern char host_gl_stubs[];
 
+/* The GL ES image's calls, counted (debug.gpu_stats): each import resolves
+to a stub that counts the call as the Vulkan image's do, then jumps to the
+driver's function with every argument as it was (only the scratch registers
+x15 to x17 are touched), so that the frame's GL calls can be read by
+function. Without the setting the imports are the driver's own. */
+void *host_gl_targets[GL_STUB_COUNT] __attribute__((visibility("hidden")));
+
+__asm__(
+	".text\n"
+	".balign 64\n"
+	".globl host_gl_pass_stubs\n"
+	".hidden host_gl_pass_stubs\n"
+	"host_gl_pass_stubs:\n"
+	".set host_gl_pass_index, 0\n"
+	".rept " "256" "\n"
+	"adrp x16, host_gl_counts + host_gl_pass_index * 16\n"
+	"add x16, x16, :lo12:(host_gl_counts + host_gl_pass_index * 16)\n"
+	"1: ldxr x17, [x16]\n"
+	"add x17, x17, #1\n"
+	"stxr w15, x17, [x16]\n"
+	"cbnz w15, 1b\n"
+	"str x30, [x16, #8]\n"
+	"adrp x16, host_gl_targets + host_gl_pass_index * 8\n"
+	"ldr x16, [x16, :lo12:(host_gl_targets + host_gl_pass_index * 8)]\n"
+	"br x16\n"
+	".balign 64\n"
+	".set host_gl_pass_index, host_gl_pass_index + 1\n"
+	".endr\n");
+extern char host_gl_pass_stubs[];
+
+/* the count's index for a function's name, made the first time; -1 when they are all taken */
+static int gl_count_index(const char *name);
+
 static void *gl_stub(const char *name)
 {
+	int index = gl_count_index(name);
+
+	return index >= 0 ? host_gl_stubs + (size_t)index * GL_STUB_SIZE : NULL;
+}
+
+static int gl_count_index(const char *name)
+{
 	static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
-	void *stub = NULL;
 	int index;
 
 	pthread_mutex_lock(&lock);
@@ -86,10 +125,10 @@ static void *gl_stub(const char *name)
 		gl_names[gl_names_used++] = strdup(name);
 		index = gl_names_used - 1;
 	}
-	if (index < gl_names_used)
-		stub = host_gl_stubs + (size_t)index * GL_STUB_SIZE;
+	if (index >= gl_names_used)
+		index = -1;
 	pthread_mutex_unlock(&lock);
-	return stub;
+	return index;
 }
 
 /* the calls counted since the last report, one line each: the function, how
@@ -105,11 +144,13 @@ static void gl_report(unsigned frames)
 		if (!calls)
 			continue;
 		called++;
-		host_logf(HOST_LOG_INFO, "vk gl call: %s %llu calls in %u frames, from %08llx", gl_names[index],
-			(unsigned long long)calls, frames, (unsigned long long)host_gl_counts[index].caller);
+		host_logf(HOST_LOG_INFO, "%s call: %s %llu calls in %u frames (%.1f a frame), from %08llx",
+			host_renderer_vulkan ? "vk gl" : "gl", gl_names[index], (unsigned long long)calls, frames,
+			frames ? (double)calls / frames : 0.0, (unsigned long long)host_gl_counts[index].caller);
 		host_gl_counts[index].calls = 0;
 	}
-	host_logf(HOST_LOG_INFO, "vk gl calls: %d of the %d GL imports called in %u frames", called, gl_names_used, frames);
+	host_logf(HOST_LOG_INFO, "%s calls: %d of the %d GL imports called in %u frames", host_renderer_vulkan ? "vk gl" : "gl",
+		called, gl_names_used, frames);
 }
 
 /* called once a frame by the stand-in swap (host_sdl.c) */
@@ -163,6 +204,17 @@ void *host_gl_resolve(const char *name)
 		function = dlsym(library, name);
 	if (!function)
 		function = (void *)eglGetProcAddress(name);
+	/* counted on the way (debug.gpu_stats) */
+	if (function && host_gl_statistics)
+	{
+		int index = gl_count_index(name);
+
+		if (index >= 0)
+		{
+			host_gl_targets[index] = function;
+			return host_gl_pass_stubs + (size_t)index * GL_STUB_SIZE;
+		}
+	}
 	return function;
 }
 

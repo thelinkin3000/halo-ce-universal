@@ -271,6 +271,8 @@ int host_sdl_gl_swap_window(uint32_t window)
 
 	if (host_renderer_vulkan)
 		return object ? standin_swap(object) : 0;
+	/* (the GL calls' counts, every ten seconds: debug.gpu_stats) */
+	host_gl_frame();
 	return object ? SDL_GL_SwapWindow(object) : 0;
 }
 
