@@ -83,7 +83,7 @@ int host_probe_skip_fault(uintptr_t address)
 {
 	if (!probe_fault_armed)
 		return 0;
-	if (address < HALO_GUEST_WINDOW_BASE || address >= (uintptr_t)host_memory_window_base() + HALO_GUEST_WINDOW_SIZE)
+	if (address < HALO_GUEST_WINDOW_BASE || address >= (uintptr_t)host_memory_window_base() + host_memory_window_size())
 		return 0;
 	probe_fault_armed = 0;
 	siglongjmp(probe_fault_jump, 1);
@@ -108,13 +108,13 @@ static int probe_collect_ranges(void)
 			continue;
 		if (permissions[0] != 'r')
 			continue; /* the guest leaves the rest of the window reserved */
-		if (last <= HALO_GUEST_WINDOW_BASE || first >= (uintptr_t)host_memory_window_base() + HALO_GUEST_WINDOW_SIZE)
+		if (last <= HALO_GUEST_WINDOW_BASE || first >= (uintptr_t)host_memory_window_base() + host_memory_window_size())
 			continue;
 		range = &probe_ranges[probe_range_count++];
 		range->start = (unsigned long)first < HALO_GUEST_WINDOW_BASE
 			? HALO_GUEST_WINDOW_BASE : (unsigned long)first;
-		range->end = (unsigned long)last > (uintptr_t)host_memory_window_base() + HALO_GUEST_WINDOW_SIZE
-			? (uintptr_t)host_memory_window_base() + HALO_GUEST_WINDOW_SIZE : (unsigned long)last;
+		range->end = (unsigned long)last > (uintptr_t)host_memory_window_base() + host_memory_window_size()
+			? (uintptr_t)host_memory_window_base() + host_memory_window_size() : (unsigned long)last;
 		range->permissions[0] = permissions[0];
 		sscanf(line, "%*s %*s %*s %*s %*s %95[^\n]", name);
 		snprintf(range->name, sizeof(range->name), "%s", name[0] ? name : "(anonymous)");
@@ -152,7 +152,7 @@ static unsigned long page_pointers(unsigned long address, uint32_t *values, unsi
 
 			if (value & 3)
 				continue;
-			if (value < host_memory_window_base() || value >= (uintptr_t)host_memory_window_base() + HALO_GUEST_WINDOW_SIZE)
+			if (value < host_memory_window_base() || value >= (uintptr_t)host_memory_window_base() + host_memory_window_size())
 				continue;
 			if (kept < capacity)
 				values[kept++] = value;

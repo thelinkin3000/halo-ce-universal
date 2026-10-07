@@ -59,6 +59,7 @@ mappings) from pools of address space it reserves below 4 GB on demand. */
 
 /* where the window was placed, for the guest's boot structure */
 uint32_t host_memory_window_base(void);
+uint32_t host_memory_window_size(void);
 uint32_t host_memory_image_base(void);
 
 /* The base of the largest range this port has reserved and not yet used,

@@ -69,7 +69,7 @@ which is 768 MB.
 the window are made real a chunk at a time and kept: see commit, below */
 #define CHUNK_SIZE (16ULL * 1024 * 1024)
 #define POOL_CHUNKS (POOL_SIZE / CHUNK_SIZE)
-#define WINDOW_CHUNKS (HALO_GUEST_WINDOW_SIZE / CHUNK_SIZE)
+#define WINDOW_CHUNKS (HALO_GUEST_WINDOW_MAXIMUM / CHUNK_SIZE)
 
 struct pool
 {
@@ -83,7 +83,7 @@ static struct pool *pools[MAXIMUM_POOLS];
 static int pool_count;
 static pthread_mutex_t memory_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static uint64_t window_base, window_end;
+static uint64_t window_base, window_end, window_size;
 static uint64_t image_base, image_end;
 
 static uint64_t round_up(uint64_t value)
@@ -537,6 +537,11 @@ uint32_t host_memory_window_base(void)
 	return (uint32_t)window_base;
 }
 
+uint32_t host_memory_window_size(void)
+{
+	return (uint32_t)window_size;
+}
+
 /* Where the guest image was mapped. host_mman.c's code-memory check only
  * covers the executable part of it, which is not where the guest was seen
  * faulting, so the image check in host_main.c needs the whole range. */
@@ -545,9 +550,71 @@ uint32_t host_memory_image_base(void)
 	return (uint32_t)image_base;
 }
 
+/* A window of size bytes: where the game and its data expect it, but only if
+ * that address will actually hold it.
+ *
+ * It will not. 0x80000000 is reported free by svcQueryMemory and refused by
+ * svcMapMemory at every size from 16 MB to 128 MB, with an error that is not
+ * "out of memory": the console simply will not map there. Checking whether
+ * anything was already mapped - which is all reserve() does - cannot tell the
+ * difference, so the port believed the address was usable, told the guest it
+ * was, and the guest then refused its own window. So each address is tried,
+ * and handed straight back, before it is promised to anything.
+ *
+ * Next, the address this build prefers (HALO_SWITCH_WINDOW_FALLBACK). The
+ * search takes the first free extent the kernel reports, which differs from
+ * run to run - the launcher's own mappings, anything ASLR'd below 4 GB, and
+ * how much of the low pool the port has already taken all move it - and the
+ * port's behaviour is sensitive to where things land. One fixed address is
+ * one less variable.
+ *
+ * Last, the first free range on a whole number of the window's own size (or
+ * of HALO_GUEST_WINDOW_ALIGNMENT, where that is larger) that the console
+ * will map. The trial mapping is of heap memory as large as the window, so
+ * a size the console has not the memory for fails here too. */
+static uint64_t place_window(uint64_t size)
+{
+	uint64_t alignment = size > HALO_GUEST_WINDOW_ALIGNMENT ? size : HALO_GUEST_WINDOW_ALIGNMENT;
+	uint64_t minimum = LOW_START;
+	int attempt;
+
+	if (host_can_map_at(HALO_GUEST_WINDOW_BASE, size) && reserve(HALO_GUEST_WINDOW_BASE, size, 1) == 0)
+		return HALO_GUEST_WINDOW_BASE;
+	host_logf(HOST_LOG_INFO, "the window's usual address %08llx will not take %u MB; looking elsewhere",
+		(unsigned long long)HALO_GUEST_WINDOW_BASE, (unsigned int)(size / (1024 * 1024)));
+	if (HALO_SWITCH_WINDOW_FALLBACK % alignment == 0 &&
+		host_can_map_at(HALO_SWITCH_WINDOW_FALLBACK, size) &&
+		reserve(HALO_SWITCH_WINDOW_FALLBACK, size, 1) == 0)
+	{
+		host_logf(HOST_LOG_INFO, "  the window is pinned to %08llx", (unsigned long long)HALO_SWITCH_WINDOW_FALLBACK);
+		return HALO_SWITCH_WINDOW_FALLBACK;
+	}
+	host_logf(HOST_LOG_INFO, "  %08llx will not take it either; searching",
+		(unsigned long long)HALO_SWITCH_WINDOW_FALLBACK);
+	for (attempt = 0; attempt < 128; attempt++)
+	{
+		uint64_t candidate = find_gap(size, minimum, alignment);
+
+		if (!candidate)
+			break;
+		minimum = candidate + PAGE;
+		/* it has to be somewhere the console will really map, for the same
+		reason the usual address was refused, and free of the port's own
+		reservations */
+		if (!host_can_map_at(candidate, size))
+		{
+			host_logf(HOST_LOG_INFO, "  %08llx will not take it", (unsigned long long)candidate);
+			continue;
+		}
+		if (reserve(candidate, size, 1) != 0)
+			continue;
+		return candidate;
+	}
+	return 0;
+}
+
 int host_memory_initialize(uint32_t base, uint32_t size)
 {
-	uint64_t minimum = LOW_START;
 	int attempt;
 
 	/* the image first: it is at a fixed address, and the search below reads
@@ -590,92 +657,24 @@ int host_memory_initialize(uint32_t base, uint32_t size)
 		return -1;
 	}
 
-	/* The window, where the game and its data expect it - but only if that
-	 * address will actually hold it.
-	 *
-	 * It will not. 0x80000000 is reported free by svcQueryMemory and
-	 * refused by svcMapMemory at every size from 16 MB to 128 MB, with an
-	 * error that is not "out of memory": the console simply will not map
-	 * there. Checking whether anything was already mapped - which is all
-	 * reserve() does - cannot tell the difference, so the port believed
-	 * the address was usable, told the guest it was, and the guest then
-	 * refused its own window.
-	 *
-	 * So the address is tried, and handed straight back, before it is
-	 * promised to anything. */
-	if (host_can_map_at(HALO_GUEST_WINDOW_BASE, HALO_GUEST_WINDOW_SIZE))
+	/* The window, as large as the console will give: each size is tried
+	 * where the game and its data expect it, then at the address this build
+	 * prefers, then anywhere free (place_window). */
+	for (window_size = HALO_GUEST_WINDOW_MAXIMUM; window_size >= HALO_GUEST_WINDOW_SIZE; window_size /= 2)
 	{
-		if (reserve(HALO_GUEST_WINDOW_BASE, HALO_GUEST_WINDOW_SIZE, 1) == 0)
-			window_base = HALO_GUEST_WINDOW_BASE;
+		window_base = place_window(window_size);
+		if (window_base)
+			break;
+		host_logf(HOST_LOG_INFO, "no room for a %u MB Xbox memory window",
+			(unsigned int)(window_size / (1024 * 1024)));
 	}
-	else
-		host_logf(HOST_LOG_INFO,
-			"the window's usual address %08llx will not take %u MB; looking elsewhere",
-			(unsigned long long)HALO_GUEST_WINDOW_BASE,
+	if (!window_base)
+	{
+		host_logf(HOST_LOG_ERROR, "no free range of %u MB for the Xbox memory window",
 			(unsigned int)(HALO_GUEST_WINDOW_SIZE / (1024 * 1024)));
-	if (!window_base)
-	{
-		/* the runtime holds the address. The game can still run with the
-		window elsewhere, as long as the map data is moved with it, which
-		the port does and is told about here. */
-		host_logf(HOST_LOG_INFO, "the window at %08llx is taken; putting it somewhere free",
-			(unsigned long long)HALO_GUEST_WINDOW_BASE);
-		/* Before searching for a gap, the address this build prefers is
-		 * tried. The search takes the first free extent the kernel
-		 * reports, which differs from run to run - the launcher's own
-		 * mappings, anything ASLR'd below 4 GB, and how much of the low
-		 * pool the port has already taken all move it - and the port's
-		 * behaviour is sensitive to where things land. One fixed address
-		 * is one less variable. */
-		if (host_can_map_at(HALO_SWITCH_WINDOW_FALLBACK, HALO_GUEST_WINDOW_SIZE))
-		{
-			if (reserve(HALO_SWITCH_WINDOW_FALLBACK, HALO_GUEST_WINDOW_SIZE, 1) == 0)
-			{
-				window_base = HALO_SWITCH_WINDOW_FALLBACK;
-				host_logf(HOST_LOG_INFO, "  the window is pinned to %08llx",
-					(unsigned long long)window_base);
-			}
-		}
-		else
-			host_logf(HOST_LOG_WARN, "  %08llx will not take the window; searching",
-				(unsigned long long)HALO_SWITCH_WINDOW_FALLBACK);
+		return -1;
 	}
-	if (!window_base)
-	{
-		window_base = 0;
-		for (attempt = 0; attempt < 128 && !window_base; attempt++)
-		{
-			uint64_t candidate = find_gap(HALO_GUEST_WINDOW_SIZE, minimum,
-				HALO_GUEST_WINDOW_ALIGNMENT);
-
-			if (!candidate)
-				break;
-			/* a mapping in the way here is one ART has just made, and may
-			be live, so it is never taken back: look further up */
-			if (reserve(candidate, HALO_GUEST_WINDOW_SIZE, 1) != 0)
-			{
-				minimum = candidate + PAGE;
-				continue;
-			}
-			/* and it has to be somewhere the console will really map,
-			for the same reason the usual address was refused */
-			if (!host_can_map_at(candidate, HALO_GUEST_WINDOW_SIZE))
-			{
-				host_logf(HOST_LOG_INFO, "  %08llx will not take the window either",
-					(unsigned long long)candidate);
-				minimum = candidate + PAGE;
-				continue;
-			}
-			window_base = candidate;
-		}
-		if (!window_base)
-		{
-			host_logf(HOST_LOG_ERROR, "no free range of %u MB for the Xbox memory window",
-				(unsigned int)(HALO_GUEST_WINDOW_SIZE / (1024 * 1024)));
-			return -1;
-		}
-	}
-	window_end = window_base + HALO_GUEST_WINDOW_SIZE;
+	window_end = window_base + window_size;
 	/* Where the window moved, the range it was linked for is kept empty.
 	 * The guest moves any value it reads out of the game data that lies
 	 * there (halo_port_window.h), so memory of its own at those addresses
@@ -686,7 +685,8 @@ int host_memory_initialize(uint32_t base, uint32_t size)
 		reserve(HALO_GUEST_WINDOW_BASE, HALO_GUEST_WINDOW_SIZE, 0) != 0)
 		host_logf(HOST_LOG_WARN, "could not keep the window's linked range %08llx free",
 			(unsigned long long)HALO_GUEST_WINDOW_BASE);
-	host_logf(HOST_LOG_INFO, "Xbox memory window at %08llx-%08llx, guest image at %08llx-%08llx",
+	host_logf(HOST_LOG_INFO, "Xbox memory window of %u MB at %08llx-%08llx, guest image at %08llx-%08llx",
+		(unsigned int)(window_size / (1024 * 1024)),
 		(unsigned long long)window_base, (unsigned long long)window_end,
 		(unsigned long long)image_base, (unsigned long long)image_end);
 	return 0;
@@ -1051,7 +1051,7 @@ long host_guest_mprotect(uint64_t address, uint64_t size, int protection)
 
 /* ---------- write tracking (port/linux/src/memory_watch.c) */
 
-#define WATCH_PAGE_COUNT (HALO_GUEST_WINDOW_SIZE / PAGE)
+#define WATCH_PAGE_COUNT (HALO_GUEST_WINDOW_MAXIMUM / PAGE)
 
 static uint8_t page_protected[WATCH_PAGE_COUNT];
 static uint32_t page_generation[WATCH_PAGE_COUNT];
@@ -1063,7 +1063,7 @@ wherever it was placed (platform_contiguous_base), so the tracking follows
 the window the host actually reserved, not the one the game was built for. */
 static int in_window(uint64_t address)
 {
-	return address >= window_base && address - window_base < HALO_GUEST_WINDOW_SIZE;
+	return address >= window_base && address - window_base < window_size;
 }
 
 static uint64_t watch_page(uint64_t address)
@@ -1149,7 +1149,7 @@ void host_memory_watch_prepare_write(uint32_t address, uint32_t size)
 
 	if (!watch_active || !size)
 		return;
-	if (start + size <= window_base || start >= window_base + HALO_GUEST_WINDOW_SIZE)
+	if (start + size <= window_base || start >= window_end)
 		return;
 	if (start < window_base)
 		start = window_base;

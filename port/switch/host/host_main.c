@@ -811,6 +811,7 @@ static uint32_t make_boot(const struct environment *environment)
 	boot->environment = (uint32_t)(uintptr_t)environ_list;
 	boot->page_size = (uint32_t)getpagesize();
 	boot->contiguous_base = host_memory_window_base();
+	boot->contiguous_size = host_memory_window_size();
 	/* (the Switch's image is always where it was linked) */
 	boot->image_shift = 0;
 	return (uint32_t)(uintptr_t)boot;
@@ -992,7 +993,8 @@ static void *game_main(void *unused)
 	 * demands the exact address it was given here. Its own log says it is
 	 * reserving at 0, which means it did not get the value - so this is
 	 * what was handed over, to say which side is losing it. */
-	host_logf(HOST_LOG_INFO, "telling the guest its contiguous window is at %08x (host has %08x)",
+	host_logf(HOST_LOG_INFO, "telling the guest its contiguous window is %u MB at %08x (host has %08x)",
+		((const struct halo_guest_boot *)boot)->contiguous_size / (1024 * 1024),
 		((const struct halo_guest_boot *)boot)->contiguous_base, host_memory_window_base());
 	/* The boot structure is ordinary guest memory, and the guest's heap
 	 * grows through the same allocator that placed it. If something has

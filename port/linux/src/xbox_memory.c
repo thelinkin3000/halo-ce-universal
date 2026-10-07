@@ -32,8 +32,8 @@ Halo Custom Edition maps need the window their tag data is linked to,
 
 /* per page: 0 free, otherwise the protection of the block (PAGE_*); the
 first page of a block also records the block length */
-static DWORD page_protection[CONTIGUOUS_PAGE_COUNT];
-static unsigned long block_page_count[CONTIGUOUS_PAGE_COUNT];
+static DWORD page_protection[PLATFORM_CONTIGUOUS_MAXIMUM / PAGE_SIZE_BYTES];
+static unsigned long block_page_count[PLATFORM_CONTIGUOUS_MAXIMUM / PAGE_SIZE_BYTES];
 static BOOL arena_reserved = FALSE;
 static pthread_mutex_t arena_lock = PTHREAD_MUTEX_INITIALIZER;
 static void *custom_edition_tag_cache = NULL;
@@ -42,6 +42,7 @@ static void *custom_edition_tag_cache = NULL;
 /* the host puts the window where the address space was free and passes the
 address in the boot structure, before the constructor below runs */
 unsigned long platform_contiguous_base = 0x80000000UL;
+unsigned long platform_contiguous_size = 0x08000000UL;
 #endif
 
 static int protection_to_host(DWORD protect)
@@ -68,13 +69,15 @@ static void contiguous_arena_reserve(void)
 	if (result == wanted)
 	{
 		arena_reserved = TRUE;
+		platform_log("Xbox contiguous memory window: %lu MB at %p",
+			(unsigned long)(PLATFORM_CONTIGUOUS_SIZE / (1024 * 1024)), wanted);
 	}
 	else
 	{
 		if (result != MAP_FAILED)
 			munmap(result, PLATFORM_CONTIGUOUS_SIZE);
-		platform_log("cannot reserve the Xbox contiguous memory window at %p (%s)",
-			wanted, strerror(errno));
+		platform_log("cannot reserve the Xbox contiguous memory window of %lu MB at %p (%s)",
+			(unsigned long)(PLATFORM_CONTIGUOUS_SIZE / (1024 * 1024)), wanted, strerror(errno));
 	}
 }
 

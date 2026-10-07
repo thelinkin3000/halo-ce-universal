@@ -13,10 +13,13 @@ space cannot be taken from it, so the host puts the window somewhere free
 and the guest is told where (halo_guest_boot.contiguous_base, read into
 platform_contiguous_base before any constructor runs).
 
-The window stays a whole number of 256 MB and larger than the 128 MB the
-game uses, so the arithmetic that turns a physical address into a virtual
-one (an offset added to the base, or an address masked with its
-complement) still gives the right answer wherever it lands.
+The window starts on a whole number of 256 MB, or of its own size where
+that is larger, and is at least the 128 MB the game data is linked into, so
+the arithmetic that turns a physical address into a virtual one (an offset
+added to the base, or an address masked with its complement) still gives the
+right answer wherever it lands. It is as large as the host found room for,
+up to 512 MB (halo_guest_boot.contiguous_size, read into
+platform_contiguous_size).
 
 Game sources include this where they name a fixed place in the window, and
 translate it; the byte-matching MSVC build does not include it and compiles
@@ -33,6 +36,16 @@ extern unsigned long platform_contiguous_base;
 #define PORT_WINDOW_BASE (platform_contiguous_base)
 #else
 #define PORT_WINDOW_BASE 0x80000000UL
+#endif
+
+/* and how large it is: on Android, as large as the host found room for
+(halo_guest_boot.contiguous_size); port/linux/src/platform.h has the
+desktop builds' */
+#ifdef HALO_ANDROID
+extern unsigned long platform_contiguous_size;
+#define PORT_WINDOW_SIZE (platform_contiguous_size)
+#else
+#define PORT_WINDOW_SIZE 0x20000000UL
 #endif
 
 /* how far the host moved the game's own image from where it was linked:
