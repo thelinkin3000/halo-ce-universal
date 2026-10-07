@@ -595,6 +595,29 @@ void rasterizer_environment_shadow_draw(
 	struct vertex_buffer const *vertex_buffer);
 void rasterizer_environment_shadows_end(
 	void);
+
+/* port: object shadows drawn in two passes (rasterizer_xbox_shadows.c,
+render_objects.c): every object's shadow map first, each kept in a map of its
+own, then all of them cast onto the level at once, so that the frame leaves
+its target once for the shadows rather than once for each, which a GPU that
+renders in tiles pays for in whole copies of the target. Up to this many at
+a time; a shadow past them, or when they cannot be had, is cast at once as
+before. */
+#define RASTERIZER_PORT_SHADOW_SLOTS 32
+/* whether the shadow begun last (rasterizer_environment_shadow_begin) is
+being deferred: its map drawn now, its casting later */
+boolean rasterizer_port_environment_shadow_deferred(
+	void);
+/* a deferred shadow's map finished (convolved) and kept: its slot */
+short rasterizer_port_environment_shadow_finish(
+	void);
+/* a deferred shadow made current again to be cast
+(rasterizer_environment_shadow_draw, then rasterizer_environment_shadow_end) */
+void rasterizer_port_environment_shadow_cast_begin(
+	short slot);
+/* every deferred shadow cast: the game's own map back */
+void rasterizer_port_environment_shadows_cast(
+	void);
 void rasterizer_environment_diffuse_textures_end(
 	void);
 void rasterizer_environment_diffuse_texture_draw(
