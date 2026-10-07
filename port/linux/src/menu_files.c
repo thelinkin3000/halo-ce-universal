@@ -387,7 +387,8 @@ static long current_line(struct reader *reader)
 	return (long)XML_GetCurrentLineNumber(reader->parser);
 }
 
-/* whether the element is for this platform (its platform attribute) */
+/* whether the element is for this platform (its platform attribute: one or
+more of "desktop", "android" and "switch", separated by spaces) */
 static int for_this_platform(struct reader *reader, const XML_Char **attributes)
 {
 	int index;
@@ -396,22 +397,37 @@ static int for_this_platform(struct reader *reader, const XML_Char **attributes)
 	{
 		if (!strcmp(attributes[index], "platform"))
 		{
-			const char *platform = attributes[index + 1];
+			const char *at = attributes[index + 1];
+			int found = 0;
 
-			if (strcmp(platform, "desktop") && strcmp(platform, "android") && strcmp(platform, "switch"))
+			while (*at)
 			{
-				reader_error(reader, "platform=\"%s\" is not \"desktop\", \"android\" or \"switch\"", platform);
-				return 1;
-			}
-			/* (the Switch's game is built as Android's, with HALO_SWITCH too:
-			"android" is the Android app's) */
+				size_t length;
+
+				while (*at == ' ')
+					at++;
+				length = strcspn(at, " ");
+				if (!length)
+					break;
+				if (!((length == 7 && !strncmp(at, "desktop", 7)) || (length == 7 && !strncmp(at, "android", 7)) ||
+					(length == 6 && !strncmp(at, "switch", 6))))
+				{
+					reader_error(reader, "platform=\"%s\" names one that is not \"desktop\", \"android\" or \"switch\"",
+						attributes[index + 1]);
+					return 1;
+				}
+				/* (the Switch's game is built as Android's, with HALO_SWITCH too:
+				"android" is the Android app's) */
 #if defined(HALO_SWITCH)
-			return !strcmp(platform, "switch");
+				found |= length == 6 && !strncmp(at, "switch", 6);
 #elif defined(HALO_ANDROID)
-			return !strcmp(platform, "android");
+				found |= length == 7 && !strncmp(at, "android", 7);
 #else
-			return !strcmp(platform, "desktop");
+				found |= length == 7 && !strncmp(at, "desktop", 7);
 #endif
+				at += length;
+			}
+			return found;
 		}
 	}
 	return 1;
