@@ -165,6 +165,9 @@ uint32_t host_vk_format_supported(uint32_t format);
 /* whether BC1 to BC3 images can be sampled with linear filtering and written by a copy (the guest sends them as they are if so,
 and decodes them to BGRA if not) */
 uint32_t host_vk_bc_supported(void);
+/* the most samples a pixel, up to samples, that the device draws the game's targets with (display.anti_aliasing's
+multisampling); 1 if it cannot multisample them */
+uint32_t host_vk_samples_supported(uint32_t samples);
 /* the latest count of the game's visibility test slot, in the game's pixels (host_vk_visibility.c); never waits */
 uint32_t host_vk_visibility(uint32_t index);
 /* the name of the Vulkan driver archive in use (meta.json's), written into the guest's buffer at out of size bytes; an empty string

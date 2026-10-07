@@ -830,7 +830,8 @@ static VkPipeline pipeline_make(const struct pipeline *wanted, VkShaderModule ve
 	raster.frontFace = (VkFrontFace)state->front_face;
 	raster.depthBiasEnable = state->depth_bias ? VK_TRUE : VK_FALSE;
 	raster.lineWidth = 1.0f;
-	multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+	/* the targets' samples a pixel (vk_command_targets), which the rendering it is used in has too */
+	multisample.rasterizationSamples = state->samples > 1 ? (VkSampleCountFlagBits)state->samples : VK_SAMPLE_COUNT_1_BIT;
 	depth_stencil.depthTestEnable = state->depth_test ? VK_TRUE : VK_FALSE;
 	depth_stencil.depthWriteEnable = state->depth_write ? VK_TRUE : VK_FALSE;
 	depth_stencil.depthCompareOp = (VkCompareOp)state->depth_compare_op;
