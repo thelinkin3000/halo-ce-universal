@@ -33,11 +33,13 @@ This header is included by both halves.
 	tools/guest_relocations.py), and tells the guest how far
 	(halo_guest_boot.image_shift). The Switch's host loads it here always.
 
-	It is above the range Halo Custom Edition maps' tag data is linked to
+	It is below the range Halo Custom Edition maps' tag data is linked to
 	(below), with room to spare for the largest image (the Vulkan one, 40
-	MB): at 0x40000000, where it was linked before, it covered that range,
-	and Custom Edition maps could not run */
-#define HALO_GUEST_IMAGE_BASE 0x42000000u
+	MB, ending by 0x3e820000): at 0x40000000, where it was linked before, it
+	covered that range, and Custom Edition maps could not run. Not above it:
+	at 0x42000000 the image reached 0x43a00000, where a Switch's loader
+	module sits, and the Switch's host cannot move the image */
+#define HALO_GUEST_IMAGE_BASE 0x3c000000u
 #define HALO_GUEST_IMAGE_RESERVE 0x01000000u
 
 /* Custom Edition's tag cache (port/linux/game/cache_file_formats.h's

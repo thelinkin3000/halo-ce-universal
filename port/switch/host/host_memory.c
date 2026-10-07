@@ -58,7 +58,7 @@ refused, and reported that address. It would have answered the question
 directly instead of by elimination.
 
 The pools still have room: they grow from here to the image at
-HALO_GUEST_IMAGE_BASE (0x42000000), which is 800 MB.
+HALO_GUEST_IMAGE_BASE (0x3c000000), which is 704 MB.
 */
 #define LOW_START 0x10000000ULL
 #define POOL_SIZE (256ULL * 1024 * 1024)
@@ -302,7 +302,9 @@ uint64_t host_memory_reserved_region(uint64_t size)
  * the kernel knows nothing of libnx's reservations: one run put pool 0 at
  * 0x30036000, whose 256 MB end at 0x40036000, and the image could never be
  * loaded at 0x40000000. */
-#define IMAGE_HOLD_SIZE (32u * 1024 * 1024)
+/* (all of the image, which has grown past 32 MB: a hold that stopped short
+of its end let pool 0 be placed across the rest, at the hold's end) */
+#define IMAGE_HOLD_SIZE (48u * 1024 * 1024)
 
 void host_memory_hold_image_range(void)
 {
