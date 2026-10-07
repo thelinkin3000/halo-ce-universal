@@ -113,6 +113,13 @@ struct host_vk_target
 	/* the number of the latest command that bound it (B.target_clock): which target a texture's address names, and whether a mip
 	composite is out of date */
 	uint64_t bound;
+	/* drawn multisampled (display.anti_aliasing): the image of samples a pixel that renderings draw into instead, the colour's
+	resolved into image as each ends; samples 0 when there is none */
+	uint32_t samples;
+	VkImage multisample_image;
+	VkDeviceMemory multisample_memory;
+	VkImageView multisample_view;
+	VkImageLayout multisample_layout;
 	struct host_vk_target *next_in_bucket;
 };
 
@@ -168,6 +175,7 @@ struct host_vk_backend
 	struct host_vk_target *buckets[HOST_VK_TARGET_BUCKETS];
 	unsigned images;
 	struct host_vk_target *color, *depth; /* bound now (NULL: none) */
+	uint32_t samples; /* and the samples a pixel they are drawn with (0: one) */
 	uint64_t target_clock;
 	struct host_vk_target *last_color, *last_depth; /* the pair a command last named, for the statistics */
 	int rendering; /* a rendering is open on them */
@@ -187,7 +195,8 @@ struct host_vk_backend
 	/* the built-in pipeline of clears of some channels only */
 	VkPipelineLayout clear_layout;
 	VkShaderModule clear_vertex, clear_fragment;
-	VkPipeline clear_pipelines[16][2]; /* by colour write mask, and whether a depth buffer is bound */
+	/* by colour write mask, whether a depth buffer is bound, and the samples a pixel (1, 2, 4, 8) */
+	VkPipeline clear_pipelines[16][2][4];
 
 	/* counted for the log line every 60 frames, and in total */
 	struct host_vk_counts
@@ -265,6 +274,13 @@ void host_vk_rendering_end(void);
 struct host_vk_target *host_vk_target_get(const struct vk_surface *surface);
 /* the current frame's command buffer, open for recording */
 VkCommandBuffer host_vk_frame_command(void);
+/* the samples a pixel the device can draw colour and depth with: the most it has up to samples (1 for none) */
+uint32_t host_vk_samples_usable(uint32_t samples);
+/* a shader module from GLSL (glslang), or VK_NULL_HANDLE (said why) */
+VkShaderModule host_vk_shader_module(const char *source, int fragment, const char *what);
+
+/* host_vk_post.c: display.anti_aliasing's FXAA over a rectangle of a target (VK_COMMAND_ANTI_ALIAS) */
+void host_vk_anti_alias_command(const struct vk_command_anti_alias *command);
 
 /* a memory type allowed by bits with the properties wanted, else the first allowed; UINT32_MAX if none */
 uint32_t host_vk_memory_type(uint32_t bits, VkMemoryPropertyFlags preferred);

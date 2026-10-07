@@ -39,6 +39,7 @@ enum
 	VK_COMMAND_COMPOSITE,
 	VK_COMMAND_VISIBILITY_BEGIN,
 	VK_COMMAND_VISIBILITY_END,
+	VK_COMMAND_ANTI_ALIAS,
 };
 
 /* a surface's kind, as the host makes its image */
@@ -81,12 +82,16 @@ struct vk_surface
 	uint32_t kind;
 };
 
-/* the surfaces later commands draw into (either can be VK_SURFACE_NONE) */
+/* the surfaces later commands draw into (either can be VK_SURFACE_NONE), and the samples a pixel they are drawn with
+(display.anti_aliasing's multisampling): 0 or 1 draws into their images; more draws into multisampled images of the host's
+beside them, the colour's resolved into its image as each rendering ends. The guest asks only for counts the host has
+(host_vk_samples_supported), and draws' pipelines are made with the same (vk_pipeline_state samples) */
 struct vk_command_targets
 {
 	struct vk_command_header header;
 	struct vk_surface color;
 	struct vk_surface depth;
+	uint32_t samples;
 };
 
 /* clears rectangles of the current targets: x, y, width, height in their
@@ -329,6 +334,19 @@ struct vk_command_texture_free
 {
 	struct vk_command_header header;
 	uint32_t id;
+};
+
+/* ---------- anti-aliasing's post-process pass (display.anti_aliasing's "fxaa")
+
+FXAA over a rectangle of a colour target (the back buffer: the 3D view of one window), in place: its pixels are copied
+first, so that the pass reads none of what it writes, and only colour is written back (the game keeps values of its own in
+destination alpha). x, y, width, height in the target's pixels, row 0 at the top */
+
+struct vk_command_anti_alias
+{
+	struct vk_command_header header;
+	struct vk_surface target;
+	int32_t rectangle[4];
 };
 
 #endif

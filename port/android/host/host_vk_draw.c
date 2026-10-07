@@ -540,6 +540,11 @@ void host_vk_command_draw(const struct vk_command_draw *draw, uint32_t size)
 		skipped(&B.counts.draws_skipped_other, "its attachments are not the ones bound");
 		return;
 	}
+	if ((draw->state.samples > 1 ? draw->state.samples : 0) != B.samples)
+	{
+		skipped(&B.counts.draws_skipped_other, "its samples a pixel are not the bound targets'");
+		return;
+	}
 	if (draw->viewport[2] <= 0.0f || draw->viewport[3] <= 0.0f)
 	{
 		B.counts.draws_skipped_other++;
