@@ -57,8 +57,8 @@ from the bottom of the sub-4 GB space mapping a page at a time until one
 refused, and reported that address. It would have answered the question
 directly instead of by elimination.
 
-The pools still have room: they grow from here to the image at 0x40000000,
-which is 768 MB.
+The pools still have room: they grow from here to the image at
+HALO_GUEST_IMAGE_BASE (0x42000000), which is 800 MB.
 */
 #define LOW_START 0x10000000ULL
 #define POOL_SIZE (256ULL * 1024 * 1024)

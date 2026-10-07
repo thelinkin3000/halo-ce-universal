@@ -118,7 +118,7 @@ that was established by experiment rather than by reading a manual.
 Everything the guest can address has to be below 4 GB, because the guest's
 pointers are 32 bits. That is not a restriction the console imposes: it is
 the same restriction the game's data formats impose, and it is why the
-guest image is linked at `HALO_GUEST_IMAGE_BASE` (0x40000000) with the Xbox
+guest image is linked at `HALO_GUEST_IMAGE_BASE` (0x42000000) with the Xbox
 contiguous window at 0x80000000 (port/android/include/halo_android_abi.h).
 
 The answers below were measured on a console running Horizon 21.2.0 with
@@ -141,7 +141,7 @@ way the Android host gives it one and then `mprotect`s it. `host_mman.c`
 splits the image by permission instead, placing each part at the offset the
 guest was linked for:
 
-- executable pages become a code memory slave at `0x40000000` plus their
+- executable pages become a code memory slave at `HALO_GUEST_IMAGE_BASE` plus their
   offset, filled in through a writable view at a scratch address;
 - `.data`, `.bss`, the guest's arenas and the Xbox window become ordinary
   `svcMapMemory` regions.
