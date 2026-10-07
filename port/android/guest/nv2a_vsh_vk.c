@@ -189,7 +189,7 @@ static const char shader_helpers[] =
 	"}\n";
 
 char *nv2a_vk_vertex_shader_to_glsl(const uint32_t *instructions, unsigned long instruction_count,
-	unsigned long packed_attribute_mask)
+	unsigned long packed_attribute_mask, const struct nv2a_vertex_lighting *lighting)
 {
 	struct xgpu_text text = { 0 };
 	unsigned long index;
@@ -221,6 +221,11 @@ char *nv2a_vk_vertex_shader_to_glsl(const uint32_t *instructions, unsigned long 
 		"layout(location = %d) out float xFog;\n",
 		VK_LOCATION_D0, VK_LOCATION_D1, VK_LOCATION_B0, VK_LOCATION_B1,
 		VK_LOCATION_T0, VK_LOCATION_T1, VK_LOCATION_T2, VK_LOCATION_T3, VK_LOCATION_FOG);
+	/* (the pixel shader's model_lighting, nv2a_psh_vk.c; the normal's length in w) */
+	if (lighting)
+		xgpu_text_append(&text, "layout(location = %d) out vec4 xWorldNormal;\n", VK_LOCATION_WORLD_NORMAL);
+	if (lighting && lighting->lights == 2)
+		xgpu_text_append(&text, "layout(location = %d) out vec3 xWorldPosition;\n", VK_LOCATION_WORLD_POSITION);
 	xgpu_text_append(&text, "invariant gl_Position;\n%s", shader_helpers);
 	for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
 	{
@@ -268,6 +273,14 @@ char *nv2a_vk_vertex_shader_to_glsl(const uint32_t *instructions, unsigned long 
 		char mask[5];
 
 		xgpu_text_append(&text, "\t/* %lu */\n", index);
+		/* the lighting's normal and position, before the program reuses them */
+		if (lighting && index == lighting->normal_instruction)
+		{
+			xgpu_text_append(&text, "\txWorldNormal = vec4(r%lu.xyz, length(r%lu.xyz));\n",
+				lighting->normal_register, lighting->normal_register);
+		}
+		if (lighting && lighting->lights == 2 && index == lighting->position_instruction)
+			xgpu_text_append(&text, "\txWorldPosition = r%lu.xyz;\n", lighting->position_register);
 		xgpu_text_append(&text, "\tA = "); operand(&text, instruction, 'A', relative); xgpu_text_append(&text, ";\n");
 		xgpu_text_append(&text, "\tB = "); operand(&text, instruction, 'B', relative); xgpu_text_append(&text, ";\n");
 		xgpu_text_append(&text, "\tC = "); operand(&text, instruction, 'C', relative); xgpu_text_append(&text, ";\n");

@@ -24,8 +24,8 @@ VOLUMES = [(str(step), f"{step / 10:g}") for step in range(11)]
 # each screen: its folder below PE, its screen's widget (the name the profile
 # menu opens), its header (widget, bitmap), the row spacing, and its rows:
 # (label, setting, [(shown, value)], help, platform[, key]): platform is
-# "desktop", "android" (the Android app) or "switch" for one of them, None for
-# all (port/linux/src/menu_files.c); key names the row's widgets where two
+# "desktop", "android" (the Android app) or "switch" for one of them, several
+# of them separated by spaces, None for all (port/linux/src/menu_files.c); key names the row's widgets where two
 # rows set one setting (one for each platform), else the setting's name does
 SCREENS = {
     "video_settings": {
@@ -98,9 +98,12 @@ SCREENS = {
             ("SHADOW RESOLUTION:", "display.shadow_resolution",
              [("128", "128"), ("256", "256"), ("512", "512"), ("1024", "1024")],
              "The size objects' shadows are drawn at: 128 as on\nthe Xbox; larger for smoother, as soft, edges.",
-             None),
+             "desktop android"),
+            # (neither is the Switch's: its deko3d renderer draws the Xbox's
+            # shadow maps and lights each vertex, port/switch/guest/d3d8_dk.c)
             ("PER-PIXEL LIGHTING:", "display.per_pixel_lighting", ON_OFF,
-             "Light models for each pixel, without the facets\nof the Xbox's lighting for each vertex.", None),
+             "Light models for each pixel, without the facets\nof the Xbox's lighting for each vertex.",
+             "desktop android"),
         ],
     },
     "mouse_settings": {
