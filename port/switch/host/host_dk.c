@@ -64,10 +64,10 @@ so that the host knows how much of it a frame has used (command_memory_added) */
 #define SCREEN_WIDTH 1280
 #define SCREEN_HEIGHT 720
 
-/* the window is made real a chunk at a time (host_memory.c);
-HALO_GUEST_WINDOW_SIZE (128 MB) is 8 of them */
+/* the window is made real a chunk at a time (host_memory.c); the largest
+it can be, HALO_GUEST_WINDOW_MAXIMUM (512 MB), is 32 of them */
 #define WINDOW_CHUNK_SIZE (16 * 1024 * 1024)
-#define WINDOW_CHUNKS (HALO_GUEST_WINDOW_SIZE / WINDOW_CHUNK_SIZE)
+#define WINDOW_CHUNKS (HALO_GUEST_WINDOW_MAXIMUM / WINDOW_CHUNK_SIZE)
 
 /* what a frame can upload (CreateIndexBuffer's index data, immediate-mode
 vertices, quad lists' indices); one slice per ring frame */

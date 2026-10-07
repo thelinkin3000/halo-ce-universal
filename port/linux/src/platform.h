@@ -127,15 +127,20 @@ extern unsigned long platform_contiguous_base;
 #define PLATFORM_CONTIGUOUS_BASE 0x80000000UL
 #endif
 #ifdef HALO_ANDROID
-/* 128 MB, a development kit's: Android's guest image is linked just above
-the window (port/android/include/halo_android_abi.h) */
-#define PLATFORM_CONTIGUOUS_SIZE 0x08000000UL
+/* as large as the host found room for, from 128 MB, a development kit's, to
+512 MB (port/android/include/halo_android_abi.h), and passed in the boot
+structure with the base; tables kept for each page of the window are as
+large as the largest */
+extern unsigned long platform_contiguous_size;
+#define PLATFORM_CONTIGUOUS_SIZE (platform_contiguous_size)
+#define PLATFORM_CONTIGUOUS_MAXIMUM 0x20000000UL
 #else
 /* 512 MB on the desktop builds, whose caches outgrow the Xbox's (Custom
 Edition maps' textures and geometry: halo_port_capacity.h). Its pages are
 backed as they are used. port/windows/src/win32_memory_watch.c has the
 same size. */
 #define PLATFORM_CONTIGUOUS_SIZE 0x20000000UL
+#define PLATFORM_CONTIGUOUS_MAXIMUM PLATFORM_CONTIGUOUS_SIZE
 #endif
 #define PLATFORM_ANY_PHYSICAL_ADDRESS 0xffffffffUL
 
