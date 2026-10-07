@@ -1509,7 +1509,14 @@ static void *buffer_data(
 	long count,
 	void const *buffer)
 {
-	unsigned long offset = (unsigned long)buffer - (unsigned long)buffers;
+	unsigned long offset;
+
+	/* a part's or a BSP's pointer to its buffer is in the map data as it was
+	linked, and the header's buffers have been moved with the window
+	(validate_buffers): it is moved as the game moves it to draw from it
+	(rasterizer_geometry.c's vertex_buffer_hardware_format) */
+	buffer = PORT_WINDOW_REBASE((void *)buffer);
+	offset = (unsigned long)buffer - (unsigned long)buffers;
 
 	if ((unsigned long)buffer < (unsigned long)buffers || offset % BUFFER_SIZE ||
 		offset / BUFFER_SIZE >= (unsigned long)count)
