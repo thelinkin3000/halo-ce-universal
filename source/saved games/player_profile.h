@@ -37,6 +37,11 @@ enum
 	_button_preset_swap_a_and_left_trigger,
 	_button_preset_swap_b_and_left_trigger,
 	_button_preset_swap_b_and_right_thumb,
+	/* port: the later games' layouts, as Halo: CE's controls go (player_ui.c) */
+	_button_preset_boxer,
+	_button_preset_green_thumb,
+	_button_preset_bumper_jumper,
+	_button_preset_reclaimer,
 	NUMBER_OF_BUTTON_PRESETS
 };
 
