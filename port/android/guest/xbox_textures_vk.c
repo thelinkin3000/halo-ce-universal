@@ -1135,3 +1135,22 @@ void vk_texture_cache_begin_frame(void)
 		}
 	}
 }
+
+/* ---------- Custom Edition channel orders (platform.h)
+
+xbox_textures.c samples the textures of a Halo Custom Edition map whose
+channels Halo PC keeps elsewhere with each channel taken from where it is.
+This cache does not: a Custom Edition map's tag data is linked at 0x40440000,
+where this build's game image is (port/android/include/halo_android_abi.h),
+so its tag cache is never reserved (xbox_memory.c) and no Custom Edition map
+loads here. Every texture is sampled in the Xbox's order. */
+
+void halo_custom_edition_texels_channels(const void *texels, unsigned char channel_order)
+{
+	(void)texels;
+	(void)channel_order;
+}
+
+void halo_custom_edition_texels_forget(void)
+{
+}
