@@ -813,6 +813,12 @@ struct texture_entry
 	memory watch serial read before it was found: the same while no watched
 	page has been written since (0: never found) */
 	unsigned long watched_serial, watched_generation;
+#if defined(HALO_ANDROID)
+	/* its menu art's texture and levels (0: none), as of menu_art_serial */
+	unsigned long menu_serial;
+	GLuint menu_texture;
+	unsigned long menu_levels;
+#endif
 };
 
 #define TEXTURE_BUCKET_COUNT 4096
@@ -880,7 +886,23 @@ static GLuint texture_entry_result(struct texture_entry *entry, GLenum *target,
 	/* (a menu's bitmap: menu_files.h) */
 	{
 		unsigned long levels;
-		GLuint art = menu_art_texture(entry->data, &levels);
+		GLuint art;
+
+#if defined(HALO_ANDROID)
+		/* (looked up again only when the art registered has changed: the
+		search was 1.3% of the game thread, for every texture of every draw,
+		as under Vulkan: xbox_textures_vk.c) */
+		if (entry->menu_serial != menu_art_serial())
+		{
+			entry->menu_serial = menu_art_serial();
+			entry->menu_levels = 0;
+			entry->menu_texture = menu_art_texture(entry->data, &entry->menu_levels);
+		}
+		art = entry->menu_texture;
+		levels = entry->menu_levels;
+#else
+		art = menu_art_texture(entry->data, &levels);
+#endif
 
 		if (art)
 		{
