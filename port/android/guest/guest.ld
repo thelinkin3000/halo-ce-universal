@@ -11,7 +11,7 @@ ENTRY(__guest_header)
 
 SECTIONS
 {
-	. = 0x40000000;
+	. = 0x42000000;
 	.guest_header : { KEEP(*(.guest_header)) }
 	.text : { *(.text .text.*) }
 	.rodata : { *(.rodata .rodata.*) }
