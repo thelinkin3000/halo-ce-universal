@@ -4765,6 +4765,13 @@ static boolean player_profile_change_controller_settings(
 		case _button_preset_swap_a_and_left_trigger: profile->controller_settings.button_preset = _button_preset_swap_a_and_left_trigger; return TRUE;
 		case _button_preset_swap_b_and_left_trigger: profile->controller_settings.button_preset = _button_preset_swap_b_and_left_trigger; return TRUE;
 		case _button_preset_swap_b_and_right_thumb: profile->controller_settings.button_preset = _button_preset_swap_b_and_right_thumb; return TRUE;
+		/* port: the later games' layouts (the Xbox's own menus list only the five above) */
+		case _button_preset_boxer:
+		case _button_preset_green_thumb:
+		case _button_preset_bumper_jumper:
+		case _button_preset_reclaimer:
+			profile->controller_settings.button_preset = (byte)option_spinner->data3C.selected_index;
+			return TRUE;
 		default: error(2, "unknown button config option selected"); return TRUE;
 		}
 	}
