@@ -28,7 +28,7 @@ renderer can protect the pages again before the kernel writes them.
 #include <unistd.h>
 
 #define WATCH_PAGE_SIZE 0x1000UL
-#define WATCH_PAGE_COUNT (PLATFORM_CONTIGUOUS_SIZE / WATCH_PAGE_SIZE)
+#define WATCH_PAGE_COUNT (PLATFORM_CONTIGUOUS_MAXIMUM / WATCH_PAGE_SIZE)
 
 static unsigned char page_protected[WATCH_PAGE_COUNT];
 static unsigned long page_generation[WATCH_PAGE_COUNT];

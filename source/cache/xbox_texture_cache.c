@@ -124,23 +124,24 @@ symbols in this file:
 
 /* ---------- constants */
 
-typedef char verify_xbox_texture_cache_size[
-	HALO_PORT_TEXTURE_CACHE_SIZE == HALO_PORT_TEXTURE_CACHE_PAGE_COUNT * 0x4000 ? 1 : -1];
-
 enum
 {
-	/* port: the native builds' larger cache (halo_port_capacity.h) */
-	XBOX_TEXTURE_CACHE_PAGE_COUNT = HALO_PORT_TEXTURE_CACHE_PAGE_COUNT,
 	XBOX_TEXTURE_CACHE_PAGE_SIZE_BITS = 14,
 	XBOX_TEXTURE_CACHE_PAGE_SIZE = 1 << XBOX_TEXTURE_CACHE_PAGE_SIZE_BITS,
 	XBOX_TEXTURE_CACHE_STEAL_GUARD_SIZE = 0x104000,
-	XBOX_TEXTURE_CACHE_STEALABLE_PAGE_COUNT =
-		XBOX_TEXTURE_CACHE_PAGE_COUNT -
-		2 * (XBOX_TEXTURE_CACHE_STEAL_GUARD_SIZE / XBOX_TEXTURE_CACHE_PAGE_SIZE),
 	XBOX_TEXTURE_CACHE_ENTRY_SIZE = 0x20,
-	XBOX_TEXTURE_CACHE_SIZE = HALO_PORT_TEXTURE_CACHE_SIZE,
 	XBOX_TEXTURE_CACHE_PROTECTION = 0x404,
+	/* port: the most pages the cache can have (halo_port_capacity.h) */
+	XBOX_TEXTURE_CACHE_MAXIMUM_PAGE_COUNT = HALO_PORT_TEXTURE_CACHE_MAXIMUM_PAGE_COUNT,
 };
+
+/* port: the native builds' larger cache, which on Android and the Switch
+is sized at start-up by the memory window (halo_port_capacity.h) */
+#define XBOX_TEXTURE_CACHE_PAGE_COUNT ((long)HALO_PORT_TEXTURE_CACHE_PAGE_COUNT)
+#define XBOX_TEXTURE_CACHE_STEALABLE_PAGE_COUNT \
+	(XBOX_TEXTURE_CACHE_PAGE_COUNT - \
+	 2 * (XBOX_TEXTURE_CACHE_STEAL_GUARD_SIZE / XBOX_TEXTURE_CACHE_PAGE_SIZE))
+#define XBOX_TEXTURE_CACHE_SIZE (XBOX_TEXTURE_CACHE_PAGE_COUNT * XBOX_TEXTURE_CACHE_PAGE_SIZE)
 
 enum
 {
@@ -335,7 +336,7 @@ static const long bitmap_d3d_format_tables
 };
 /* provisional name: the January map leaves this .bss array unnamed; it holds the debug
  * listing's cached bitmaps */
-static struct bitmap_data *texture_cache_debug_bitmaps[XBOX_TEXTURE_CACHE_PAGE_COUNT];
+static struct bitmap_data *texture_cache_debug_bitmaps[XBOX_TEXTURE_CACHE_MAXIMUM_PAGE_COUNT];
 static struct xbox_texture_cache_globals xbox_texture_cache_globals;
 struct texture_cache_debug_options texture_cache_debug_options = {0};
 boolean debug_texture_cache = FALSE;
@@ -715,6 +716,16 @@ void texture_cache_new(
 		105,
 		xbox_texture_cache_globals.base_address != NULL,
 		"xbox_texture_cache_globals.base_address");
+	{
+		void platform_log(char const *format, ...);
+
+		/* port: the cache's size follows the memory window's
+		(halo_port_capacity.h), so each run says what it got */
+		platform_log("texture cache: %ld MB, %ld pages of 16 KB, at %p",
+			XBOX_TEXTURE_CACHE_SIZE / (1024 * 1024),
+			XBOX_TEXTURE_CACHE_PAGE_COUNT,
+			xbox_texture_cache_globals.base_address);
+	}
 
 	return;
 }
@@ -856,7 +867,7 @@ void texture_cache_debug_render(
 {
 	if (texture_cache_debug_options.graph)
 	{
-		byte page_usage[XBOX_TEXTURE_CACHE_PAGE_COUNT];
+		byte page_usage[XBOX_TEXTURE_CACHE_MAXIMUM_PAGE_COUNT];
 		real_point3d world_positions[2];
 		real_point2d screen_positions[2];
 		real_point3d *world_position;

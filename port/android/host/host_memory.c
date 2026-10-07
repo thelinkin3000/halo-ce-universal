@@ -57,7 +57,7 @@ static struct pool *pools[MAXIMUM_POOLS];
 static int pool_count;
 static pthread_mutex_t memory_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static uint64_t window_base, window_end;
+static uint64_t window_base, window_end, window_size;
 static uint64_t image_base, image_end;
 
 static uint64_t round_up(uint64_t value)
@@ -225,6 +225,39 @@ uint32_t host_memory_window_base(void)
 	return (uint32_t)window_base;
 }
 
+uint32_t host_memory_window_size(void)
+{
+	return (uint32_t)window_size;
+}
+
+/* the window of size at the place the game data was linked for, else the
+first free range that starts on a whole number of the alignment */
+static uint64_t place_window(uint64_t size)
+{
+	uint64_t alignment = size > HALO_GUEST_WINDOW_ALIGNMENT ? size : HALO_GUEST_WINDOW_ALIGNMENT;
+	uint64_t minimum = LOW_START;
+	int attempt;
+
+	if (reserve(HALO_GUEST_WINDOW_BASE, size) == 0)
+		return HALO_GUEST_WINDOW_BASE;
+	for (attempt = 0; attempt < 128; attempt++)
+	{
+		uint64_t candidate = find_gap(size, minimum, alignment);
+
+		if (!candidate)
+			break;
+		/* a mapping in the way here is one ART has just made, and may be
+		live, so it is never taken back: look further up */
+		if (reserve(candidate, size) != 0)
+		{
+			minimum = candidate + PAGE;
+			continue;
+		}
+		return candidate;
+	}
+	return 0;
+}
+
 /* the image is moved by whole numbers of this: more than a page, so its
 sections keep the alignment they were linked with (guest.ld) */
 #define IMAGE_ALIGNMENT 0x10000ULL
@@ -252,43 +285,26 @@ int host_memory_initialize(uint32_t preferred_base, uint32_t size, uint32_t *bas
 		image_base = image_end = 0;
 	}
 
-	/* the window where the game and its data expect it, if it is free */
-	if (reserve(HALO_GUEST_WINDOW_BASE, HALO_GUEST_WINDOW_SIZE) == 0)
+	/* The window, as large as there is room for: each size is tried where
+	the game and its data expect it, then anywhere free. The Java runtime
+	usually holds 0x80000000; the game runs with the window elsewhere as
+	long as the map data is moved with it, which the port does and is told
+	about here. */
+	for (window_size = HALO_GUEST_WINDOW_MAXIMUM; window_size >= HALO_GUEST_WINDOW_SIZE; window_size /= 2)
 	{
-		window_base = HALO_GUEST_WINDOW_BASE;
+		window_base = place_window(window_size);
+		if (window_base)
+			break;
+		host_logf(HOST_LOG_INFO, "no free range of %u MB for the Xbox memory window",
+			(unsigned int)(window_size / (1024 * 1024)));
 	}
-	else
+	if (!window_base)
 	{
-		/* the runtime holds the address. The game can still run with the
-		window elsewhere, as long as the map data is moved with it, which
-		the port does and is told about here. */
-		host_logf(HOST_LOG_INFO, "the window at %08llx is taken; putting it somewhere free",
-			(unsigned long long)HALO_GUEST_WINDOW_BASE);
-		window_base = 0;
-		for (attempt = 0; attempt < 128 && !window_base; attempt++)
-		{
-			uint64_t candidate = find_gap(HALO_GUEST_WINDOW_SIZE, minimum,
-				HALO_GUEST_WINDOW_ALIGNMENT);
-
-			if (!candidate)
-				break;
-			/* a mapping in the way here is one ART has just made, and may
-			be live, so it is never taken back: look further up */
-			if (reserve(candidate, HALO_GUEST_WINDOW_SIZE) != 0)
-			{
-				minimum = candidate + PAGE;
-				continue;
-			}
-			window_base = candidate;
-		}
-		if (!window_base)
-		{
-			host_logf(HOST_LOG_ERROR, "no free range of %u MB for the Xbox memory window",
-				(unsigned int)(HALO_GUEST_WINDOW_SIZE / (1024 * 1024)));
-			return -1;
-		}
+		host_logf(HOST_LOG_ERROR, "no free range of %u MB for the Xbox memory window",
+			(unsigned int)(HALO_GUEST_WINDOW_SIZE / (1024 * 1024)));
+		return -1;
 	}
-	window_end = window_base + HALO_GUEST_WINDOW_SIZE;
+	window_end = window_base + window_size;
 	for (attempt = 0, minimum = LOW_START; attempt < 128 && !image_placed; attempt++)
 	{
 		uint64_t candidate = find_gap(round_up(size), minimum, IMAGE_ALIGNMENT);
@@ -311,7 +327,8 @@ int host_memory_initialize(uint32_t preferred_base, uint32_t size, uint32_t *bas
 		return -1;
 	}
 	*base = (uint32_t)image_base;
-	host_logf(HOST_LOG_INFO, "Xbox memory window at %08llx-%08llx, guest image at %08llx-%08llx",
+	host_logf(HOST_LOG_INFO, "Xbox memory window of %u MB at %08llx-%08llx, guest image at %08llx-%08llx",
+		(unsigned int)(window_size / (1024 * 1024)),
 		(unsigned long long)window_base, (unsigned long long)window_end,
 		(unsigned long long)image_base, (unsigned long long)image_end);
 	return 0;
@@ -498,7 +515,7 @@ long host_guest_mprotect(uint64_t address, uint64_t size, int protection)
 
 /* ---------- write tracking (port/linux/src/memory_watch.c) */
 
-#define WATCH_PAGE_COUNT (HALO_GUEST_WINDOW_SIZE / PAGE)
+#define WATCH_PAGE_COUNT (HALO_GUEST_WINDOW_MAXIMUM / PAGE)
 
 static uint8_t page_protected[WATCH_PAGE_COUNT];
 static uint32_t page_generation[WATCH_PAGE_COUNT];
@@ -510,7 +527,7 @@ wherever it was placed (platform_contiguous_base), so the tracking follows
 the window the host actually reserved, not the one the game was built for. */
 static int in_window(uint64_t address)
 {
-	return address >= window_base && address - window_base < HALO_GUEST_WINDOW_SIZE;
+	return address >= window_base && address - window_base < window_size;
 }
 
 static uint64_t watch_page(uint64_t address)
@@ -682,7 +699,7 @@ void host_memory_watch_prepare_write(uint32_t address, uint32_t size)
 
 	if (!watch_active || !size)
 		return;
-	if (start + size <= window_base || start >= window_base + HALO_GUEST_WINDOW_SIZE)
+	if (start + size <= window_base || start >= window_end)
 		return;
 	if (start < window_base)
 		start = window_base;
