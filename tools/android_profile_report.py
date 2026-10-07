@@ -29,7 +29,7 @@ from pathlib import Path
 
 # where the guest image is in the profiled process (main sets them: the image's own link address and size from the
 # ELF, moved to where the logcat's "guest image" line says the host loaded it), and how far it was moved
-GUEST_BASE = 0x42000000
+GUEST_BASE = 0x3c000000
 GUEST_END = GUEST_BASE + 0x03000000
 GUEST_SHIFT = 0
 SAMPLE = struct.Struct("<IIQQ8Q")  # tid, reserved, pc, lr, 8 frames
