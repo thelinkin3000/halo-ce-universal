@@ -27,14 +27,19 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-GUEST_BASE = 0x40000000
-GUEST_END = GUEST_BASE + 0x01000000
+# where the guest image is in the profiled process (main sets them: the image's own link address and size from the
+# ELF, moved to where the logcat's "guest image" line says the host loaded it), and how far it was moved
+GUEST_BASE = 0x42000000
+GUEST_END = GUEST_BASE + 0x03000000
+GUEST_SHIFT = 0
 SAMPLE = struct.Struct("<IIQQ8Q")  # tid, reserved, pc, lr, 8 frames
 CPU = struct.Struct("<IIQ")
 NAME = struct.Struct("<II16s")
 HEADER = struct.Struct("<8sIIII")
 
-RENDERER_FILES = ("d3d8_gl.c", "xbox_textures.c", "nv2a_vsh.c", "nv2a_psh.c", "nv2a_")
+RENDERER_FILES = ("d3d8_gl.c", "xbox_textures.c", "nv2a_vsh.c", "nv2a_psh.c", "nv2a_", "d3d8_vk.c", "xbox_textures_vk.c")
+RENDERER_OBJECTS = ("d3d8_gl.o", "xbox_textures.o", "nv2a_vsh.o", "nv2a_psh.o", "d3d8_vk.o", "xbox_textures_vk.o",
+                    "nv2a_vsh_vk.o", "nv2a_psh_vk.o")
 BOUNDARY_FILES = ("guest_gl.c", "guest_posix.c", "imports.s")
 DRIVER_HINTS = ("libGLES", "libEGL", "libvulkan", "/vendor/", "libgsl", "libadreno", "libllvm", "libc.so", "libm.so",
                 "libdl.so", "[vdso]", "libcutils", "libnativewindow", "libui.so", "libgui", "libsync", "libbase",
@@ -142,6 +147,7 @@ def parse_linker_map(path):
 
 def object_of(pc, sections):
     import bisect
+    pc -= GUEST_SHIFT
     index = bisect.bisect_right(sections, (pc, 1 << 64, "")) - 1
     if index >= 0 and sections[index][0] <= pc < sections[index][1]:
         return sections[index][2]
@@ -191,7 +197,7 @@ def _owner(pc, maps, sections):
         name = object_of(pc, sections)
         if name in ("guest_gl.o", "guest_posix.o", "imports.o"):
             return "boundary"
-        if name in ("d3d8_gl.o", "xbox_textures.o", "nv2a_vsh.o", "nv2a_psh.o"):
+        if name in RENDERER_OBJECTS:
             return "renderer"
         return "game"
     name = lib_of(pc, maps)
@@ -241,6 +247,37 @@ def logcat_fps(path, start=0.0, end=1e9):
     return (points[-1][1] - points[0][1]) / (points[-1][0] - points[0][0])
 
 
+def elf_extent(path):
+    """(lowest address, highest end) of the ELF's loadable segments: where the image was linked."""
+    data = Path(path).read_bytes()
+    phoff, = struct.unpack_from("<Q", data, 0x20) if data[4] == 2 else struct.unpack_from("<I", data, 0x1c)
+    if data[4] == 2:
+        phentsize, phnum = struct.unpack_from("<HH", data, 0x36)
+    else:
+        phentsize, phnum = struct.unpack_from("<HH", data, 0x2a)
+    low, high = None, 0
+    for index in range(phnum):
+        at = phoff + index * phentsize
+        if data[4] == 2:
+            kind, _, _, vaddr, _, _, memsz = struct.unpack_from("<IIQQQQQ", data, at)
+        else:
+            kind, _, vaddr, _, _, memsz = struct.unpack_from("<IIIIII", data, at)
+        if kind == 1:
+            low = vaddr if low is None else min(low, vaddr)
+            high = max(high, vaddr + memsz)
+    return low, high
+
+
+def logcat_image_base(path):
+    """Where the host loaded the guest image, from its "guest image X-Y" line (the last, if the run started again)."""
+    base = None
+    for line in Path(path).read_text(errors="replace").splitlines():
+        match = re.search(r"guest image ([0-9a-f]+)-[0-9a-f]+, \d+ imports", line)
+        if match:
+            base = int(match.group(1), 16)
+    return base
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("profile")
@@ -251,6 +288,16 @@ def main():
     parser.add_argument("--to", dest="last", type=int, default=10**9, help="only up to this second of the run")
     args = parser.parse_args()
 
+    global GUEST_BASE, GUEST_END, GUEST_SHIFT
+    linked, linked_end = elf_extent(args.elf)
+    loaded = (logcat_image_base(args.logcat) if args.logcat else None) or linked
+    GUEST_SHIFT = loaded - linked
+    GUEST_BASE, GUEST_END = loaded, loaded + (linked_end - linked)
+    if GUEST_SHIFT:
+        print(f"the guest image was loaded at {loaded:08x}, {GUEST_SHIFT:+x} from where it was linked", file=sys.stderr)
+    elif not args.logcat:
+        print(f"no --logcat: the guest image is taken to be where it was linked ({linked:08x})", file=sys.stderr)
+
     hz, maps_text, samples, cpu, names = read_profile(args.profile)
     samples = [x for x in samples if args.first <= x[-1] * 10 < args.last]
     cpu = [c for c in cpu if args.first <= c[1] <= args.last]
@@ -259,7 +306,9 @@ def main():
     if not sections:
         print(f"no linker map at {args.elf}.map: guest code is all counted as 'game'", file=sys.stderr)
     guest = sorted({x[2] for x in samples if GUEST_BASE <= x[2] < GUEST_END and not x[1]})
-    symbols = symbolize(guest, args.elf)
+    # (named where the image was linked)
+    named = symbolize([pc - GUEST_SHIFT for pc in guest], args.elf)
+    symbols = {pc: named[pc - GUEST_SHIFT] for pc in guest if pc - GUEST_SHIFT in named}
     fps = args.fps or (logcat_fps(args.logcat, args.first, args.last) if args.logcat else None)
 
     per_thread = defaultdict(Counter)
