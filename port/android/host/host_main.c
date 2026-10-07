@@ -327,6 +327,9 @@ static void *game_main(void *unused)
 	snprintf(path, sizeof(path), "%s/config.toml", data_root);
 
 	config_read(path, &settings);
+	/* (before the image's imports are resolved: the GL ES image's calls are
+	counted on the way, host_gl.c) */
+	host_gl_statistics = settings.gpu_stats;
 	/* the renderer decides the image (host.h). The probe runs on the GL image,
 	as before, whatever the renderer is */
 	if (settings.vk_probe[0])
@@ -438,7 +441,6 @@ static void *game_main(void *unused)
 	if (settings.sample_seconds[0])
 		host_debug_start_sampler(settings.sample_seconds);
 	host_debug_start_profiler(settings.profile_hz, data_root);
-	host_gl_statistics = settings.gpu_stats;
 	host_vk_present_marker = settings.vk_present_marker;
 	host_vk_self_test = settings.vk_self_test;
 	boot = make_boot(&environment);
