@@ -1522,6 +1522,61 @@ void rasterizer_set_target_as_texture(
 	return;
 }
 
+/* port: the per-object shadow maps of the deferred object shadows
+(rasterizer_xbox_shadows.c): slot's own surface and texture put behind the
+shadow secondary target, which the convolution ends in and the projection
+samples, so that each object's map stays until its shadow is projected.
+Made the first time a slot is asked for, as the game makes its own map; NONE
+puts the game's own back. FALSE if the slot cannot be made. */
+static D3DTexture *rasterizer_port_shadow_slot_textures[RASTERIZER_PORT_SHADOW_SLOTS];
+static D3DSurface *rasterizer_port_shadow_slot_surfaces[RASTERIZER_PORT_SHADOW_SLOTS];
+static D3DTexture *rasterizer_port_shadow_own_texture;
+static D3DSurface *rasterizer_port_shadow_own_surface;
+static boolean rasterizer_port_shadow_slot_failed;
+
+boolean rasterizer_port_shadow_slot_select(
+	short slot)
+{
+	if (slot == NONE)
+	{
+		if (rasterizer_port_shadow_own_texture)
+		{
+			global_d3d_texture_shadow_secondary = rasterizer_port_shadow_own_texture;
+			global_d3d_surface_shadow_secondary = rasterizer_port_shadow_own_surface;
+			rasterizer_port_shadow_own_texture = NULL;
+			rasterizer_port_shadow_own_surface = NULL;
+		}
+		return TRUE;
+	}
+	if (slot < 0 || slot >= RASTERIZER_PORT_SHADOW_SLOTS || rasterizer_port_shadow_slot_failed)
+		return FALSE;
+	if (!rasterizer_port_shadow_slot_textures[slot])
+	{
+		D3DTexture *texture = NULL;
+		D3DSurface *surface = NULL;
+
+		if (IDirect3DDevice8_CreateTexture(global_d3d_device, RASTERIZER_TARGET_SHADOW_SECONDARY_SIZE,
+				RASTERIZER_TARGET_SHADOW_SECONDARY_SIZE, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R5G6B5, D3DPOOL_DEFAULT,
+				&texture) < 0 || !texture ||
+			IDirect3DTexture8_GetSurfaceLevel(texture, 0, &surface) < 0 || !surface)
+		{
+			error(_error_silent, "### WARNING cannot make shadow map %d: object shadows are drawn one at a time", slot);
+			rasterizer_port_shadow_slot_failed = TRUE;
+			return FALSE;
+		}
+		rasterizer_port_shadow_slot_textures[slot] = texture;
+		rasterizer_port_shadow_slot_surfaces[slot] = surface;
+	}
+	if (!rasterizer_port_shadow_own_texture)
+	{
+		rasterizer_port_shadow_own_texture = global_d3d_texture_shadow_secondary;
+		rasterizer_port_shadow_own_surface = global_d3d_surface_shadow_secondary;
+	}
+	global_d3d_texture_shadow_secondary = rasterizer_port_shadow_slot_textures[slot];
+	global_d3d_surface_shadow_secondary = rasterizer_port_shadow_slot_surfaces[slot];
+	return TRUE;
+}
+
 void rasterizer_set_target(
 	short target,
 	short mipmap_index,

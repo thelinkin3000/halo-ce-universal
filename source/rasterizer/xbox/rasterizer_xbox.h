@@ -122,6 +122,11 @@ void rasterizer_set_vertex_shader_permutation(
 void rasterizer_water_set_visibility_for_window(
 	boolean visibility);
 
+/* port: a deferred object shadow's own map put behind the shadow secondary
+target, NONE the game's own (rasterizer_xbox.c); FALSE if it cannot be made */
+boolean rasterizer_port_shadow_slot_select(
+	short slot);
+
 /* ---------- prototypes/RASTERIZER_XBOX_SHADOWS.C */
 
 void _rasterizer_environment_shadows_begin(

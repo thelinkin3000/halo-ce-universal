@@ -263,6 +263,18 @@ extern short debug_rasterizer_light_count;
 
 boolean render_shadows = TRUE;
 
+/* port: the volumes of the object shadows whose maps are drawn and kept,
+to be cast when every map is (rasterizer.h's deferred object shadows) */
+static struct
+{
+	real_point3d center;
+	real radius;
+	real_rectangle3d bounds;
+	real_plane3d planes[NUMBER_OF_SHADOW_VOLUME_PLANES];
+	short slot;
+} deferred_shadow_volumes[RASTERIZER_PORT_SHADOW_SLOTS];
+static short deferred_shadow_volume_count;
+
 static struct profile_section render_objects_section =
 	{ "render_objects", NONE, TRUE };
 static struct profile_section render_object_shadows_section =
@@ -384,7 +396,28 @@ void render_object_shadows(
 		rasterizer_environment_shadows_begin();
 
 		data.shadow = TRUE;
+		deferred_shadow_volume_count = 0;
 		process_rendered_objects(&data);
+
+		/* port: the deferred shadows cast, the frame's target bound once for
+		all of them */
+		{
+			short index;
+
+			for (index = 0; index < deferred_shadow_volume_count; index++)
+			{
+				rasterizer_port_environment_shadow_cast_begin(deferred_shadow_volumes[index].slot);
+				structure_render_shadow(
+					&deferred_shadow_volumes[index].center,
+					deferred_shadow_volumes[index].radius,
+					&deferred_shadow_volumes[index].bounds,
+					NUMBER_OF_SHADOW_VOLUME_PLANES,
+					deferred_shadow_volumes[index].planes);
+				rasterizer_environment_shadow_end();
+			}
+			deferred_shadow_volume_count = 0;
+			rasterizer_port_environment_shadows_cast();
+		}
 
 		rasterizer_environment_shadows_end();
 	}
@@ -865,6 +898,22 @@ static void render_object_shadow_end(
 		data->shadow_matrix.position.z;
 	shadow_volume_bounds.z1 = shadow_volume_bounds.z1 * data->shadow_bounding_radius +
 		data->shadow_matrix.position.z;
+
+	/* port: a deferred shadow's map is finished and kept, and its volume
+	cast with the others (render_object_shadows) */
+	if (rasterizer_port_environment_shadow_deferred() &&
+		deferred_shadow_volume_count < RASTERIZER_PORT_SHADOW_SLOTS)
+	{
+		short index = deferred_shadow_volume_count++;
+
+		deferred_shadow_volumes[index].slot = rasterizer_port_environment_shadow_finish();
+		deferred_shadow_volumes[index].center = data->shadow_matrix.position;
+		deferred_shadow_volumes[index].radius = data->shadow_bounding_radius * 4.f;
+		deferred_shadow_volumes[index].bounds = shadow_volume_bounds;
+		csmemcpy(deferred_shadow_volumes[index].planes, shadow_volume_planes, sizeof(shadow_volume_planes));
+		rasterizer_environment_shadow_end();
+		return;
+	}
 
 	structure_render_shadow(
 		&data->shadow_matrix.position,
