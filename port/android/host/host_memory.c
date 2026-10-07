@@ -459,6 +459,14 @@ long host_guest_mmap(uint64_t address, uint64_t size, int protection, int flags,
 
 		if (host + length > LOW_LIMIT)
 			return -ENOMEM;
+		/* the guest's own image is in use, whatever asks: a "no replace"
+		request that reaches into it fails as one over any mapping does.
+		Custom Edition's tag cache asks for 0x40440000
+		(port/linux/src/xbox_memory.c), inside the image wherever the image
+		is where it was linked, and replacing the reservation there put
+		empty pages over the game's code and data */
+		if ((flags & MAP_FIXED_NOREPLACE) && host < image_end && host + length > image_base)
+			return -EEXIST;
 		/* inside a range the host reserved for the guest, a "no replace"
 		request replaces the reservation */
 		if (!host_low_owns(host, length))
