@@ -26,9 +26,8 @@ This header is included by both halves.
 
 #include <stdint.h>
 
-/* the guest image is linked to run here. The window is 256 MB-aligned and
-	128 MB long, so it can neither cover nor reach this address, and the host
-	reserves the range before the guest's own pools take any of it. Where the
+/* the guest image is linked to run here. The host reserves the range before
+	it places the window or the guest's own pools take any of it. Where the
 	Java runtime already holds it, the Android host loads the image somewhere
 	free instead and moves its pointers (halo_guest.relocs, made by
 	tools/guest_relocations.py), and tells the guest how far
@@ -37,15 +36,23 @@ This header is included by both halves.
 #define HALO_GUEST_IMAGE_RESERVE 0x01000000u
 
 /* the Xbox contiguous memory window (port/linux/src/platform.h). The game
-data is linked to the addresses of the window, so the host looks for
-HALO_GUEST_WINDOW_SIZE of free space below 4 GB at start-up, prefers
-HALO_GUEST_WINDOW_BASE, hands the guest the address it found
-(halo_guest_boot.contiguous_base), and the port moves the data with it */
+data is linked to the addresses of the window, so the host looks for free
+space below 4 GB at start-up, prefers HALO_GUEST_WINDOW_BASE, hands the
+guest the address it found (halo_guest_boot.contiguous_base), and the port
+moves the data with it.
+
+The window is as large as the host can find room for: HALO_GUEST_WINDOW_MAXIMUM,
+else half that, down to HALO_GUEST_WINDOW_SIZE, the 128 MB of a development
+kit, which the game data is linked into and which is the least the game runs
+in. The guest is told which (halo_guest_boot.contiguous_size), and gives
+what is above the Xbox's own layout to the texture cache
+(halo_port_capacity.h). */
 #define HALO_GUEST_WINDOW_BASE 0x80000000u
 #define HALO_GUEST_WINDOW_SIZE 0x08000000u
-/* the window is a whole number of these, so the game's arithmetic on
-physical addresses (an offset, or an address masked with ~base) still
-works wherever it lands */
+#define HALO_GUEST_WINDOW_MAXIMUM 0x20000000u
+/* the window starts on a whole number of these, or of its own size where
+that is larger, so the game's arithmetic on physical addresses (an offset,
+or an address masked with ~base) still works wherever it lands */
 #define HALO_GUEST_WINDOW_ALIGNMENT 0x10000000u
 
 /* Where the Switch port puts the window when the console refuses the one
@@ -72,7 +79,7 @@ works wherever it lands */
 #define HALO_SWITCH_WINDOW_FALLBACK 0x20000000u
 
 #define HALO_GUEST_MAGIC 0x4f4c4148u /* 'HALO' */
-#define HALO_GUEST_ABI_VERSION 2
+#define HALO_GUEST_ABI_VERSION 3
 
 /* at the image's start (HALO_GUEST_IMAGE_BASE, unless the host moved it) */
 struct halo_guest_header
@@ -100,6 +107,7 @@ struct halo_guest_boot
 	uint32_t page_size;
 	uint32_t contiguous_base;     /* where the host put the Xbox window */
 	uint32_t image_shift;         /* where the host put the image, less HALO_GUEST_IMAGE_BASE */
+	uint32_t contiguous_size;     /* how large a window it found room for */
 };
 
 #endif

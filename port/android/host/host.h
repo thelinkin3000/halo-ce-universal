@@ -38,6 +38,7 @@ mappings) from pools of address space it reserves below 4 GB on demand. */
 
 /* where the window was placed, for the guest's boot structure */
 uint32_t host_memory_window_base(void);
+uint32_t host_memory_window_size(void);
 
 /* claims the image's range (at preferred_base if it is free, else wherever
 there is room: *base says where) and the Xbox window */

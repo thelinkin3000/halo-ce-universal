@@ -46,12 +46,21 @@ is drawn as the default one ("YOU GOT STABBED" in debug.txt; Elite_Alpha_Siege
 did at 22 MB), and a frame of bigass_v3 draws more than 64 MB (DamnationCE's
 measurement). The desktop builds' cache is 256 MB, half their 512 MB memory
 window (port/linux/src/platform.h), whose pages are backed as they are used.
-Android's window is 128 MB, and its cache the Xbox's. */
+Android's and the Switch's window is as large as the host found room for at
+start-up (platform_contiguous_size): the cache is half of it, as on the
+desktop, where that is more than the 128 MB of the Xbox's layout, and the
+Xbox's own otherwise. Tables kept per page are as large as the largest
+cache (HALO_PORT_TEXTURE_CACHE_MAXIMUM_PAGE_COUNT). The cache is not part of
+the game state, so its size does not change saved games. */
 
-#ifdef HALO_ARM64_GUEST
-#define HALO_PORT_TEXTURE_CACHE_PAGE_COUNT 0x580 /* (0x580) */
+#ifdef HALO_ANDROID
+extern unsigned long platform_contiguous_size;
+#define HALO_PORT_TEXTURE_CACHE_PAGE_COUNT \
+	(platform_contiguous_size > 0x08000000UL ? platform_contiguous_size / 2 / 0x4000 : 0x580) /* (0x580) */
+#define HALO_PORT_TEXTURE_CACHE_MAXIMUM_PAGE_COUNT 0x4000
 #else
 #define HALO_PORT_TEXTURE_CACHE_PAGE_COUNT 0x4000 /* (0x580) */
+#define HALO_PORT_TEXTURE_CACHE_MAXIMUM_PAGE_COUNT HALO_PORT_TEXTURE_CACHE_PAGE_COUNT
 #endif
 #define HALO_PORT_TEXTURE_CACHE_SIZE (HALO_PORT_TEXTURE_CACHE_PAGE_COUNT*0x4000) /* (0x1600000) */
 

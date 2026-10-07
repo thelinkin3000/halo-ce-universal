@@ -3987,9 +3987,9 @@ every write; after a few such rewrites a page counts as volatile for a
 while, and draws that use it stream their data as before. */
 
 #define MIRROR_SEGMENT_SIZE 0x400000UL
-#define MIRROR_SEGMENT_COUNT (PLATFORM_CONTIGUOUS_SIZE / MIRROR_SEGMENT_SIZE)
+#define MIRROR_SEGMENT_COUNT (PLATFORM_CONTIGUOUS_MAXIMUM / MIRROR_SEGMENT_SIZE)
 #define MIRROR_PAGE_SIZE 0x1000UL
-#define MIRROR_PAGE_COUNT (PLATFORM_CONTIGUOUS_SIZE / MIRROR_PAGE_SIZE)
+#define MIRROR_PAGE_COUNT (PLATFORM_CONTIGUOUS_MAXIMUM / MIRROR_PAGE_SIZE)
 /* rewrites no more than this many frames apart ... */
 #define MIRROR_REWRITE_FRAMES 2
 /* ... this many times in a row make a page volatile ... */
