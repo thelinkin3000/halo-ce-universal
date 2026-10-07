@@ -159,9 +159,19 @@ not be told apart, and setting bit 31 converted either, which is why this used
 to be an OR. That is only right while the base is 0x80000000: once the window
 moves, an address still written as 0x80...... has to be moved with it and an
 offset has the base added. Where the window did not move, both forms are the
-same arithmetic as before. */
+same arithmetic as before.
+
+A third form is an address already in the window where it is: the map
+data's vertex and index buffers are moved there as the map is checked
+(tag_validate.c). That one is kept as it is, before the other two are
+tried: with the window at 0xa0000000 bit 31 is set in its addresses, which
+were moved a second time, out of the window. It cannot be mistaken for an
+offset, because the window starts on a multiple of its own size, so every
+address in it is at least the window's size and every offset is less. */
 #define PLATFORM_PHYSICAL_TO_VIRTUAL(physical) \
-	((void *)(((unsigned long)(physical) & 0x80000000UL) ? \
+	((void *)((unsigned long)(physical) - PLATFORM_CONTIGUOUS_BASE < PLATFORM_CONTIGUOUS_SIZE ? \
+		(unsigned long)(physical) : \
+		((unsigned long)(physical) & 0x80000000UL) ? \
 		((unsigned long)(physical) - 0x80000000UL + PLATFORM_CONTIGUOUS_BASE) : \
 		(PLATFORM_CONTIGUOUS_BASE + (unsigned long)(physical))))
 #define PLATFORM_VIRTUAL_TO_PHYSICAL(address) \
