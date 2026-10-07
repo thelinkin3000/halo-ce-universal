@@ -375,6 +375,8 @@ static struct
 {
 	pthread_mutex_t lock;
 	pthread_cond_t wake;
+	/* signalled as each pipeline is made or fails: a draw waiting for one the thread is making (host_vk_pipeline_find) */
+	pthread_cond_t pipeline_done;
 	int started, thread_started;
 	char root[640], spirv_folder[768], pipelines_folder[768], failed_folder[768], cache_file[900];
 	struct shader *buckets[BUCKETS];
@@ -395,7 +397,9 @@ static struct
 	unsigned made_since_save;
 	uint64_t last_save;
 	int first_find_logged, first_compile_logged;
-} S = { .lock = PTHREAD_MUTEX_INITIALIZER, .wake = PTHREAD_COND_INITIALIZER };
+	/* pipelines a draw made itself rather than wait for the thread, since the start */
+	unsigned pipelines_made_at_draw;
+} S = { .lock = PTHREAD_MUTEX_INITIALIZER, .wake = PTHREAD_COND_INITIALIZER, .pipeline_done = PTHREAD_COND_INITIALIZER };
 
 static unsigned bucket_of(uint32_t stage, uint64_t hash)
 {
@@ -695,6 +699,9 @@ static struct pipeline *pipeline_lookup(uint64_t vertex_hash, uint64_t pixel_has
 
 /* the pipeline for two shader handles and a state: made on the compile thread when new, and the VkPipeline once it is ready,
 else VK_NULL_HANDLE (the draw is skipped, counted). B.lock is held. */
+static void compile_pipeline_item(struct pipeline *pipeline);
+static void pipeline_unqueue(struct pipeline *pipeline);
+
 VkPipeline host_vk_pipeline_find(uint32_t vertex_handle, uint32_t pixel_handle, const struct vk_pipeline_state *state)
 {
 	struct shader *vertex, *pixel;
@@ -746,6 +753,18 @@ VkPipeline host_vk_pipeline_find(uint32_t vertex_handle, uint32_t pixel_handle, 
 			pthread_cond_signal(&S.wake);
 		}
 	}
+	/* Not made yet: made now, by the draw that needs it, rather than the draw left out until the thread gets to it. Its
+	shaders are made (the draw has their handles), and with the driver's cache warm a pipeline takes well under a
+	millisecond, where leaving the draw out showed as the sky and whole passes flashing for the first seconds of a map,
+	and after each new effect. One the thread is making already is waited for. */
+	if (pipeline && pipeline->status == PIPELINE_QUEUED)
+	{
+		pipeline_unqueue(pipeline);
+		compile_pipeline_item(pipeline);
+		S.pipelines_made_at_draw++;
+	}
+	while (pipeline && pipeline->status == PIPELINE_MAKING)
+		pthread_cond_wait(&S.pipeline_done, &S.lock);
 	if (pipeline && pipeline->status == PIPELINE_READY)
 	{
 		B.counts.draws_ready++;
@@ -994,6 +1013,25 @@ static void compile_pipeline_item(struct pipeline *pipeline)
 		pipeline->status = PIPELINE_FAILED;
 		S.pipelines_failed++;
 	}
+	pthread_cond_broadcast(&S.pipeline_done);
+}
+
+/* the pipeline taken out of the thread's queue (S.lock is held) */
+static void pipeline_unqueue(struct pipeline *pipeline)
+{
+	struct pipeline *previous = NULL, *at;
+
+	for (at = S.pipeline_head; at && at != pipeline; at = at->next_queued)
+		previous = at;
+	if (!at)
+		return;
+	if (previous)
+		previous->next_queued = pipeline->next_queued;
+	else
+		S.pipeline_head = pipeline->next_queued;
+	if (S.pipeline_tail == pipeline)
+		S.pipeline_tail = previous;
+	pipeline->next_queued = NULL;
 }
 
 static void *compile_thread(void *unused)
@@ -1244,9 +1282,10 @@ void host_vk_services_statistics(char *text, size_t size)
 		queued_shaders++;
 	for (pipeline = S.pipeline_head; pipeline; pipeline = pipeline->next_queued)
 		queued_pipelines++;
-	snprintf(text, size, "shaders %u from the cache, %u compiled, %u failed, %u queued; pipelines %u made, %u failed, %u "
-		"queued; draws: %u ready, %u would be skipped for a shader, %u for a pipeline; pipeline cache %lu KB",
-		S.from_disk, S.compiled, S.failed, queued_shaders, S.pipelines_made, S.pipelines_failed, queued_pipelines,
+	snprintf(text, size, "shaders %u from the cache, %u compiled, %u failed, %u queued; pipelines %u made (%u at their draw), "
+		"%u failed, %u queued; draws: %u ready, %u would be skipped for a shader, %u for a pipeline; pipeline cache %lu KB",
+		S.from_disk, S.compiled, S.failed, queued_shaders, S.pipelines_made, S.pipelines_made_at_draw, S.pipelines_failed,
+		queued_pipelines,
 		B.counts.draws_ready, B.counts.draws_skipped_shader, B.counts.draws_skipped_pipeline, S.pipeline_cache_size / 1024);
 	pthread_mutex_unlock(&S.lock);
 }
