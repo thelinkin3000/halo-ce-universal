@@ -118,7 +118,7 @@ that was established by experiment rather than by reading a manual.
 Everything the guest can address has to be below 4 GB, because the guest's
 pointers are 32 bits. That is not a restriction the console imposes: it is
 the same restriction the game's data formats impose, and it is why the
-guest image is linked at `HALO_GUEST_IMAGE_BASE` (0x42000000) with the Xbox
+guest image is linked at `HALO_GUEST_IMAGE_BASE` (0x3c000000) with the Xbox
 contiguous window at 0x80000000 (port/android/include/halo_android_abi.h).
 
 The answers below were measured on a console running Horizon 21.2.0 with
