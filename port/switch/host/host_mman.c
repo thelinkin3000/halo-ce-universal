@@ -869,7 +869,11 @@ static void *mmap_unlocked(void *address, size_t length, int protection, int fla
 		}
 	}
 
-	if ((flags & MAP_FIXED) == 0)
+	/* (a "no replace" request names its address as firmly as MAP_FIXED does,
+	only refusing what is in the way, below: taken for one with no address, it
+	was put wherever a request of its size goes - Custom Edition's 23 MB tag
+	cache at 0x40440000 went to the window's range, which it was not) */
+	if ((flags & (MAP_FIXED | MAP_FIXED_NOREPLACE)) == 0)
 	{
 		void *chosen = NULL;
 
