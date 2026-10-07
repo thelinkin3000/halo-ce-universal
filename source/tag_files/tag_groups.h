@@ -35,7 +35,12 @@ enum tag_field_type
 
 /* ---------- macros */
 
+#ifdef HALO_ANDROID
+/* port: an element in range found inline (tag_block_get_element_fast, below) */
+#define TAG_BLOCK_GET_ELEMENT(block_address, index, type) ((type *)tag_block_get_element_fast((block_address), (index), sizeof(type)))
+#else
 #define TAG_BLOCK_GET_ELEMENT(block_address, index, type) ((type *)tag_block_get_element_with_size((block_address), (index), sizeof(type)))
+#endif
 
 /* ---------- structures */
 
@@ -135,10 +140,40 @@ TAG_DATA_ADDRESS(foo->bar).
 Where the window is where the game expects it these are the field itself, so
 the original code and the byte-matching build are unaffected. */
 #ifdef HALO_ANDROID
+#include "halo_port_window.h"
+
 void *tag_data_address(struct tag_data const *data);
 void *tag_block_address(struct tag_block const *block);
-#define TAG_DATA_ADDRESS(data) tag_data_address(&(data))
-#define TAG_BLOCK_ADDRESS(block) tag_block_address(&(block))
+
+/* tag_data_address and tag_block_address, inline: the game reads tag data
+by the million a frame (the collision and visibility code takes a block
+element for each BSP node it passes), and a call for each was a share of a
+phone's game thread of its own */
+static inline void *tag_data_address_inline(struct tag_data const *data)
+{
+	return PORT_WINDOW_REBASE(data->address);
+}
+
+static inline void *tag_block_address_inline(struct tag_block const *block)
+{
+	return PORT_WINDOW_REBASE(block->address);
+}
+
+#define TAG_DATA_ADDRESS(data) tag_data_address_inline(&(data))
+#define TAG_BLOCK_ADDRESS(block) tag_block_address_inline(&(block))
+
+/* TAG_BLOCK_GET_ELEMENT's element where it is in range, inline;
+tag_block_get_element_with_size, which asserts and reports, for anything
+else (5% of a phone's game thread was that call, from the BSP's tests) */
+static inline void *tag_block_get_element_fast(struct tag_block const *block, long index, long element_size)
+{
+	if (block && index >= 0 && index < block->count && block->address &&
+		(!block->definition || block->definition->element_size == element_size))
+	{
+		return (byte *)PORT_WINDOW_REBASE(block->address) + index * element_size;
+	}
+	return tag_block_get_element_with_size(block, index, element_size);
+}
 #else
 #define TAG_DATA_ADDRESS(data) ((data).address)
 #define TAG_BLOCK_ADDRESS(block) ((block).address)
@@ -147,7 +182,7 @@ void *tag_block_address(struct tag_block const *block);
 /* the same, where the block is already a pointer: a macro that took the
 structure by value cannot be used on one */
 #ifdef HALO_ANDROID
-#define TAG_BLOCK_ADDRESS_AT(block) tag_block_address(block)
+#define TAG_BLOCK_ADDRESS_AT(block) tag_block_address_inline(block)
 #else
 #define TAG_BLOCK_ADDRESS_AT(block) ((block)->address)
 #endif
