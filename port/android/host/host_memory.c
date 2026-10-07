@@ -230,6 +230,15 @@ uint32_t host_memory_window_size(void)
 	return (uint32_t)window_size;
 }
 
+/* whether a range crosses Custom Edition's tag cache, which the guest
+reserves at its fixed address (HALO_GUEST_CUSTOM_EDITION_BASE): the window
+and a moved image are placed clear of it, so that Custom Edition maps can
+run wherever the Java runtime leaves that range free */
+static int crosses_custom_edition(uint64_t address, uint64_t size)
+{
+	return address < HALO_GUEST_CUSTOM_EDITION_END && address + size > HALO_GUEST_CUSTOM_EDITION_BASE;
+}
+
 /* the window of size at the place the game data was linked for, else the
 first free range that starts on a whole number of the alignment */
 static uint64_t place_window(uint64_t size)
@@ -246,6 +255,11 @@ static uint64_t place_window(uint64_t size)
 
 		if (!candidate)
 			break;
+		if (crosses_custom_edition(candidate, size))
+		{
+			minimum = HALO_GUEST_CUSTOM_EDITION_END;
+			continue;
+		}
 		/* a mapping in the way here is one ART has just made, and may be
 		live, so it is never taken back: look further up */
 		if (reserve(candidate, size) != 0)
@@ -311,6 +325,11 @@ int host_memory_initialize(uint32_t preferred_base, uint32_t size, uint32_t *bas
 
 		if (!candidate)
 			break;
+		if (crosses_custom_edition(candidate, round_up(size)))
+		{
+			minimum = HALO_GUEST_CUSTOM_EDITION_END;
+			continue;
+		}
 		if (reserve(candidate, round_up(size)) != 0)
 		{
 			minimum = candidate + PAGE;
