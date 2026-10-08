@@ -56,6 +56,13 @@ zero-extended by the stubs) */
 uint32_t host_dk_shader_find(uint32_t stage, uint64_t hash, uint32_t state_out);
 void host_dk_shader_compile(uint32_t stage, uint64_t hash, uint32_t glsl, uint32_t glsl_size, uint32_t priority);
 uint32_t host_dk_shader_known(uint32_t stage, uint64_t hash);
+uint32_t host_dk_shader_pending(void);
+
+/* the game's console (source/interface/terminal.c, cseries.h), spelled out:
+this file sees none of the game's headers */
+union real_argb_color;
+void terminal_status_printf(union real_argb_color const *color, char const *format, ...);
+extern const union real_argb_color *global_real_argb_yellow;
 
 /* d3d8_dk.c: the vertex programs the game has made. The ids are the order
 the game makes them in, the same in both images (phase 4's dump relies on
@@ -77,6 +84,11 @@ int d3d8_dk_vertex_program_by_id(unsigned long id, uint64_t *program_hash, const
 /* how many keys the startup pass takes a frame (DEKO3D.md: generating the
 GLSL costs the game thread time, and the game must not be held up) */
 #define DK_PASS_PER_FRAME 8
+/* the player is told the shaders are being compiled while at least this
+many wait (a map's few new ones are not worth a line on screen), and asked
+about it every this many frames */
+#define DK_STATUS_MINIMUM 16
+#define DK_STATUS_EVERY_FRAMES 30
 
 /* the key's data as it is in a record: a vertex key or a pixel key,
 padded to the pixel key's size (the larger of the two) so a record is one
@@ -612,6 +624,34 @@ void dk_shader_start(void)
 		key_count);
 }
 
+/* While many shaders wait to be compiled - the first start after an update
+that changed them, when the cache on the card no longer matches - the game
+is slow to answer: the menus wait for the card, which the compile writes
+to. The console says so while it lasts, and once when it is done. */
+static void status_frame(void)
+{
+	static unsigned long frames;
+	static BOOL shown;
+	uint32_t pending;
+
+	if (++frames < DK_STATUS_EVERY_FRAMES)
+		return;
+	frames = 0;
+	pending = host_dk_shader_pending();
+	if (pending >= DK_STATUS_MINIMUM || (shown && pending))
+	{
+		shown = TRUE;
+		terminal_status_printf(global_real_argb_yellow,
+			"Compiling shaders after an update: %u left. The game may be slow to respond until it is done.",
+			(unsigned)pending);
+	}
+	else if (shown)
+	{
+		shown = FALSE;
+		terminal_status_printf(global_real_argb_yellow, "Shaders compiled.");
+	}
+}
+
 /* the startup pass: eight keys a frame, each asked of the host in turn and
 queued if the host does not have it. Runs until every key is asked, and
 says when it is done - the second launch's numbers come from these lines */
@@ -619,7 +659,10 @@ void dk_shader_frame(void)
 {
 	unsigned long taken = 0;
 
-	if (!started || pass_finished)
+	if (!started)
+		return;
+	status_frame();
+	if (pass_finished)
 		return;
 	while (taken < DK_PASS_PER_FRAME && pass_index < key_count)
 	{
