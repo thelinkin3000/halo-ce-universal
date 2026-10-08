@@ -790,6 +790,19 @@ uint32_t host_dk_shader_known(uint32_t stage, uint64_t hash)
 	return known;
 }
 
+uint32_t host_dk_shader_pending(void)
+{
+	uint32_t pending;
+
+	/* (the lock is made when the service starts) */
+	if (!dksh.started)
+		return 0;
+	pthread_mutex_lock(&dksh.lock);
+	pending = dksh.queue_count + (dksh.compiling ? 1 : 0);
+	pthread_mutex_unlock(&dksh.lock);
+	return pending;
+}
+
 void host_dk_shader_compile(uint32_t stage, uint64_t hash, uint32_t glsl, uint32_t glsl_size, uint32_t priority)
 {
 	struct dksh_request request;
