@@ -118,7 +118,7 @@ static boolean model_rigid_render_radius(
 			}
 
 			stride = rasterizer_geometry_get_vertex_size(buffer->type);
-			IDirect3DVertexBuffer8_Lock(buffer->hardware_format, 0, 0, &vertices, D3DLOCK_READONLY);
+			IDirect3DVertexBuffer8_Lock(VERTEX_BUFFER_HARDWARE_FORMAT(buffer), 0, 0, &vertices, D3DLOCK_READONLY);
 			valid = vertices != NULL;
 			for (vertex_index = 0; valid && vertex_index < buffer->count; vertex_index++)
 			{
@@ -138,7 +138,7 @@ static boolean model_rigid_render_radius(
 					maximum_squared = MAX(maximum_squared, distance_squared);
 				}
 			}
-			IDirect3DVertexBuffer8_Unlock(buffer->hardware_format);
+			IDirect3DVertexBuffer8_Unlock(VERTEX_BUFFER_HARDWARE_FORMAT(buffer));
 			if (!valid)
 			{
 				return FALSE;
