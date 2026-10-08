@@ -53,6 +53,11 @@ void terminal_draw(
 	void);
 boolean terminal_update(void);
 void terminal_printf(real_argb_color const *color, char const *format, ...);
+/* port: one line kept on screen while it is called again, its text
+replaced: a state that lasts, such as the shader cache's compile
+(port/switch/guest/dk_shaders.c). When the calls stop, it fades as any
+line does. */
+void terminal_status_printf(real_argb_color const *color, char const *format, ...);
 /* port: kinds of what is logged, and whether the console shows a kind on
 screen (config.toml's game.console_log) */
 enum
