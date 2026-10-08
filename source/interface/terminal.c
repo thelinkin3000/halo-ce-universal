@@ -383,6 +383,51 @@ void terminal_printf(
 	return;
 }
 
+/* port: the status line, while it is on screen (terminal_status_printf) */
+static long terminal_status_line_index = NONE;
+
+void terminal_status_printf(
+	real_argb_color const *color,
+	char const *format,
+	...)
+{
+	struct output_line_datum *line = NULL;
+	char *arglist;
+	int count;
+
+	if (!terminal_globals.initialized)
+		return;
+	/* the line it was, unless it faded or the oldest line's place was
+	taken for a new one */
+	if (terminal_status_line_index != NONE)
+		line = datum_try_and_get(terminal_globals.output_lines, terminal_status_line_index);
+	if (!line)
+	{
+		terminal_status_line_index = terminal_new_line();
+		line = output_line_get(terminal_status_line_index);
+	}
+	line->timer = 0;
+	if (color)
+	{
+		line->color = *color;
+	}
+	else
+	{
+		line->color.alpha = 1.f;
+		line->color.red = 0.7f;
+		line->color.green = 0.7f;
+		line->color.blue = 0.7f;
+	}
+	va_start(arglist, format);
+	count = _vsnprintf(line->buffer, NUMBEROF(line->buffer)-2, format, arglist);
+	va_end(arglist);
+	if (count < 0 || count >= (int)(NUMBEROF(line->buffer)-2))
+		line->buffer[NUMBEROF(line->buffer)-2] = 0;
+	line->tabstop = strstr(line->buffer, "|t") != 0;
+
+	return;
+}
+
 /* ---------- private code */
 
 static void terminal_remove_line(
