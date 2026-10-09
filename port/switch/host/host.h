@@ -192,10 +192,10 @@ struct tag_DkDevice *host_dk_device(void);
 
 /* host_dk_compiler.cpp (UAM's compiler; DEKO3D.md, phase 5, step 2) or
 host_dk_compiler_stub.c, when this build has no UAM: compiles GLSL into a
-DKSH file at dksh_path (written complete: .tmp then renamed, by the caller).
-Returns 0 on failure. Called on the compile thread only, and locked inside,
+DKSH in memory (*dksh, *dksh_size: the caller frees it, and writes it to the
+card in a batch). Returns 0 on failure. Called on the compile thread only, and locked inside,
 so nothing else can ever be compiling at the same time. */
-int host_dk_compile_glsl(int fragment, const char *glsl, const char *dksh_path);
+int host_dk_compile_glsl(int fragment, const char *glsl, void **dksh, size_t *dksh_size);
 
 /* host_dk_shaders.c (DEKO3D.md, phase 5, step 3): the shader cache, called
 by the guest through imports. stage: 0 vertex, 1 pixel. A shader is known by
