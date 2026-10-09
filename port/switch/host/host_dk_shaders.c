@@ -175,6 +175,8 @@ static struct
 	uint32_t load_count;
 	pthread_cond_t load_condition;
 	int loader_started;
+	/* a load the loader thread is doing now (host_dk_shader_loading) */
+	int load_running;
 
 	/* the shaders compiled since the writer last wrote (under lock) */
 	struct dksh_pending *pending;
@@ -817,12 +819,20 @@ this is not the compile thread's queue. The code memory is made on the game
 thread, before the first load is queued. */
 static void *loader_thread(void *unused)
 {
+	/* how the card keeps up: a batch's loads (until the queue empties, or
+	every LOADER_LOG_EVERY), their time and the longest, said in the log */
+	enum { LOADER_LOG_EVERY = 256 };
+	unsigned long batch = 0;
+	u64 batch_ns = 0, longest_ns = 0;
+
 	(void)unused;
 	host_thread_place_on_helper_core();
 	for (;;)
 	{
 		uint64_t hash;
 		uint32_t stage;
+		uint32_t waiting;
+		u64 started_ns;
 
 		pthread_mutex_lock(&dksh.lock);
 		while (!dksh.load_count)
@@ -831,9 +841,19 @@ static void *loader_thread(void *unused)
 		stage = dksh.load_queue[0].stage;
 		memmove(&dksh.load_queue[0], &dksh.load_queue[1], (dksh.load_count - 1) * sizeof(dksh.load_queue[0]));
 		dksh.load_count--;
+		dksh.load_running = 1;
 		pthread_mutex_unlock(&dksh.lock);
 
+		started_ns = armTicksToNs(armGetSystemTick());
 		shader_load(hash, stage);
+		{
+			u64 took = armTicksToNs(armGetSystemTick()) - started_ns;
+
+			batch++;
+			batch_ns += took;
+			if (took > longest_ns)
+				longest_ns = took;
+		}
 
 		pthread_mutex_lock(&dksh.lock);
 		{
@@ -842,7 +862,22 @@ static void *loader_thread(void *unused)
 			if (slot)
 				slot->loading = 0;
 		}
-		pthread_mutex_unlock(&dksh.lock);
+		dksh.load_running = 0;
+		waiting = dksh.load_count;
+		{
+			uint32_t code_kb = dksh.code_used / 1024, loaded = dksh.loaded_count;
+
+			pthread_mutex_unlock(&dksh.lock);
+			if (!waiting || batch >= LOADER_LOG_EVERY)
+			{
+				host_logf(HOST_LOG_INFO, "dk shader: %lu loaded from the card, %.1f ms each, the longest %.1f ms; "
+					"%u waiting; %u loaded in all, %u KB of %u KB of code memory", batch,
+					(double)batch_ns / 1e6 / (double)batch, (double)longest_ns / 1e6, (unsigned)waiting,
+					(unsigned)loaded, (unsigned)code_kb, (unsigned)(DKSH_CODE_SIZE / 1024));
+				batch = 0;
+				batch_ns = longest_ns = 0;
+			}
+		}
 	}
 	return NULL;
 }
@@ -944,6 +979,18 @@ uint32_t host_dk_shader_known(uint32_t stage, uint64_t hash)
 	}
 	pthread_mutex_unlock(&dksh.lock);
 	return known;
+}
+
+uint32_t host_dk_shader_loading(void)
+{
+	uint32_t loading;
+
+	if (!dksh.started)
+		return 0;
+	pthread_mutex_lock(&dksh.lock);
+	loading = dksh.load_count + (dksh.load_running ? 1 : 0);
+	pthread_mutex_unlock(&dksh.lock);
+	return loading;
 }
 
 uint32_t host_dk_shader_pending(void)
