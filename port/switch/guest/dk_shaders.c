@@ -59,6 +59,7 @@ uint32_t host_dk_shader_known(uint32_t stage, uint64_t hash);
 uint32_t host_dk_shader_pending(void);
 uint32_t host_dk_shader_loading(void);
 void host_dk_shader_preload_done(void);
+uint32_t host_dk_shader_loose_loads(void);
 
 /* the game's console (source/interface/terminal.c, cseries.h), spelled out:
 this file sees none of the game's headers */
@@ -142,6 +143,10 @@ static BOOL started, pass_finished;
 static unsigned long pass_index;
 static BOOL preload_finished;
 static unsigned long preload_index, preload_asked;
+/* the keys the preload has to ask for (on the card, not loaded), counted
+when it starts, for its message */
+static unsigned long preload_total;
+static BOOL preload_counted;
 static uint32_t current_map;
 static int logged_hash;
 
@@ -670,7 +675,17 @@ static void preload_frame(void)
 	paces the files still to move into it, so the menus keep the card) */
 	if (!DK_PRELOAD_ENABLED)
 		return;
-	if (!pass_finished || preload_finished || host_dk_shader_loading() >= DK_PRELOAD_QUEUE)
+	if (!pass_finished || preload_finished)
+		return;
+	if (!preload_counted)
+	{
+		unsigned long index;
+
+		preload_counted = TRUE;
+		for (index = 0; index < key_count; index++)
+			preload_total += keys[index].ready && !keys[index].handle ? 1 : 0;
+	}
+	if (host_dk_shader_loading() >= DK_PRELOAD_QUEUE)
 		return;
 	while (taken < DK_PRELOAD_PER_FRAME && preload_index < key_count)
 	{
@@ -713,11 +728,34 @@ static void status_frame(void)
 		terminal_status_printf(global_real_argb_yellow,
 			"Compiling shaders after an update: %u left. The game may be slow to respond until it is done.",
 			(unsigned)pending);
+		return;
 	}
-	else if (shown)
+	if (shown)
 	{
 		shown = FALSE;
 		terminal_status_printf(global_real_argb_yellow, "Shaders compiled.");
+		return;
+	}
+	/* the preload (for watching it; to go once it is known to be quick):
+	"moving" while it reads the cache before the pack, a file a shader,
+	into the pack (a first run's), else "preloading"; left: the keys it has
+	not asked for yet and the loads waiting */
+	{
+		static BOOL preload_shown;
+		uint32_t loading = host_dk_shader_loading();
+		unsigned long left = (preload_total > preload_asked ? preload_total - preload_asked : 0) + loading;
+
+		if (preload_counted && (!preload_finished || loading))
+		{
+			preload_shown = TRUE;
+			terminal_status_printf(global_real_argb_yellow, host_dk_shader_loose_loads() ?
+				"Moving shaders to the new cache: %lu left." : "Preloading shaders: %lu left.", left);
+		}
+		else if (preload_shown && preload_finished)
+		{
+			preload_shown = FALSE;
+			terminal_status_printf(global_real_argb_yellow, "Shaders preloaded.");
+		}
 	}
 }
 
