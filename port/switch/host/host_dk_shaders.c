@@ -222,6 +222,9 @@ static struct
 	are the cache's leftovers, removed a file at a time by the writer */
 	volatile int preload_done;
 	int folder_cleared;
+	/* loads this run read from a file of the cache before the pack (the
+	guest's "moving" message) */
+	uint32_t loose_loads;
 } dksh;
 
 /* ---------- paths */
@@ -1029,6 +1032,12 @@ static uint32_t shader_load(uint64_t hash, uint32_t stage)
 		}
 		host_sd_unlock();
 		from_loose = contents != NULL;
+		if (from_loose)
+		{
+			pthread_mutex_lock(&dksh.lock);
+			dksh.loose_loads++;
+			pthread_mutex_unlock(&dksh.lock);
+		}
 	}
 	if (contents && size < (long)sizeof(header))
 	{
@@ -1313,6 +1322,18 @@ uint32_t host_dk_shader_known(uint32_t stage, uint64_t hash)
 	}
 	pthread_mutex_unlock(&dksh.lock);
 	return known;
+}
+
+uint32_t host_dk_shader_loose_loads(void)
+{
+	uint32_t loads;
+
+	if (!dksh.started)
+		return 0;
+	pthread_mutex_lock(&dksh.lock);
+	loads = dksh.loose_loads;
+	pthread_mutex_unlock(&dksh.lock);
+	return loads;
 }
 
 void host_dk_shader_preload_done(void)
