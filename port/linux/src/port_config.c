@@ -195,11 +195,20 @@ static const struct config_setting config_settings[] =
 		"Reverberate the world's sounds as the place the player is in does (the\n"
 		"maps' sound environments, as the Xbox's I3DL2 reverb did); false keeps\n"
 		"them dry." },
+#ifdef HALO_SWITCH
+	/* (push to talk is a key's, and the console has none: a headset in the
+	jack talks when it hears speech) */
+	{ "audio.voice_chat", _config_string, "\"open_mic\"", "HALO_VOICE_CHAT", _environment_value, _platform_all,
+		"Talking in network games' voice chat, through a headset in the console's\n"
+		"jack: \"open_mic\" (whenever the microphone hears speech) or \"off\".\n"
+		"Others' voices play whatever this is (audio.voice_volume 0 silences them)." },
+#else
 	{ "audio.voice_chat", _config_string, "\"push_to_talk\"", "HALO_VOICE_CHAT", _environment_value, _platform_all,
 		"Talking in network games' voice chat: \"push_to_talk\" (while\n"
 		"controls.push_to_talk is held; the microphone opens the first time),\n"
 		"\"open_mic\" (whenever the microphone hears speech), or \"off\". Others'\n"
 		"voices play whatever this is (audio.voice_volume 0 silences them)." },
+#endif
 	{ "audio.voice_volume", _config_real, "1.0", "HALO_VOICE_VOLUME", _environment_value, _platform_all,
 		"The volume of the other players' voices (0 to 2)." },
 	{ "audio.output_device", _config_string, "\"default\"", "HALO_AUDIO_OUTPUT_DEVICE", _environment_value,
