@@ -1190,3 +1190,10 @@ void host_memory_watch_forget(uint32_t address, uint32_t size)
 		page_generation[page] = __sync_add_and_fetch(&current_generation, 1);
 	}
 }
+
+/* memory_watch_begin_frame: Android's, for its page hashes (an app under
+ARM translation); the Switch's tracking is page protection alone, with
+nothing to do at a frame's start */
+void host_memory_watch_begin_frame(void)
+{
+}
