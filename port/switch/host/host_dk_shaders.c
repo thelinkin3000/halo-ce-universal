@@ -1156,9 +1156,10 @@ this is not the compile thread's queue. The code memory is made on the game
 thread, before the first load is queued. */
 static void *loader_thread(void *unused)
 {
-	/* how the card keeps up: a batch's loads (until the queue empties, or
-	every LOADER_LOG_EVERY), their time and the longest, said in the log */
-	enum { LOADER_LOG_EVERY = 256 };
+	/* how the card keeps up: every LOADER_LOG_EVERY loads, their time and
+	the longest, said in the log (each line is a write to the card, under
+	its lock: not one a load) */
+	enum { LOADER_LOG_EVERY = 64 };
 	unsigned long batch = 0;
 	u64 batch_ns = 0, longest_ns = 0;
 
@@ -1211,7 +1212,7 @@ static void *loader_thread(void *unused)
 			uint32_t code_kb = dksh.code_used / 1024, loaded = dksh.loaded_count;
 
 			pthread_mutex_unlock(&dksh.lock);
-			if (!waiting || batch >= LOADER_LOG_EVERY)
+			if (batch >= LOADER_LOG_EVERY)
 			{
 				host_logf(HOST_LOG_INFO, "dk shader: %lu loaded from the card, %.1f ms each, the longest %.1f ms; "
 					"%u waiting; %u loaded in all, %u KB of %u KB of code memory", batch,
