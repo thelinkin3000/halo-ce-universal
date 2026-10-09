@@ -528,6 +528,7 @@ void *debug_realloc(
 {
 	void *result = NULL;
 	struct debug_memory_header *header = NULL;
+	struct debug_memory_header *old_header = NULL;
 	unsigned long allocation_size =
 		size + sizeof(struct debug_memory_header) + sizeof(unsigned long);
 	unsigned long old_size = 0;
@@ -544,7 +545,7 @@ void *debug_realloc(
 
 	if (pointer != NULL)
 	{
-		struct debug_memory_header *old_header = (struct debug_memory_header *)pointer - 1;
+		old_header = (struct debug_memory_header *)pointer - 1;
 
 		debug_check_pointer_header(old_header, file, line);
 		debug_check_pointer_overrun(pointer, file, line);
@@ -578,6 +579,17 @@ void *debug_realloc(
 				(byte *)result + old_size,
 				size - old_size);
 		}
+	}
+	else if (old_header != NULL && size != 0)
+	{
+		/* port: a realloc that fails leaves the block as it was, and the
+		caller's: it is put back as allocated. It stayed disposed, so the
+		caller's later free of it halted the game ("Pointer has been
+		disposed"), as Custom Edition's sound conversion did on the Switch
+		when the memory for a larger buffer ran out
+		(port/linux/game/custom_edition_sounds.c) */
+		old_header->signature = debug_memory_allocated_signature;
+		debug_memory_add_pointer(old_header);
 	}
 
 	if (result != NULL || size == 0)
