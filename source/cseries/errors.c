@@ -117,6 +117,26 @@ char *error_get(
 	return error_globals.message_buffer;
 }
 
+/* port/linux/src/port_config.c's */
+int config_boolean(const char *name);
+unsigned long config_changes(void);
+
+/* port: config.toml's debug.log_files (read again as the settings change):
+false writes no debug.txt, not even opened */
+static boolean debug_file_wanted(
+	void)
+{
+	static unsigned long read_at = (unsigned long)-1;
+	static boolean wanted = TRUE;
+
+	if (read_at != config_changes())
+	{
+		read_at = config_changes();
+		wanted = config_boolean("debug.log_files") != 0;
+	}
+	return wanted;
+}
+
 /* The native builds keep the log open and flush each line: opening and
 closing it per line takes milliseconds on Windows, and a host logs
 thousands of lines when a hundred machines join, load or leave. The file is
@@ -130,6 +150,10 @@ static void write_to_debug_file(
 	FILE *file = debug_file;
 	char prefix[32];
 
+	if (!debug_file_wanted())
+	{
+		return;
+	}
 	if (!file)
 	{
 		FILE *opened = fopen("d:\\debug.txt", "a+b");
