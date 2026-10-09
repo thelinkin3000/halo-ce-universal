@@ -78,6 +78,8 @@ fprintf that cannot affect it. Every line goes to both, and each is flushed
 at once, so the file is readable the moment a line is written.
 */
 static int log_descriptor = -1;
+/* config.toml's debug.log_files: halo.log written at all */
+static int log_files = 1;
 
 /* The log is written from the main thread, from the game thread and from the
  * guest watcher, and they write through one descriptor that they all share.
@@ -1123,6 +1125,21 @@ int main(int argc, char *argv[])
 	{
 		char log_path[PATH_MAX + 32];
 
+		/* (config.toml's debug.log_files false: none at all, the lines going
+		to nxlink and the console only; debug.txt is the guest's,
+		source/cseries/errors.c) */
+		snprintf(log_path, sizeof(log_path), "%s/config.toml", executable_root);
+		{
+			toml_result_t result = toml_parse_file_ex(log_path);
+
+			if (result.ok)
+			{
+				toml_datum_t datum = toml_seek(result.toptab, "debug.log_files");
+
+				log_files = !(datum.type == TOML_BOOLEAN && !datum.u.boolean);
+				toml_free(result);
+			}
+		}
 		snprintf(log_path, sizeof(log_path), "%s/halo.log", executable_root);
 		/* O_SYNC, and not for tidiness.
 
@@ -1138,8 +1155,9 @@ int main(int argc, char *argv[])
 		The garbled fragments that appeared in earlier logs - a line of one
 		message spliced into the middle of another - are the same buffer
 		seen from the other side. */
-		log_descriptor = open(log_path, O_WRONLY | O_CREAT | O_TRUNC | O_SYNC, 0666);
-		if (log_descriptor < 0)
+		if (log_files)
+			log_descriptor = open(log_path, O_WRONLY | O_CREAT | O_TRUNC | O_SYNC, 0666);
+		if (log_files && log_descriptor < 0)
 		{
 			/* Not fatal: the log is worth having even buffered, and
 			 * failing to open it is not a reason to stop a game. */

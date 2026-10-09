@@ -546,6 +546,11 @@ static const struct config_setting config_settings[] =
 		"Save every this many frames to screenshot_directory; 0 none." },
 	{ "debug.texture_dump_directory", _config_string, "\"\"", "HALO_TEXTURE_DUMP", _environment_value, _platform_all,
 		"A folder to write every texture to as it is uploaded; empty none." },
+	{ "debug.log_files", _config_boolean, "true", "HALO_LOG_FILES", _environment_value, _platform_all,
+		"Write the logs to files: the game's debug.txt (beside the data, and on the\n"
+		"Switch the program's halo.log too). false writes neither, which spares the\n"
+		"storage a write for each line; nothing is kept to say what went wrong.\n"
+		"halo.log takes it the next start." },
 	{ "debug.texture_log", _config_boolean, "false", "HALO_TEXTURE_LOG", _environment_set_is_true, _platform_all,
 		"Log texture uploads." },
 	{ "debug.texture_no_cache", _config_boolean, "false", "HALO_TEXTURE_NO_CACHE", _environment_set_is_true, _platform_all,
