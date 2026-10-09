@@ -221,6 +221,10 @@ uint32_t host_dk_shader_pending(void);
 backend's draws, on the game thread */
 const void *host_dk_shader(uint32_t handle);
 
+/* config.toml's debug.mic_probe: what libnx's audin hears, logged for two
+minutes, for voice chat (host_mic_probe.c) */
+void host_mic_probe_start(void);
+
 /* ---------- debugging (host_debug.c) */
 
 void host_debug_thread_started(int is_game);

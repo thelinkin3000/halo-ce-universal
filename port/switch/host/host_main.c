@@ -982,6 +982,8 @@ static void *game_main(void *unused)
 		if (config_sample_seconds(path, seconds, sizeof(seconds)))
 			host_debug_start_sampler(seconds);
 		host_debug_start_profiler(config_profile_hz(path), "halo_guest.elf");
+		if (config_flag(path, "debug.mic_probe"))
+			host_mic_probe_start();
 		host_dk_verify_compressed = config_flag(path, "debug.texture_verify_compressed");
 		if (host_dk_verify_compressed)
 			host_logf(HOST_LOG_WARN, "deko3d: compressed textures are read back and checked "
