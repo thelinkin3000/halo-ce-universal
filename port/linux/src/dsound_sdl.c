@@ -1439,12 +1439,28 @@ static HRESULT STDMETHODCALLTYPE stream_process(IDirectSoundStream *object, LPCX
 		*input->pdwStatus = XMEDIAPACKET_STATUS_PENDING;
 	if (input->pdwCompletedSize)
 		*input->pdwCompletedSize = 0;
-	if (!stream->packet_count)
 	{
-		/* a stream that ran dry starts over */
-		stream->cursor = 0;
-		resampler_reset(stream);
-		stream->gains_valid = FALSE;
+		unsigned long position;
+		BOOL dry = TRUE;
+
+		/* a stream that ran dry starts over: one with no packets, or only
+		packets the mixer played out and the game's thread has not yet
+		completed (streams_complete_finished, DirectSoundDoWork). Without
+		the second, a stream that ran out for longer than its resampler's
+		reach (mix_voice: the silence taken) stopped, never taking a frame
+		of the packets that came after: the Switch's main menu music went
+		quiet for good when a slow start held up its next packets */
+		for (position = 0; position < stream->packet_count; position++)
+		{
+			if (!stream->packets[(stream->packet_head + position) % MAXIMUM_STREAM_PACKETS].finished)
+				dry = FALSE;
+		}
+		if (dry)
+		{
+			stream->cursor = 0;
+			resampler_reset(stream);
+			stream->gains_valid = FALSE;
+		}
 	}
 	stream->packet_count++;
 	pthread_mutex_unlock(&mixer_lock);
