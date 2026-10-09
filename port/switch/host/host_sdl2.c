@@ -708,11 +708,193 @@ int host_sdl_gamepad_type(uint32_t gamepad)
 	return host_sdl3_gamepad_type(kind);
 }
 
+/* ---------- rumble, through libnx's HD rumble and not SDL's
+
+devkitPro's SDL2 (switch-sdl-2.28's SDL_sysjoystick.c) readies the
+vibration devices of its pads 1 to 7 as it starts, but not of pad 0, the
+first player's: that one is readied only if its controller's kind changes
+while the program runs, so whether the first player's controller rumbles
+at all depended on when it connected. Even then it is No1's, never the
+handheld's (the Joy-Cons on the console), and it sends amplitudes of 320
+where HD rumble takes 0 to 1. So the host rumbles the controller itself:
+SDL's pad i is npad No1 + i (its pad 0 also reads the handheld), whose
+devices are readied for the style it has, again when that changes. The
+low (heavy) motor is the left device's, the high one the right's; a
+single Joy-Con has one device, which takes the stronger. The game sends
+the motors every frame, and 0 when they stop.
+
+The game sends them holding its input lock, which its game thread waits
+for, so the request only notes the motors wanted, and a thread of its own
+makes the calls to HID (one that is slow is logged). */
+
+#define RUMBLE_PADS 8
+#define RUMBLE_LOW_HZ 160.0f
+#define RUMBLE_HIGH_HZ 320.0f
+
+static struct
+{
+	HidNpadIdType id;
+	u32 style;
+	int count;
+	HidVibrationDeviceHandle handles[2];
+	/* the motors sent (the thread's alone, as are the devices) */
+	uint32_t low, high;
+	/* those wanted, and whether that is news (under rumble_lock) */
+	uint32_t wanted_low, wanted_high;
+	int wanted, requested;
+} rumble_pads[RUMBLE_PADS];
+static pthread_mutex_t rumble_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t rumble_condition = PTHREAD_COND_INITIALIZER;
+static int rumble_thread_started;
+
+/* the pad's devices for the style its controller has now (count 0: none) */
+static void rumble_ready(int pad)
+{
+	HidNpadIdType id = (HidNpadIdType)(HidNpadIdType_No1 + pad);
+	u32 style = hidGetNpadStyleSet(id);
+	HidNpadStyleTag tag;
+	int count = 2;
+	Result result;
+
+	if (pad == 0 && !style && hidGetNpadStyleSet(HidNpadIdType_Handheld))
+	{
+		id = HidNpadIdType_Handheld;
+		style = hidGetNpadStyleSet(id);
+	}
+	if (rumble_pads[pad].id == id && rumble_pads[pad].style == style && (rumble_pads[pad].count || !style))
+		return;
+	rumble_pads[pad].id = id;
+	rumble_pads[pad].style = style;
+	rumble_pads[pad].count = 0;
+	/* (sent again on the next request) */
+	rumble_pads[pad].low = rumble_pads[pad].high = (uint32_t)-1;
+	if (style & HidNpadStyleTag_NpadHandheld)
+		tag = HidNpadStyleTag_NpadHandheld;
+	else if (style & HidNpadStyleTag_NpadFullKey)
+		tag = HidNpadStyleTag_NpadFullKey;
+	else if (style & HidNpadStyleTag_NpadJoyDual)
+		tag = HidNpadStyleTag_NpadJoyDual;
+	else if (style & HidNpadStyleTag_NpadJoyLeft)
+		tag = HidNpadStyleTag_NpadJoyLeft, count = 1;
+	else if (style & HidNpadStyleTag_NpadJoyRight)
+		tag = HidNpadStyleTag_NpadJoyRight, count = 1;
+	else
+		return;
+	result = hidInitializeVibrationDevices(rumble_pads[pad].handles, count, id, tag);
+	if (R_FAILED(result))
+	{
+		host_logf(HOST_LOG_WARN, "rumble: pad %d's vibration devices (style %#x): 0x%x", pad, (unsigned)style,
+			(unsigned)result);
+		return;
+	}
+	rumble_pads[pad].count = count;
+	host_logf(HOST_LOG_INFO, "rumble: pad %d is npad %d, style %#x, %d device(s)", pad, (int)id, (unsigned)style, count);
+}
+
+static void rumble_value(HidVibrationValue *value, uint32_t speed)
+{
+	float amplitude = (float)speed / 65535.0f;
+
+	value->amp_low = amplitude;
+	value->freq_low = RUMBLE_LOW_HZ;
+	value->amp_high = amplitude;
+	value->freq_high = RUMBLE_HIGH_HZ;
+}
+
+/* (the thread's, rumble_lock not held) the pad's motors, sent if they changed */
+static void rumble_send(int pad, uint32_t low, uint32_t high)
+{
+	HidVibrationValue values[2];
+	uint64_t start, took;
+	Result result;
+
+	rumble_ready(pad);
+	if (!rumble_pads[pad].count || (rumble_pads[pad].low == low && rumble_pads[pad].high == high))
+		return;
+	if (rumble_pads[pad].count == 1)
+		rumble_value(&values[0], low > high ? low : high);
+	else
+	{
+		rumble_value(&values[0], low);
+		rumble_value(&values[1], high);
+	}
+	start = armTicksToNs(armGetSystemTick());
+	result = hidSendVibrationValues(rumble_pads[pad].handles, values, rumble_pads[pad].count);
+	took = armTicksToNs(armGetSystemTick()) - start;
+	if (took > 5000000ULL)
+		host_logf(HOST_LOG_WARN, "rumble: pad %d's motors took %llu ms to send", pad, (unsigned long long)(took / 1000000ULL));
+	if (R_SUCCEEDED(result))
+	{
+		rumble_pads[pad].low = low;
+		rumble_pads[pad].high = high;
+	}
+}
+
+static void *rumble_thread(void *unused)
+{
+	(void)unused;
+	host_thread_place_on_helper_core();
+	pthread_mutex_lock(&rumble_lock);
+	for (;;)
+	{
+		int pad, any = 0;
+
+		for (pad = 0; pad < RUMBLE_PADS; pad++)
+		{
+			uint32_t low, high;
+
+			if (!rumble_pads[pad].wanted)
+				continue;
+			rumble_pads[pad].wanted = 0;
+			low = rumble_pads[pad].wanted_low;
+			high = rumble_pads[pad].wanted_high;
+			any = 1;
+			pthread_mutex_unlock(&rumble_lock);
+			rumble_send(pad, low, high);
+			pthread_mutex_lock(&rumble_lock);
+		}
+		if (!any)
+			pthread_cond_wait(&rumble_condition, &rumble_lock);
+	}
+	return NULL;
+}
+
 int host_sdl_rumble_gamepad(uint32_t gamepad, uint32_t low, uint32_t high, uint32_t milliseconds)
 {
 	SDL_GameController *object = handle_get(gamepad, _handle_gamepad);
+	SDL_JoystickID pad;
 
-	return object ? SDL_GameControllerRumble(object, (Uint16)low, (Uint16)high, milliseconds) == 0 : 0;
+	(void)milliseconds;
+	if (!object)
+		return 0;
+	pad = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(object));
+	if (pad < 0 || pad >= RUMBLE_PADS)
+		return 0;
+	pthread_mutex_lock(&rumble_lock);
+	if (!rumble_thread_started)
+	{
+		pthread_t thread;
+
+		rumble_thread_started = 1;
+		if (pthread_create(&thread, NULL, rumble_thread, NULL) == 0)
+			pthread_detach(thread);
+		else
+			host_logf(HOST_LOG_ERROR, "rumble: its thread could not be made");
+	}
+	/* (every request the first time, and after that each change; the
+	thread also readies a pad whose controller changed as it sends) */
+	low &= 0xffff;
+	high &= 0xffff;
+	if (!rumble_pads[pad].requested || rumble_pads[pad].wanted_low != low || rumble_pads[pad].wanted_high != high)
+	{
+		rumble_pads[pad].requested = 1;
+		rumble_pads[pad].wanted_low = low;
+		rumble_pads[pad].wanted_high = high;
+		rumble_pads[pad].wanted = 1;
+		pthread_cond_signal(&rumble_condition);
+	}
+	pthread_mutex_unlock(&rumble_lock);
+	return 1;
 }
 
 /* ---------- audio
