@@ -889,7 +889,9 @@ int halo_scoreboard_controller_read(int controller_index, short *stick_x, short 
 	*stick_x = stick(SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTX), FALSE);
 	*stick_y = stick(SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTY), TRUE);
 	*a_down = SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_SOUTH) ? 1 : 0;
-	return 1;
+	/* (picking is while Back is held: the scoreboard also shows by itself,
+	at the end of a game, where A is the game's) */
+	return SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_BACK) ? 1 : 0;
 }
 
 /* ---------- a rebinding's controller (sdl_platform.c's capture) */
