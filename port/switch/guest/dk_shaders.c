@@ -57,6 +57,7 @@ uint32_t host_dk_shader_find(uint32_t stage, uint64_t hash, uint32_t state_out);
 void host_dk_shader_compile(uint32_t stage, uint64_t hash, uint32_t glsl, uint32_t glsl_size, uint32_t priority);
 uint32_t host_dk_shader_known(uint32_t stage, uint64_t hash);
 uint32_t host_dk_shader_pending(void);
+uint32_t host_dk_shader_loading(void);
 
 /* the game's console (source/interface/terminal.c, cseries.h), spelled out:
 this file sees none of the game's headers */
@@ -89,6 +90,13 @@ many wait (a map's few new ones are not worth a line on screen), and asked
 about it every this many frames */
 #define DK_STATUS_MINIMUM 16
 #define DK_STATUS_EVERY_FRAMES 30
+/* the preload: after the startup pass, every key on the card handed to the
+host's loader thread, this many a frame and while it has fewer than
+DK_PRELOAD_QUEUE waiting; and a map's load waits under the loading screen
+for it (and the loader) for up to DK_MAP_WAIT_MS */
+#define DK_PRELOAD_PER_FRAME 16
+#define DK_PRELOAD_QUEUE 128
+#define DK_MAP_WAIT_MS 8000
 
 /* the key's data as it is in a record: a vertex key or a pixel key,
 padded to the pixel key's size (the larger of the two) so a record is one
@@ -130,6 +138,8 @@ static struct dk_key *keys;
 static unsigned long key_count, key_capacity;
 static BOOL started, pass_finished;
 static unsigned long pass_index;
+static BOOL preload_finished;
+static unsigned long preload_index, preload_asked;
 static uint32_t current_map;
 static int logged_hash;
 
@@ -624,6 +634,38 @@ void dk_shader_start(void)
 		key_count);
 }
 
+/* The preload. A shader on the card was loaded at its first draw, or at
+its map's load if that map had met it first, so the shaders the maps share
+(most of them, met first on another map) came a draw at a time at the start
+of a match, one file each from the card: half a minute of missing objects.
+After the startup pass, every key the pass found on the card is handed to
+the host's loader thread (which reads it on its own core), a few a frame
+while the menus are up. */
+static void preload_frame(void)
+{
+	unsigned long taken = 0;
+
+	if (!pass_finished || preload_finished || host_dk_shader_loading() >= DK_PRELOAD_QUEUE)
+		return;
+	while (taken < DK_PRELOAD_PER_FRAME && preload_index < key_count)
+	{
+		struct dk_key *key = &keys[preload_index++];
+		uint32_t state = 0;
+
+		if (!key->ready || key->handle)
+			continue;
+		/* (loaded: its handle; on the card: queued for the loader) */
+		key->handle = host_dk_shader_find(key->stage, key->hash, (uint32_t)(uintptr_t)&state);
+		taken++;
+		preload_asked++;
+	}
+	if (preload_index >= key_count)
+	{
+		preload_finished = TRUE;
+		platform_log("shader cache: the preload has asked for every shader on the card (%lu)", preload_asked);
+	}
+}
+
 /* While many shaders wait to be compiled - the first start after an update
 that changed them, when the cache on the card no longer matches - the game
 is slow to answer: the menus wait for the card, which the compile writes
@@ -662,6 +704,7 @@ void dk_shader_frame(void)
 	if (!started)
 		return;
 	status_frame();
+	preload_frame();
 	if (pass_finished)
 		return;
 	while (taken < DK_PASS_PER_FRAME && pass_index < key_count)
@@ -727,6 +770,23 @@ void dk_shader_map_loaded(uint32_t map_hash)
 		raised++;
 	}
 	platform_log("shader cache: the map's keys raised in the compile queue (%lu)", raised);
+	/* under the loading screen (scenario_load), the preload finished and
+	the loader's queue emptied, for up to DK_MAP_WAIT_MS: a match starting
+	before then would draw nothing of what it has not loaded yet. (A
+	network game's client tolerates this: 75 s before its game starts.) */
+	{
+		unsigned long waited = 0;
+
+		/* (not before the startup pass is done, which the preload follows) */
+		while (pass_finished && waited < DK_MAP_WAIT_MS && (!preload_finished || host_dk_shader_loading()))
+		{
+			preload_frame();
+			usleep(10000);
+			waited += 10;
+		}
+		platform_log("shader cache: waited %lu ms under the loading screen for the shaders on the card (%u still "
+			"to load%s)", waited, (unsigned)host_dk_shader_loading(), preload_finished ? "" : ", the preload not done");
+	}
 }
 
 /* for phase 6: the shader a draw needs. 0 means not ready, and the draw is
