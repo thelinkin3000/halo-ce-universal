@@ -48,6 +48,8 @@ enum handle_type
 	_handle_context,
 	_handle_gamepad,
 	_handle_audio,
+	/* voice chat's microphone, a stream without a callback (host_microphone.c) */
+	_handle_microphone,
 };
 
 struct handle
@@ -818,6 +820,28 @@ uint32_t host_sdl_open_audio_stream(uint32_t device, const void *spec, uint32_t 
 	const char *setting = getenv("HALO_AUDIO_SAMPLES");
 
 	(void)device;
+	/* one without a callback is voice chat's microphone, which the guest
+	reads (port/linux/src/voice_audio.c: 48 kHz mono floats); the Switch's
+	SDL2 cannot record, so libnx's audin takes it */
+	if (!callback)
+	{
+		uint32_t handle;
+
+		SDL_free(binding);
+		if (guest_spec->format != (int32_t)AUDIO_F32SYS || guest_spec->channels != 1 || guest_spec->freq != 48000)
+		{
+			host_logf(HOST_LOG_ERROR, "microphone: asked for format 0x%x, %d channel(s) at %d Hz; it gives "
+				"48 kHz mono floats", (unsigned)guest_spec->format, (int)guest_spec->channels, (int)guest_spec->freq);
+			return 0;
+		}
+		if (!host_microphone_open())
+			return 0;
+		/* (any non-null object: there is one microphone) */
+		handle = handle_new(_handle_microphone, (void *)1);
+		if (!handle)
+			host_microphone_close();
+		return handle;
+	}
 	binding->callback = callback;
 	binding->userdata = userdata;
 	pthread_mutex_init(&binding->lock, NULL);
@@ -873,10 +897,40 @@ int host_sdl_resume_audio_stream_device(uint32_t stream)
 {
 	struct audio_binding *binding = handle_get(stream, _handle_audio);
 
+	/* (the microphone captures from its opening) */
+	if (handle_get(stream, _handle_microphone))
+		return 1;
 	if (!binding)
 		return 0;
 	SDL_PauseAudioDevice(binding->device, 0);
 	return 1;
+}
+
+/* voice chat's microphone (port/linux/src/voice_audio.c), the only stream
+the guest reads or closes */
+int host_sdl_get_audio_stream_data(uint32_t stream, void *data, int length)
+{
+	if (!handle_get(stream, _handle_microphone))
+		return -1;
+	return host_microphone_read(data, length);
+}
+
+int host_sdl_get_audio_stream_available(uint32_t stream)
+{
+	if (!handle_get(stream, _handle_microphone))
+		return -1;
+	return host_microphone_available();
+}
+
+void host_sdl_destroy_audio_stream(uint32_t stream)
+{
+	if (!handle_get(stream, _handle_microphone))
+		return;
+	pthread_mutex_lock(&handle_lock);
+	handles[stream].type = _handle_free;
+	handles[stream].object = NULL;
+	pthread_mutex_unlock(&handle_lock);
+	host_microphone_close();
 }
 
 /* ---------- the clipboard (internet play's invite links): the process's own */
