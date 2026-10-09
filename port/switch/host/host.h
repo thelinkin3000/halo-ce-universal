@@ -221,6 +221,14 @@ uint32_t host_dk_shader_pending(void);
 backend's draws, on the game thread */
 const void *host_dk_shader(uint32_t handle);
 
+/* voice chat's microphone, a headset in the console's jack through libnx's
+audin (host_microphone.c): 48 kHz mono floats, which host_sdl2.c's audio
+streams hand the guest */
+int host_microphone_open(void);
+int host_microphone_available(void);
+int host_microphone_read(void *data, int length);
+void host_microphone_close(void);
+
 /* config.toml's debug.mic_probe: what libnx's audin hears, logged for two
 minutes, for voice chat (host_mic_probe.c) */
 void host_mic_probe_start(void);
