@@ -10,13 +10,14 @@ never asks for a shader and never depends on UAM.
 
 #include "host.h"
 
-int host_dk_compile_glsl(int fragment, const char *glsl, const char *dksh_path)
+int host_dk_compile_glsl(int fragment, const char *glsl, void **dksh, size_t *dksh_size)
 {
 	static int said;
 
 	(void)fragment;
 	(void)glsl;
-	(void)dksh_path;
+	*dksh = NULL;
+	*dksh_size = 0;
 	if (!said)
 	{
 		said = 1;
