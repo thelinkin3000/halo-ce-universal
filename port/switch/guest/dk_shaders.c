@@ -58,6 +58,7 @@ void host_dk_shader_compile(uint32_t stage, uint64_t hash, uint32_t glsl, uint32
 uint32_t host_dk_shader_known(uint32_t stage, uint64_t hash);
 uint32_t host_dk_shader_pending(void);
 uint32_t host_dk_shader_loading(void);
+void host_dk_shader_preload_done(void);
 
 /* the game's console (source/interface/terminal.c, cseries.h), spelled out:
 this file sees none of the game's headers */
@@ -94,7 +95,7 @@ about it every this many frames */
 host's loader thread, this many a frame and while it has fewer than
 DK_PRELOAD_QUEUE waiting; and a map's load waits under the loading screen
 for it (and the loader) for up to DK_MAP_WAIT_MS */
-#define DK_PRELOAD_ENABLED 0
+#define DK_PRELOAD_ENABLED 1
 #define DK_PRELOAD_PER_FRAME 16
 #define DK_PRELOAD_QUEUE 128
 #define DK_MAP_WAIT_MS 8000
@@ -171,6 +172,24 @@ mixed whole, their two bytes and the padding after them made every pixel
 shader on a card a stranger, compiled again one at a time while the game
 ran and its draws skipped till then. The vertex key's fields one by one,
 for the padding's sake */
+/* The pixel key's bytes hashed whole, frozen as the cards' shaders were
+compiled under them: everything before per_pixel_lighting, point_threshold
+the last (a field upstream added for the OpenGL renderer, always 0 here; it
+moved the old end, and every pixel shader on every card was compiled again
+for nothing). The key is checked below to be laid out as it was then: a
+field added anywhere fails the build, so whoever adds one decides here how
+it is hashed - after these bytes, and only when it is not 0, as
+per_pixel_lighting and alpha_test_samples are - instead of every name on
+the cards changing with it. */
+#define DK_PIXEL_KEY_HASHED_BYTES 253
+typedef char dk_pixel_key_point_threshold_where_hashed[
+	offsetof(struct nv2a_pixel_shader_key, point_threshold) == 252 ? 1 : -1];
+typedef char dk_pixel_key_per_pixel_lighting_after_hashed[
+	offsetof(struct nv2a_pixel_shader_key, per_pixel_lighting) == DK_PIXEL_KEY_HASHED_BYTES ? 1 : -1];
+typedef char dk_pixel_key_alpha_test_samples_where_hashed[
+	offsetof(struct nv2a_pixel_shader_key, alpha_test_samples) == 254 ? 1 : -1];
+typedef char dk_pixel_key_size_as_hashed[sizeof(struct nv2a_pixel_shader_key) == 256 ? 1 : -1];
+
 static uint64_t key_hash(uint32_t stage, const void *data)
 {
 	uint32_t version = DK_SHADER_GENERATOR_VERSION;
@@ -188,7 +207,7 @@ static uint64_t key_hash(uint32_t stage, const void *data)
 	{
 		const struct nv2a_pixel_shader_key *key = data;
 
-		hash = dk_shader_hash_mix(hash, data, offsetof(struct nv2a_pixel_shader_key, per_pixel_lighting));
+		hash = dk_shader_hash_mix(hash, data, DK_PIXEL_KEY_HASHED_BYTES);
 		if (key->per_pixel_lighting || key->alpha_test_samples)
 		{
 			hash = dk_shader_hash_mix(hash, &key->per_pixel_lighting, sizeof(key->per_pixel_lighting));
@@ -646,11 +665,9 @@ static void preload_frame(void)
 {
 	unsigned long taken = 0;
 
-	/* (off: a shader is one file of thousands in one folder, about 80 ms to
-	open on the card, and the loader's reads, one after another under the
-	card's lock, held the game thread's log writes behind them - the menus
-	ran at under a frame a second. Back on once the shaders are in one
-	file.) */
+	/* (a shader was one file of thousands in one folder, about 80 ms to
+	open on the card; the host's pack makes it one read, and the loader
+	paces the files still to move into it, so the menus keep the card) */
 	if (!DK_PRELOAD_ENABLED)
 		return;
 	if (!pass_finished || preload_finished || host_dk_shader_loading() >= DK_PRELOAD_QUEUE)
@@ -671,6 +688,8 @@ static void preload_frame(void)
 	{
 		preload_finished = TRUE;
 		platform_log("shader cache: the preload has asked for every shader on the card (%lu)", preload_asked);
+		/* (what is left of the cache's old folder is its leftovers) */
+		host_dk_shader_preload_done();
 	}
 }
 
