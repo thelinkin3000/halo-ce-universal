@@ -61,9 +61,16 @@ The pools still have room: they grow from here to the image at
 HALO_GUEST_IMAGE_BASE (0x3c000000), which is 704 MB.
 */
 #define LOW_START 0x10000000ULL
+/* A pool is this large where the address space has room, and else as large
+as it has, halving down to POOL_SMALLEST. Below 4 GB the console maps only
+inside its stack region, which libnx scatters thread stacks and the host's
+own mappings across: one lumoria_a.map load had room for no 512 MB window
+and for one 256 MB pool, which the map's 166 MB of converted sounds filled,
+with hundreds of megabytes free in smaller ranges. */
 #define POOL_SIZE (256ULL * 1024 * 1024)
+#define POOL_SMALLEST (16ULL * 1024 * 1024)
 #define POOL_PAGES (POOL_SIZE / PAGE)
-#define MAXIMUM_POOLS 12
+#define MAXIMUM_POOLS 32
 
 /* Where the guest's memory has to be code memory (host_mman.c), a pool and
 the window are made real a chunk at a time and kept: see commit, below */
@@ -74,6 +81,9 @@ the window are made real a chunk at a time and kept: see commit, below */
 struct pool
 {
 	uint64_t base;
+	/* its size, POOL_SIZE or less, and its pages */
+	uint64_t size;
+	uint64_t pages;
 	uint32_t free_pages;
 	uint8_t used[POOL_PAGES]; /* 1 for each page handed out */
 	uint8_t committed[POOL_CHUNKS]; /* 1 for each chunk made real (commit) */
@@ -497,40 +507,84 @@ static void log_conflicts(uint64_t address, uint64_t size)
 	}
 }
 
-/* claims a fixed range for the guest, or reports the address is taken */
-static struct pool *pool_new(void)
+/* says where everything below 4 GB is, and the port's reservations: why a
+pool could not be placed */
+static void log_low_address_space(void)
 {
-	/* above the image first: ART allocates its own low-4 GB memory from
-	the bottom up */
-	uint64_t minimum = image_end ? image_end : LOW_START;
+	uint64_t where = LOW_START;
+	int index;
+
+	host_logf(HOST_LOG_ERROR, "guest memory: what is mapped below 4 GB:");
+	while (where < LOW_LIMIT)
+	{
+		MemoryInfo information = { 0 };
+		u32 page_info = 0;
+
+		if (R_FAILED(svcQueryMemory(&information, &page_info, where)))
+			break;
+		host_logf(HOST_LOG_ERROR, "  %08llx-%08llx type %02x perm %x",
+			(unsigned long long)information.addr, (unsigned long long)(information.addr + information.size),
+			information.type, information.perm);
+		if (information.addr + information.size <= where)
+			break;
+		where = information.addr + information.size;
+	}
+	for (index = 0; index < reservation_count; index++)
+		host_logf(HOST_LOG_ERROR, "  reserved %08llx-%08llx", (unsigned long long)reservations[index].base,
+			(unsigned long long)(reservations[index].base + reservations[index].size));
+}
+
+/* claims a range for the guest of at least pages pages: POOL_SIZE where
+there is room, else the largest power of two down to POOL_SMALLEST */
+static struct pool *pool_new(uint64_t pages)
+{
+	uint64_t size;
 	struct pool *pool;
 	int attempt;
 
 	if (pool_count == MAXIMUM_POOLS)
-		return NULL;
-	for (attempt = 0; attempt < 64; attempt++)
 	{
-		uint64_t address = find_gap(POOL_SIZE, minimum, 1);
-
-		if (!address && minimum != LOW_START)
-		{
-			minimum = LOW_START;
-			address = find_gap(POOL_SIZE, minimum, 1);
-		}
-		if (!address)
-			return NULL;
-		if (reserve(address, POOL_SIZE, 0) == 0)
-		{
-			pool = calloc(1, sizeof(*pool));
-			pool->base = address;
-			pool->free_pages = POOL_PAGES;
-			pools[pool_count++] = pool;
-			host_logf(HOST_LOG_INFO, "guest memory pool %d at %08llx", pool_count - 1, (unsigned long long)address);
-			return pool;
-		}
-		/* raced with another mapping; look further up */
-		minimum = address + PAGE;
+		host_logf(HOST_LOG_ERROR, "guest memory: all %d pools are made", MAXIMUM_POOLS);
+		return NULL;
 	}
+	for (size = POOL_SIZE; size >= POOL_SMALLEST && size >= pages * PAGE; size /= 2)
+	{
+		/* above the image first: ART allocates its own low-4 GB memory from
+		the bottom up */
+		uint64_t minimum = image_end ? image_end : LOW_START;
+
+		for (attempt = 0; attempt < 64; attempt++)
+		{
+			uint64_t address = find_gap(size, minimum, 1);
+
+			if (!address && minimum != LOW_START)
+			{
+				minimum = LOW_START;
+				address = find_gap(size, minimum, 1);
+			}
+			if (!address)
+				break;
+			if (reserve(address, size, 0) == 0)
+			{
+				pool = calloc(1, sizeof(*pool));
+				if (!pool)
+					return NULL;
+				pool->base = address;
+				pool->size = size;
+				pool->pages = size / PAGE;
+				pool->free_pages = (uint32_t)pool->pages;
+				pools[pool_count++] = pool;
+				host_logf(HOST_LOG_INFO, "guest memory pool %d at %08llx (%llu MB)", pool_count - 1,
+					(unsigned long long)address, (unsigned long long)(size / (1024 * 1024)));
+				return pool;
+			}
+			/* raced with another mapping; look further up */
+			minimum = address + PAGE;
+		}
+	}
+	host_logf(HOST_LOG_ERROR, "guest memory: no room for a pool of %llu KB or more",
+		(unsigned long long)(pages * PAGE / 1024));
+	log_low_address_space();
 	return NULL;
 }
 
@@ -788,7 +842,7 @@ static int commit_owned(uint64_t address, uint64_t length)
 	pthread_mutex_lock(&memory_lock);
 	pool = pool_of(address, length);
 	pthread_mutex_unlock(&memory_lock);
-	return pool ? commit(pool->base, pool->committed, POOL_CHUNKS, address, length, 0) : 0;
+	return pool ? commit(pool->base, pool->committed, pool->size / CHUNK_SIZE, address, length, 0) : 0;
 }
 
 /* a mapping's contents, in committed memory: zeros, and a file's bytes from
@@ -830,7 +884,7 @@ static void *pool_take(struct pool *pool, uint64_t pages)
 
 	if (pool->free_pages < pages)
 		return NULL;
-	for (page = 0; page < POOL_PAGES; page++)
+	for (page = 0; page < pool->pages; page++)
 	{
 		if (pool->used[page])
 		{
@@ -849,23 +903,111 @@ static void *pool_take(struct pool *pool, uint64_t pages)
 	return NULL;
 }
 
+/* (memory_lock held) Whether the kernel has anything mapped in pages a pool
+just handed out. Where the pools are not chunked, every mapping inside one is
+of pages it has marked used, so one there is something the pool does not know
+of: a lumoria_a.map load had 28 MB taken at 0x6c0a8000 where the kernel had
+only 20 MB free, svcMapMemory refused it (0xd401) every time it was asked
+again, and the game stopped on an allocation it could not make. Its pages
+are marked used for good (they are taken either way), what it is logged, and
+the pages taken given back, for the caller to look again. */
+static int pool_pages_occupied(struct pool *pool, uint64_t address, uint64_t pages)
+{
+	uint64_t end = address + pages * PAGE, where = address, page;
+	int occupied = 0;
+
+	while (where < end)
+	{
+		MemoryInfo information = { 0 };
+		u32 page_info = 0;
+		uint64_t to;
+
+		if (R_FAILED(svcQueryMemory(&information, &page_info, where)))
+			break;
+		to = information.addr + information.size < end ? information.addr + information.size : end;
+		if (information.type != MemType_Unmapped)
+		{
+			if (!occupied)
+				host_logf(HOST_LOG_WARN, "guest memory: %llu KB at %08llx were free in pool %08llx, but the kernel "
+					"has something there:", (unsigned long long)(pages * PAGE / 1024), (unsigned long long)address,
+					(unsigned long long)pool->base);
+			host_logf(HOST_LOG_WARN, "  %08llx-%08llx type %02x perm %x attr %08x; kept out of the pool",
+				(unsigned long long)information.addr, (unsigned long long)(information.addr + information.size),
+				information.type, information.perm, information.attr);
+			occupied = 1;
+		}
+		if (to <= where)
+			break;
+		where = to;
+	}
+	if (!occupied)
+		return 0;
+	/* the pages taken back, then those the kernel has, for good */
+	for (page = (address - pool->base) / PAGE; page < (end - pool->base) / PAGE; page++)
+	{
+		pool->used[page] = 0;
+		pool->free_pages++;
+	}
+	where = address;
+	while (where < end)
+	{
+		MemoryInfo information = { 0 };
+		u32 page_info = 0;
+		uint64_t from, to;
+
+		if (R_FAILED(svcQueryMemory(&information, &page_info, where)))
+			break;
+		from = information.addr > address ? information.addr : address;
+		to = information.addr + information.size < end ? information.addr + information.size : end;
+		if (information.type != MemType_Unmapped)
+		{
+			for (page = (from - pool->base) / PAGE; page < (round_up(to) - pool->base) / PAGE; page++)
+			{
+				if (!pool->used[page])
+				{
+					pool->used[page] = 1;
+					pool->free_pages--;
+				}
+			}
+		}
+		if (to <= where)
+			break;
+		where = to;
+	}
+	return 1;
+}
+
+/* times host_low_map looks again past pages the kernel had something in */
+#define LOW_MAP_ATTEMPTS 16
+
 void *host_low_map(size_t size, int protection)
 {
 	uint64_t pages = round_up(size) / PAGE;
 	void *address = NULL;
-	int index;
+	int index, attempt;
 
 	if (!pages || pages > POOL_PAGES)
 		return NULL;
 	pthread_mutex_lock(&memory_lock);
-	for (index = 0; index < pool_count && !address; index++)
-		address = pool_take(pools[index], pages);
-	if (!address)
+	for (attempt = 0; attempt < LOW_MAP_ATTEMPTS && !address; attempt++)
 	{
-		struct pool *pool = pool_new();
+		struct pool *pool = NULL;
 
-		if (pool)
-			address = pool_take(pool, pages);
+		for (index = 0; index < pool_count && !address; index++)
+		{
+			address = pool_take(pools[index], pages);
+			pool = pools[index];
+		}
+		if (!address)
+		{
+			pool = pool_new(pages);
+			if (pool)
+				address = pool_take(pool, pages);
+		}
+		if (!address)
+			break;
+		if (!memory_is_chunked() && pool_pages_occupied(pool, (uint64_t)(uintptr_t)address, pages))
+			address = NULL;
 	}
 	pthread_mutex_unlock(&memory_lock);
 	if (!address)
@@ -895,7 +1037,7 @@ static struct pool *pool_of(uint64_t address, uint64_t size)
 
 	for (index = 0; index < pool_count; index++)
 	{
-		if (in_range(address, size, pools[index]->base, pools[index]->base + POOL_SIZE))
+		if (in_range(address, size, pools[index]->base, pools[index]->base + pools[index]->size))
 			return pools[index];
 	}
 	return NULL;

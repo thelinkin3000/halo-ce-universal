@@ -607,6 +607,18 @@ static void log_memory_limit(void)
 	}
 }
 
+/* the memory the process has used and may use (svcGetInfo's), when the
+host heap has no room for a mapping of length bytes */
+static void log_heap_use(size_t length)
+{
+	u64 used = 0, total = 0;
+
+	svcGetInfo(&used, InfoType_UsedMemorySize, CUR_PROCESS_HANDLE, 0);
+	svcGetInfo(&total, InfoType_TotalMemorySize, CUR_PROCESS_HANDLE, 0);
+	host_logf(HOST_LOG_ERROR, "no host heap for a mapping of %zu KB: the process uses %.1f MB of %.1f MB",
+		length / 1024, (double)used / 1048576.0, (double)total / 1048576.0);
+}
+
 /* ---------- the public calls */
 
 /* Splits a mapping into up to three - the part before the requested range,
@@ -800,7 +812,11 @@ static void *mmap_unlocked(void *address, size_t length, int protection, int fla
 
 	backing = memalign(0x1000, length);
 	if (!backing)
+	{
+		/* (said: the guest's allocation then fails with nothing else in the log) */
+		log_heap_use(length);
 		return MAP_FAILED;
+	}
 	memset(backing, 0, length);
 
 	/* A file-backed mapping is read into the buffer here and then mapped
