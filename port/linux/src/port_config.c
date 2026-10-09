@@ -578,6 +578,10 @@ static const struct config_setting config_settings[] =
 		"tools/switch_profile.py. Takes effect the next start." },
 	{ "debug.profile_hz", _config_integer, "500", "HALO_PROFILE_HZ", _environment_value, _platform_android,
 		"The profiler's samples a second, when debug.profiler is true." },
+	{ "debug.mic_probe", _config_boolean, "false", "HALO_MIC_PROBE", _environment_set_is_true, _platform_android,
+		"For two minutes from the start, log what the console's microphone input\n"
+		"hears (port/switch/host/host_mic_probe.c): its inputs, the format it gives\n"
+		"and the sound's level each second. Takes effect the next start." },
 	{ "debug.texture_verify_compressed", _config_boolean, "false", "HALO_TEXTURE_VERIFY_COMPRESSED",
 		_environment_set_is_true, _platform_android,
 		"Read each DXT-compressed texture back out of its image after it is written,\n"
