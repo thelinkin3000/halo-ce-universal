@@ -867,7 +867,7 @@ import off the draw's path: a hit never crosses. */
 /* open addressing over a power of two of slots, at most seven eighths
 full, so a probe always ends; a full table only means more draws ask the
 host, which answers the same */
-#define HANDLE_SLOTS 4096
+#define HANDLE_SLOTS 16384
 
 struct handle_entry
 {

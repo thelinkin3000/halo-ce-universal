@@ -57,10 +57,13 @@ command stream) is an index into the table of loaded shaders, plus one.
 #define HOST_DK_UAM_COMMIT "unknown"
 #endif
 
-#define DKSH_CODE_SIZE (16 * 1024 * 1024)
+/* (16384 shaders of the 0.85 KB they average, with room: the preload loads
+every shader on the card, and a card that has met many maps had more than
+the 4096 the table held, 16 MB of code memory with them) */
+#define DKSH_CODE_SIZE (32 * 1024 * 1024)
 #define DKSH_CODE_FLAGS (DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached | DkMemBlockFlags_Code)
-#define DKSH_TABLE_LIMIT 4096
-#define DKSH_SET_SLOTS 8192 /* a power of two, for the mask */
+#define DKSH_TABLE_LIMIT 16384
+#define DKSH_SET_SLOTS 32768 /* a power of two, for the mask */
 /* the most the set holds: seven eighths of its slots, so linear probing
 always finds an empty slot (a full set would probe for ever) */
 #define DKSH_SET_FILL (DKSH_SET_SLOTS / 8 * 7)
