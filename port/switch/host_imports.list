@@ -13,3 +13,4 @@ host_dk_shader_compile
 host_dk_shader_known
 host_dk_shader_pending
 host_dk_shader_loading
+host_dk_shader_preload_done

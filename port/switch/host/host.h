@@ -220,6 +220,9 @@ uint32_t host_dk_shader_pending(void);
 /* how many shaders on the card are queued for, or being read by, the loader
 thread (the guest's preload and its wait under the loading screen) */
 uint32_t host_dk_shader_loading(void);
+/* the guest's preload has asked for every shader it knows: what is left in
+the cache's folder (from before the pack) is removed, a little at a time */
+void host_dk_shader_preload_done(void);
 /* the DkShader (as a const void *) a handle of find's names, or NULL: for the
 backend's draws, on the game thread */
 const void *host_dk_shader(uint32_t handle);
