@@ -223,6 +223,9 @@ uint32_t host_dk_shader_loading(void);
 /* the guest's preload has asked for every shader it knows: what is left in
 the cache's folder (from before the pack) is removed, a little at a time */
 void host_dk_shader_preload_done(void);
+/* how many loads this run read a shader from its own file in the folder (the
+cache before the pack), which then moves into the pack */
+uint32_t host_dk_shader_loose_loads(void);
 /* the DkShader (as a const void *) a handle of find's names, or NULL: for the
 backend's draws, on the game thread */
 const void *host_dk_shader(uint32_t handle);
