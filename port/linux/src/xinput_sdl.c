@@ -40,6 +40,7 @@ drive the controller.
 #include "sdl_platform.h"
 #include "port_config.h"
 #include "halo_keyboard.h"
+#include "halo_ui_pointer.h"
 
 #include <SDL3/SDL.h>
 #include <math.h>
@@ -57,6 +58,9 @@ extern unsigned char console_is_active(void);
 /* port/linux/game/menu_functions.c: two or more players on this machine
 (co-op, or split screen in a network game) */
 extern unsigned char pc_menu_split_players(void);
+
+static int sdl_gamepads(SDL_Gamepad *gamepads[PORT_COUNT]);
+static SDL_Gamepad *port_gamepad(SDL_Gamepad *gamepads[PORT_COUNT], int count, int port);
 
 /* ---------- device tables */
 
@@ -352,12 +356,35 @@ static const struct
 	{ "Wheel", INPUT_WHEEL },
 	{ "Wheel Up", INPUT_WHEEL_UP },
 	{ "Wheel Down", INPUT_WHEEL_DOWN },
+	/* port 0's controller, named as the Xbox's are where they sit */
+	{ "Gamepad A", INPUT_GAMEPAD + SDL_GAMEPAD_BUTTON_SOUTH },
+	{ "Gamepad B", INPUT_GAMEPAD + SDL_GAMEPAD_BUTTON_EAST },
+	{ "Gamepad X", INPUT_GAMEPAD + SDL_GAMEPAD_BUTTON_WEST },
+	{ "Gamepad Y", INPUT_GAMEPAD + SDL_GAMEPAD_BUTTON_NORTH },
+	{ "Gamepad LB", INPUT_GAMEPAD + SDL_GAMEPAD_BUTTON_LEFT_SHOULDER },
+	{ "Gamepad RB", INPUT_GAMEPAD + SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER },
+	{ "Gamepad LT", INPUT_GAMEPAD_LEFT_TRIGGER },
+	{ "Gamepad RT", INPUT_GAMEPAD_RIGHT_TRIGGER },
+	{ "Gamepad L3", INPUT_GAMEPAD + SDL_GAMEPAD_BUTTON_LEFT_STICK },
+	{ "Gamepad R3", INPUT_GAMEPAD + SDL_GAMEPAD_BUTTON_RIGHT_STICK },
+	{ "Gamepad Back", INPUT_GAMEPAD + SDL_GAMEPAD_BUTTON_BACK },
+	{ "Gamepad Start", INPUT_GAMEPAD + SDL_GAMEPAD_BUTTON_START },
+	{ "Gamepad DPad Up", INPUT_GAMEPAD + SDL_GAMEPAD_BUTTON_DPAD_UP },
+	{ "Gamepad DPad Down", INPUT_GAMEPAD + SDL_GAMEPAD_BUTTON_DPAD_DOWN },
+	{ "Gamepad DPad Left", INPUT_GAMEPAD + SDL_GAMEPAD_BUTTON_DPAD_LEFT },
+	{ "Gamepad DPad Right", INPUT_GAMEPAD + SDL_GAMEPAD_BUTTON_DPAD_RIGHT },
 };
 
 /* the bindings, read again when config.toml changes; -1 for none */
 static int bindings[NUMBER_OF_HALO_KEYBOARD_ACTIONS][MAXIMUM_BINDINGS];
 static unsigned long bindings_read_at = (unsigned long)-1;
 static unsigned long keyboard_actions_held;
+/* port 0's controller's buttons bound (as bindings[] are): to push to talk,
+which the game and the menus never see; to the player's other actions,
+which the game does not see from it but through them (in the menus they
+are the controller's again) */
+static BOOL gamepad_bound_to_talk[INPUT_GAMEPAD_END - INPUT_GAMEPAD];
+static BOOL gamepad_bound_in_game[INPUT_GAMEPAD_END - INPUT_GAMEPAD];
 
 /* (the C library's case: SDL's string functions are not the Android
 guest's) */
@@ -418,6 +445,8 @@ static void bindings_read(void)
 	if (bindings_read_at == config_changes())
 		return;
 	bindings_read_at = config_changes();
+	memset(gamepad_bound_to_talk, 0, sizeof(gamepad_bound_to_talk));
+	memset(gamepad_bound_in_game, 0, sizeof(gamepad_bound_in_game));
 	for (action = 0; action < NUMBER_OF_HALO_KEYBOARD_ACTIONS; action++)
 	{
 		const char *text = config_string(binding_settings[action]);
@@ -440,17 +469,50 @@ static void bindings_read(void)
 			bindings[action][slot] = halo_input_from_name(name);
 			if (bindings[action][slot] < 0)
 				platform_log("controls: %s has no key or button named \"%s\"", binding_settings[action], name);
+			else if (bindings[action][slot] >= INPUT_GAMEPAD && bindings[action][slot] < INPUT_GAMEPAD_END)
+			{
+				if (action == HALO_KEYBOARD_PUSH_TO_TALK)
+					gamepad_bound_to_talk[bindings[action][slot] - INPUT_GAMEPAD] = TRUE;
+				else
+					gamepad_bound_in_game[bindings[action][slot] - INPUT_GAMEPAD] = TRUE;
+			}
 			text += length;
 		}
 	}
 }
 
-static BOOL input_held(const struct platform_input_state *input, int code)
+/* a controller's button or trigger, as a binding names it */
+#define GAMEPAD_TRIGGER_PULLED 16000
+
+static BOOL gamepad_input_down(SDL_Gamepad *gamepad, int code)
+{
+	if (!gamepad || code < INPUT_GAMEPAD || code >= INPUT_GAMEPAD_END)
+		return FALSE;
+	if (code == INPUT_GAMEPAD_LEFT_TRIGGER)
+		return SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > GAMEPAD_TRIGGER_PULLED;
+	if (code == INPUT_GAMEPAD_RIGHT_TRIGGER)
+		return SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > GAMEPAD_TRIGGER_PULLED;
+	return SDL_GetGamepadButton(gamepad, (SDL_GamepadButton)(code - INPUT_GAMEPAD));
+}
+
+/* port 0's controller, or NULL */
+static SDL_Gamepad *first_port_gamepad(void)
+{
+	SDL_Gamepad *gamepads[PORT_COUNT];
+	int count = sdl_gamepads(gamepads);
+
+	return port_gamepad(gamepads, count, 0);
+}
+
+/* a binding held: of the keyboard and mouse, or of port 0's controller */
+static BOOL input_held(const struct platform_input_state *input, SDL_Gamepad *gamepad, int code)
 {
 	BOOL wheel = SDL_GetTicks() < wheel_press_until_ms;
 
 	if (code < 0)
 		return FALSE;
+	if (code >= INPUT_GAMEPAD)
+		return gamepad_input_down(gamepad, code);
 	if (code < SDL_SCANCODE_COUNT)
 		return input->keys[code] != 0;
 	if (code < INPUT_WHEEL)
@@ -462,7 +524,7 @@ static BOOL input_held(const struct platform_input_state *input, int code)
 
 /* in the game: the actions held, and the controller's Start and Back for
 the pause menu and the scoreboard */
-static void keyboard_controls(const struct platform_input_state *input, XINPUT_GAMEPAD *pad)
+static void keyboard_controls(const struct platform_input_state *input, SDL_Gamepad *gamepad, XINPUT_GAMEPAD *pad)
 {
 	unsigned long held = 0;
 	int action, slot;
@@ -472,7 +534,7 @@ static void keyboard_controls(const struct platform_input_state *input, XINPUT_G
 	{
 		for (slot = 0; slot < MAXIMUM_BINDINGS; slot++)
 		{
-			if (input_held(input, bindings[action][slot]))
+			if (input_held(input, gamepad, bindings[action][slot]))
 				held |= 1UL << action;
 		}
 	}
@@ -494,11 +556,13 @@ int halo_push_to_talk_held(void)
 	int slot;
 
 	/* (the window losing the focus lets every key go: sdl_platform.c) */
+	SDL_Gamepad *gamepad = first_port_gamepad();
+
 	bindings_read();
 	platform_input_read(&input, FALSE);
 	for (slot = 0; slot < MAXIMUM_BINDINGS; slot++)
 	{
-		if (input_held(&input, bindings[HALO_KEYBOARD_PUSH_TO_TALK][slot]))
+		if (input_held(&input, gamepad, bindings[HALO_KEYBOARD_PUSH_TO_TALK][slot]))
 			return 1;
 	}
 	return 0;
@@ -708,7 +772,11 @@ static void merge_button(XINPUT_GAMEPAD *pad, int analog_index, BOOL down)
 		pad->bAnalogButtons[analog_index] = 0xff;
 }
 
-static void sdl_gamepad_state(SDL_Gamepad *gamepad, XINPUT_GAMEPAD *pad)
+/* the gamepad's state merged into the pad's, but for the buttons held back
+(held_back[input - INPUT_GAMEPAD], or NULL for none) and, while the
+scoreboard is picking with it (halo_scoreboard_controller_set), its right
+stick and A */
+static void sdl_gamepad_state(SDL_Gamepad *gamepad, XINPUT_GAMEPAD *pad, const BOOL *held_back, BOOL picking)
 {
 	static const struct
 	{
@@ -729,21 +797,28 @@ static void sdl_gamepad_state(SDL_Gamepad *gamepad, XINPUT_GAMEPAD *pad)
 	int left_trigger, right_trigger;
 	SHORT value;
 
+#define HELD_BACK(input) (held_back && held_back[(input) - INPUT_GAMEPAD])
+#define BUTTON(button) (!HELD_BACK(INPUT_GAMEPAD + (button)) && SDL_GetGamepadButton(gamepad, (button)))
+
 	for (index = 0; index < (int)(sizeof(digital) / sizeof(digital[0])); index++)
 	{
-		if (SDL_GetGamepadButton(gamepad, digital[index].button))
+		if (BUTTON(digital[index].button))
 			pad->wButtons |= digital[index].mask;
 	}
-	merge_button(pad, XINPUT_GAMEPAD_A, SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_SOUTH));
-	merge_button(pad, XINPUT_GAMEPAD_B, SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_EAST));
-	merge_button(pad, XINPUT_GAMEPAD_X, SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_WEST));
-	merge_button(pad, XINPUT_GAMEPAD_Y, SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_NORTH));
+	merge_button(pad, XINPUT_GAMEPAD_A, !picking && BUTTON(SDL_GAMEPAD_BUTTON_SOUTH));
+	merge_button(pad, XINPUT_GAMEPAD_B, BUTTON(SDL_GAMEPAD_BUTTON_EAST));
+	merge_button(pad, XINPUT_GAMEPAD_X, BUTTON(SDL_GAMEPAD_BUTTON_WEST));
+	merge_button(pad, XINPUT_GAMEPAD_Y, BUTTON(SDL_GAMEPAD_BUTTON_NORTH));
 	/* the Duke's white and black buttons sit where later pads have shoulders */
-	merge_button(pad, XINPUT_GAMEPAD_WHITE, SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER));
-	merge_button(pad, XINPUT_GAMEPAD_BLACK, SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER));
+	merge_button(pad, XINPUT_GAMEPAD_WHITE, BUTTON(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER));
+	merge_button(pad, XINPUT_GAMEPAD_BLACK, BUTTON(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER));
 
-	left_trigger = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) * 255 / 32767;
-	right_trigger = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) * 255 / 32767;
+	left_trigger = HELD_BACK(INPUT_GAMEPAD_LEFT_TRIGGER) ? 0 :
+		SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) * 255 / 32767;
+	right_trigger = HELD_BACK(INPUT_GAMEPAD_RIGHT_TRIGGER) ? 0 :
+		SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) * 255 / 32767;
+#undef BUTTON
+#undef HELD_BACK
 	if (left_trigger > pad->bAnalogButtons[XINPUT_GAMEPAD_LEFT_TRIGGER])
 		pad->bAnalogButtons[XINPUT_GAMEPAD_LEFT_TRIGGER] = (BYTE)left_trigger;
 	if (right_trigger > pad->bAnalogButtons[XINPUT_GAMEPAD_RIGHT_TRIGGER])
@@ -754,10 +829,121 @@ static void sdl_gamepad_state(SDL_Gamepad *gamepad, XINPUT_GAMEPAD *pad)
 	if (abs(value) > abs(pad->sThumbLX)) pad->sThumbLX = value;
 	value = stick(SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTY), TRUE);
 	if (abs(value) > abs(pad->sThumbLY)) pad->sThumbLY = value;
+	if (picking)
+		return;
 	value = stick(SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTX), FALSE);
 	if (abs(value) > abs(pad->sThumbRX)) pad->sThumbRX = value;
 	value = stick(SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTY), TRUE);
 	if (abs(value) > abs(pad->sThumbRY)) pad->sThumbRY = value;
+}
+
+/* ---------- the scoreboard's picking (game_engine.c) */
+
+static int scoreboard_picking_port = -1;
+
+void halo_scoreboard_controller_set(int controller_index)
+{
+	scoreboard_picking_port = controller_index >= 0 && controller_index < PORT_COUNT ? controller_index : -1;
+}
+
+int halo_scoreboard_controller_read(int controller_index, short *stick_x, short *stick_y, int *a_down)
+{
+	SDL_Gamepad *gamepads[PORT_COUNT];
+	SDL_Gamepad *gamepad;
+	int count;
+
+	if (controller_index < 0 || controller_index >= PORT_COUNT)
+		return 0;
+	count = sdl_gamepads(gamepads);
+	gamepad = port_gamepad(gamepads, count, controller_index);
+	if (!gamepad)
+		return 0;
+	*stick_x = stick(SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTX), FALSE);
+	*stick_y = stick(SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTY), TRUE);
+	*a_down = SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_SOUTH) ? 1 : 0;
+	return 1;
+}
+
+/* ---------- a rebinding's controller (sdl_platform.c's capture) */
+
+/* waiting for a button; then until every button is let go of. The menus
+stop asking when their screen goes: one not asked for a while ends */
+enum
+{
+	_gamepad_capture_idle,
+	_gamepad_capture_waiting,
+	_gamepad_capture_settling,
+};
+#define GAMEPAD_CAPTURE_ABANDONED_MS 500
+
+static int gamepad_capture;
+static BOOL gamepad_capture_held[INPUT_GAMEPAD_END - INPUT_GAMEPAD];
+static Uint64 gamepad_capture_polled_ms;
+
+void halo_gamepad_capture_begin(void)
+{
+	SDL_Gamepad *gamepad = first_port_gamepad();
+	int index;
+
+	/* (what is held as it begins, the A that chose the row, is not taken) */
+	for (index = 0; index < INPUT_GAMEPAD_END - INPUT_GAMEPAD; index++)
+		gamepad_capture_held[index] = gamepad_input_down(gamepad, INPUT_GAMEPAD + index);
+	gamepad_capture = _gamepad_capture_waiting;
+	gamepad_capture_polled_ms = SDL_GetTicks();
+}
+
+int halo_gamepad_capture_poll(int *input)
+{
+	SDL_Gamepad *gamepad;
+	int index;
+
+	if (gamepad_capture != _gamepad_capture_waiting)
+		return 0;
+	gamepad_capture_polled_ms = SDL_GetTicks();
+	gamepad = first_port_gamepad();
+	for (index = 0; index < INPUT_GAMEPAD_END - INPUT_GAMEPAD; index++)
+	{
+		BOOL down = gamepad_input_down(gamepad, INPUT_GAMEPAD + index);
+
+		if (down && !gamepad_capture_held[index])
+		{
+			gamepad_capture = _gamepad_capture_settling;
+			*input = INPUT_GAMEPAD + index;
+			return index == SDL_GAMEPAD_BUTTON_START ? 3 : index == SDL_GAMEPAD_BUTTON_BACK ? 2 : 1;
+		}
+		gamepad_capture_held[index] = down;
+	}
+	return 0;
+}
+
+/* the rebinding taken another way (a key): its controller let go of */
+void halo_gamepad_capture_end(void)
+{
+	if (gamepad_capture == _gamepad_capture_waiting)
+		gamepad_capture = _gamepad_capture_settling;
+}
+
+/* whether port 0's controller is held from driving anything: a rebinding
+waiting for it, or not yet let go of after one */
+static BOOL gamepad_capturing(SDL_Gamepad *gamepad)
+{
+	int index;
+
+	if (gamepad_capture == _gamepad_capture_waiting &&
+		SDL_GetTicks() - gamepad_capture_polled_ms > GAMEPAD_CAPTURE_ABANDONED_MS)
+	{
+		gamepad_capture = _gamepad_capture_settling;
+	}
+	if (gamepad_capture == _gamepad_capture_settling)
+	{
+		for (index = 0; index < INPUT_GAMEPAD_END - INPUT_GAMEPAD; index++)
+		{
+			if (gamepad_input_down(gamepad, INPUT_GAMEPAD + index))
+				return TRUE;
+		}
+		gamepad_capture = _gamepad_capture_idle;
+	}
+	return gamepad_capture != _gamepad_capture_idle;
 }
 
 /* ---------- XAPI */
@@ -902,17 +1088,27 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 		platform_input_read(&input, TRUE);
 		mouse_poll(&input);
 		wheel_update();
+		SDL_Gamepad *gamepad = port_gamepad(gamepads, count, 0);
+
 		keyboard_actions_held = 0;
 		keys_held_over_switch(&input);
+		bindings_read();
 		if (!console_is_active())
 		{
 			if (input.menus)
 				keyboard_gamepad(&input, &state->Gamepad);
 			else
-				keyboard_controls(&input, &state->Gamepad);
+				keyboard_controls(&input, gamepad, &state->Gamepad);
 		}
-		if (port_gamepad(gamepads, count, 0))
-			sdl_gamepad_state(gamepads[0], &state->Gamepad);
+		if (gamepad && !gamepad_capturing(gamepad))
+		{
+			BOOL held_back[INPUT_GAMEPAD_END - INPUT_GAMEPAD];
+			int index;
+
+			for (index = 0; index < INPUT_GAMEPAD_END - INPUT_GAMEPAD; index++)
+				held_back[index] = gamepad_bound_to_talk[index] || (!input.menus && gamepad_bound_in_game[index]);
+			sdl_gamepad_state(gamepad, &state->Gamepad, held_back, scoreboard_picking_port == 0);
+		}
 		test_input_gamepad(&state->Gamepad);
 		if (abs(state->Gamepad.sThumbRX) > STICK_AIMING_DEFLECTION ||
 			abs(state->Gamepad.sThumbRY) > STICK_AIMING_DEFLECTION)
@@ -924,7 +1120,7 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 	}
 	else if (port_gamepad(gamepads, count, port))
 	{
-		sdl_gamepad_state(port_gamepad(gamepads, count, port), &state->Gamepad);
+		sdl_gamepad_state(port_gamepad(gamepads, count, port), &state->Gamepad, NULL, scoreboard_picking_port == port);
 	}
 
 	if (memcmp(&state->Gamepad, &controllers[port].previous, sizeof(state->Gamepad)))

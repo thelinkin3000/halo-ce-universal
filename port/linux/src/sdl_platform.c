@@ -1561,14 +1561,26 @@ void platform_binding_capture_begin(void)
 	binding_settling = TRUE;
 	binding_polled_ms = SDL_GetTicks();
 	pthread_mutex_unlock(&input_lock);
+	/* (or a button of the controller: xinput_sdl.c) */
+	halo_gamepad_capture_begin();
 }
 
 int platform_binding_capture_poll(int *input)
 {
 	int result = 0;
 
+	int gamepad_input = -1;
+	int gamepad_result = halo_gamepad_capture_poll(&gamepad_input);
+
 	pthread_mutex_lock(&input_lock);
 	binding_polled_ms = SDL_GetTicks();
+	if (gamepad_result && binding_capture == _binding_capture_waiting)
+	{
+		binding_capture = _binding_capture_taken;
+		binding_taken_ms = SDL_GetTicks();
+		binding_capture_result = gamepad_result;
+		binding_captured_input = gamepad_input;
+	}
 	if (binding_capture == _binding_capture_taken)
 	{
 		result = binding_capture_result;
@@ -1576,6 +1588,9 @@ int platform_binding_capture_poll(int *input)
 		binding_capture = _binding_capture_idle;
 	}
 	pthread_mutex_unlock(&input_lock);
+	/* (taken by a key, the controller is let go of) */
+	if (result)
+		halo_gamepad_capture_end();
 	return result;
 }
 
