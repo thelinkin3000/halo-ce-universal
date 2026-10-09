@@ -45,4 +45,11 @@ not the menus' centered 640); 0 while it is not; -1 where there is none
 (Android) */
 int halo_scoreboard_pointer_update(int offered, struct halo_ui_pointer *pointer);
 
+/* the open scoreboard picked from with a controller (game_engine.c): set to
+the controller picking (-1: none), whose right stick and A the game then
+does not see; read gives them, the stick's up and right positive, and 0
+when no controller is at that port (port/linux/src/xinput_sdl.c) */
+void halo_scoreboard_controller_set(int controller_index);
+int halo_scoreboard_controller_read(int controller_index, short *stick_x, short *stick_y, int *a_down);
+
 #endif
