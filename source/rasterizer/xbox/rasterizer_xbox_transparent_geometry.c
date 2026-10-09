@@ -904,16 +904,21 @@ boolean rasterizer_transparent_geometry_is_enclosure(
 	{
 		return FALSE;
 	}
-	IDirect3DVertexBuffer8_Lock(outer->hardware_format, 0, 0, &outer_data, D3DLOCK_READONLY);
-	IDirect3DVertexBuffer8_Lock(inner->hardware_format, 0, 0, &inner_data, D3DLOCK_READONLY);
-	IDirect3DIndexBuffer8_Lock(triangles->hardware_format, 0, 0, &index_data, D3DLOCK_READONLY);
+	/* (port: the buffers where the map's window is: halo_port_window.h) */
+	IDirect3DVertexBuffer8_Lock(VERTEX_BUFFER_HARDWARE_FORMAT(outer), 0, 0, &outer_data, D3DLOCK_READONLY);
+	IDirect3DVertexBuffer8_Lock(VERTEX_BUFFER_HARDWARE_FORMAT(inner), 0, 0, &inner_data, D3DLOCK_READONLY);
+	IDirect3DIndexBuffer8_Lock(TRIANGLE_BUFFER_HARDWARE_FORMAT(triangles), 0, 0, &index_data, D3DLOCK_READONLY);
+#ifdef HALO_ANDROID
+	/* (an index buffer's lock is its data's address as the map has it) */
+	index_data = PORT_WINDOW_REBASE(index_data);
+#endif
 	result = rasterizer_transparent_encloses(outer_data, outer->count,
 		rasterizer_geometry_get_vertex_size(outer->type), (word const *)index_data,
 		triangles->count, triangles->type == _triangle_buffer_type_precompiled_strip,
 		inner_data, inner->count, rasterizer_geometry_get_vertex_size(inner->type));
-	IDirect3DIndexBuffer8_Unlock(triangles->hardware_format);
-	IDirect3DVertexBuffer8_Unlock(inner->hardware_format);
-	IDirect3DVertexBuffer8_Unlock(outer->hardware_format);
+	IDirect3DIndexBuffer8_Unlock(TRIANGLE_BUFFER_HARDWARE_FORMAT(triangles));
+	IDirect3DVertexBuffer8_Unlock(VERTEX_BUFFER_HARDWARE_FORMAT(inner));
+	IDirect3DVertexBuffer8_Unlock(VERTEX_BUFFER_HARDWARE_FORMAT(outer));
 	return result;
 }
 
@@ -3667,7 +3672,7 @@ static boolean transparent_model_world_bounds(
 		return FALSE;
 	}
 	stride = rasterizer_geometry_get_vertex_size(vertices->type);
-	IDirect3DVertexBuffer8_Lock(vertices->hardware_format, 0, 0, &data, D3DLOCK_READONLY);
+	IDirect3DVertexBuffer8_Lock(VERTEX_BUFFER_HARDWARE_FORMAT(vertices), 0, 0, &data, D3DLOCK_READONLY);
 	if (!data)
 	{
 		valid = FALSE;
@@ -3745,7 +3750,7 @@ static boolean transparent_model_world_bounds(
 			bounds[1][k] = i ? MAX(bounds[1][k], p[k]) : p[k];
 		}
 	}
-	IDirect3DVertexBuffer8_Unlock(vertices->hardware_format);
+	IDirect3DVertexBuffer8_Unlock(VERTEX_BUFFER_HARDWARE_FORMAT(vertices));
 	return valid;
 }
 
