@@ -1894,7 +1894,8 @@ static struct
 } scoreboard_menu = { NONE, 0, 0, FALSE };
 
 /* port: a network game's scoreboard picked from with a controller (the
-console and the phones have no mouse): the right stick moves the pick
+console and the phones have no mouse), while its Back holds it open (not
+the one that shows by itself at a game's end): the right stick moves the pick
 over the other machines' players, a flick at a time, and A votes to kick
 the one picked (network_votekick_request: starts the vote, or votes in the
 one against them). The controller's right stick and A are the game's again
@@ -2142,6 +2143,12 @@ static void game_engine_rasterize_scoreboard(
 			halo_scoreboard_controller_read(viewer->local_player_index, &pick_stick_x, &pick_stick_y, &pick_a);
 	}
 	halo_scoreboard_controller_set(picking ? player_try_and_get(player_index)->local_player_index : -1);
+	/* (A and the stick, held as Back is pressed, count once let go of) */
+	if (!picking)
+	{
+		scoreboard_pick.stick_moved = TRUE;
+		scoreboard_pick.a_down = TRUE;
+	}
 	extra_rows = (voting ? 1 : 0) + (network && (pointer_state >= 0 || picking) ? 1 : 0);
 	rows = (long)((bounds.y1 - SCOREBOARD_LAYOUT_TOP_ROWS * line_height) / SCOREBOARD_SCALE / line_height) - 2 -
 		SCOREBOARD_BOTTOM_ROWS - extra_rows;
