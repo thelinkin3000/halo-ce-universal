@@ -94,6 +94,7 @@ about it every this many frames */
 host's loader thread, this many a frame and while it has fewer than
 DK_PRELOAD_QUEUE waiting; and a map's load waits under the loading screen
 for it (and the loader) for up to DK_MAP_WAIT_MS */
+#define DK_PRELOAD_ENABLED 0
 #define DK_PRELOAD_PER_FRAME 16
 #define DK_PRELOAD_QUEUE 128
 #define DK_MAP_WAIT_MS 8000
@@ -645,6 +646,13 @@ static void preload_frame(void)
 {
 	unsigned long taken = 0;
 
+	/* (off: a shader is one file of thousands in one folder, about 80 ms to
+	open on the card, and the loader's reads, one after another under the
+	card's lock, held the game thread's log writes behind them - the menus
+	ran at under a frame a second. Back on once the shaders are in one
+	file.) */
+	if (!DK_PRELOAD_ENABLED)
+		return;
 	if (!pass_finished || preload_finished || host_dk_shader_loading() >= DK_PRELOAD_QUEUE)
 		return;
 	while (taken < DK_PRELOAD_PER_FRAME && preload_index < key_count)
@@ -778,7 +786,8 @@ void dk_shader_map_loaded(uint32_t map_hash)
 		unsigned long waited = 0;
 
 		/* (not before the startup pass is done, which the preload follows) */
-		while (pass_finished && waited < DK_MAP_WAIT_MS && (!preload_finished || host_dk_shader_loading()))
+		while (pass_finished && waited < DK_MAP_WAIT_MS &&
+			((DK_PRELOAD_ENABLED && !preload_finished) || host_dk_shader_loading()))
 		{
 			preload_frame();
 			usleep(10000);
