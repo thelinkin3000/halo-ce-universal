@@ -10,6 +10,7 @@ controller emulation (see sdl_platform.c).
 
 #include <SDL3/SDL_scancode.h>
 #include <SDL3/SDL_audio.h>
+#include <SDL3/SDL_gamepad.h>
 #include <stddef.h>
 
 #define PLATFORM_MOUSE_BUTTON_COUNT 8
@@ -36,9 +37,23 @@ a mouse button (INPUT_MOUSE + SDL_BUTTON_*), or the wheel */
 #define INPUT_WHEEL (INPUT_MOUSE + PLATFORM_MOUSE_BUTTON_COUNT)
 #define INPUT_WHEEL_UP (INPUT_WHEEL + 1)
 #define INPUT_WHEEL_DOWN (INPUT_WHEEL + 2)
+/* ... or a button of the controller that shares port 0 with them
+(INPUT_GAMEPAD + SDL_GamepadButton), its triggers after them: a controller
+player's binding (push to talk), which the game then does not see */
+#define INPUT_GAMEPAD (INPUT_WHEEL_DOWN + 1)
+#define INPUT_GAMEPAD_LEFT_TRIGGER (INPUT_GAMEPAD + SDL_GAMEPAD_BUTTON_COUNT)
+#define INPUT_GAMEPAD_RIGHT_TRIGGER (INPUT_GAMEPAD_LEFT_TRIGGER + 1)
+#define INPUT_GAMEPAD_END (INPUT_GAMEPAD_RIGHT_TRIGGER + 1)
 /* an input by its name in config.toml ("W", "Mouse Left"), -1 if none */
 int halo_input_from_name(const char *name);
 void halo_input_name(int input, char *name, size_t size);
+
+/* (xinput_sdl.c) a rebinding's controller: from begin, port 0's controller
+drives nothing until poll has taken a button newly pressed (1, its input),
+Start (3: cancelled) or Back (2: cleared), and its buttons are let go of */
+void halo_gamepad_capture_begin(void);
+int halo_gamepad_capture_poll(int *input);
+void halo_gamepad_capture_end(void);
 
 /* whether a menu is up (halo_ui_pointer_update, every frame) */
 void platform_menus_set_active(BOOL active);
