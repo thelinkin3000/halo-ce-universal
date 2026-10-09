@@ -1099,6 +1099,15 @@ int halo_ui_pointer_update(int menus_active, struct halo_ui_pointer *pointer)
 	return 0;
 }
 
+/* the scoreboard's: none, as on Android's OpenGL ES (d3d8_gl.c); a vote to
+kick starts from the console (votekick) */
+int halo_scoreboard_pointer_update(int offered, struct halo_ui_pointer *pointer)
+{
+	(void)offered;
+	(void)pointer;
+	return -1;
+}
+
 /* takes up the display's shape and resolution, or the window's, if they
 have changed; between frames, since the game's layout and the targets must
 agree for a whole frame. Returns the width the game draws. */
