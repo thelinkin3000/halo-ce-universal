@@ -12,8 +12,10 @@ host_dk_shader_compile. On the card, a shader is
 
     <data root>/shader_cache/<UAM commit, 12 hex>/<stage letter><hash, 16 hex>.dksh
 
-one file a shader, written as .tmp and renamed when complete, so a compile
-cut short by anything leaves no half file behind. At start this folder's
+one file a shader, written a batch at a time every DKSH_WRITE_INTERVAL
+seconds (the writer, below), a new one under its own name and one replacing
+a broken file as .tmp and renamed; a file cut short is taken for broken and
+compiled again. At start this folder's
 names are listed once into a set (the files are not opened; one is read only
 when its shader is asked for), and the other folders under shader_cache/ -
 other UAM versions' - are removed, and nothing else is touched. The
@@ -23,7 +25,8 @@ names, not a new folder; a stale file is just never asked for.
 One compile thread (step 1 measured more to be slower), which moves itself
 off the game thread's core (host_thread.c's place_thread) and never touches
 deko3d: it takes the queue's most urgent entry, compiles it with
-host_dk_compile_glsl to the card, and adds its hash to the set. Loading is
+host_dk_compile_glsl into memory, and adds its hash to the set; a load takes
+it from memory until the writer has put it on the card. Loading is
 the game thread's (the only thread that touches deko3d), about 2 ms a
 shader, and a shader once loaded stays for the program's life in one code
 memory block, never freed - the cache on the card is what keeps that
@@ -111,6 +114,21 @@ struct dksh_request
 };
 
 #define DKSH_LOAD_QUEUE 1024
+/* how often the shaders compiled since are written to the card (seconds) */
+#define DKSH_WRITE_INTERVAL 30
+
+/* a shader compiled and not yet on the card: its DKSH, which a load takes
+from here meanwhile */
+struct dksh_pending
+{
+	uint64_t hash;
+	uint32_t stage;
+	void *data;
+	size_t size;
+	/* the card has a file of it already (a recompile of one that would not
+	load), which the new one replaces; a new shader's is written as it is */
+	int replaces;
+};
 
 static struct
 {
@@ -157,6 +175,10 @@ static struct
 	uint32_t load_count;
 	pthread_cond_t load_condition;
 	int loader_started;
+
+	/* the shaders compiled since the writer last wrote (under lock) */
+	struct dksh_pending *pending;
+	uint32_t pending_count, pending_capacity;
 } dksh;
 
 /* ---------- paths */
@@ -369,9 +391,10 @@ static void *compile_thread(void *unused)
 	for (;;)
 	{
 		struct dksh_request request;
-		char path[1024], temporary[1032];
 		uint32_t pick, index;
-		int ok, rename_error;
+		void *dksh_data = NULL;
+		size_t dksh_size = 0;
+		int ok;
 
 		pthread_mutex_lock(&dksh.lock);
 		while (!dksh.queue_count)
@@ -391,49 +414,47 @@ static void *compile_thread(void *unused)
 		dksh.compiling_stage = request.stage;
 		pthread_mutex_unlock(&dksh.lock);
 
-		shader_path(path, sizeof(path), request.stage, request.hash, 0);
-		shader_path(temporary, sizeof(temporary), request.stage, request.hash, 1);
-		/* the compile writes its .tmp under the card's lock itself
-		(host_dk_compiler.cpp); the rename that puts it in place is a driver
-		call like any other, so it is locked here. This console's rename
-		refuses to replace a file that is already there, so the destination
-		goes first: a failure between the two leaves the old file, whole,
-		and the next run compiles again */
-		ok = host_dk_compile_glsl(request.stage == 1, request.glsl, temporary) != 0;
-		rename_error = 0;
-		host_sd_lock();
-		if (ok)
-		{
-			unlink(path);
-			if (rename(temporary, path) != 0)
-			{
-				rename_error = errno;
-				unlink(temporary);
-				ok = 0;
-			}
-		}
-		else
-		{
-			/* a compile that failed, or a write that did (the card full):
-			whatever of the .tmp there is goes */
-			unlink(temporary);
-		}
-		host_sd_unlock();
+		/* compiled into memory: the card is the writer's, every
+		DKSH_WRITE_INTERVAL seconds, so a compile never holds the game's file
+		calls up behind the card's lock (each one wrote, deleted and renamed a
+		file; at three a second that was the menus' saved game check taking
+		17 s instead of 2) */
+		ok = host_dk_compile_glsl(request.stage == 1, request.glsl, &dksh_data, &dksh_size) != 0;
 		free(request.glsl);
 
 		pthread_mutex_lock(&dksh.lock);
 		dksh.compiling = 0;
-		if (ok)
+		if (ok && dksh.pending_count == dksh.pending_capacity)
 		{
-			/* in the set now, so a find from this moment answers "on the
-			card"; the guest is told by the next find that asks (a full set
-			keeps the file and forgets it: the next start lists it, if
-			there is room then) */
+			uint32_t capacity = dksh.pending_capacity ? dksh.pending_capacity * 2 : 64;
+			struct dksh_pending *grown = realloc(dksh.pending, capacity * sizeof(*grown));
+
+			if (grown)
+			{
+				dksh.pending = grown;
+				dksh.pending_capacity = capacity;
+			}
+		}
+		if (ok && dksh.pending_count < dksh.pending_capacity)
+		{
+			struct dksh_pending *pending = &dksh.pending[dksh.pending_count++];
+
+			pending->hash = request.hash;
+			pending->stage = request.stage;
+			pending->data = dksh_data;
+			pending->size = dksh_size;
+			pending->replaces = set_find(request.hash) != NULL;
+			dksh_data = NULL;
+			/* in the set now, so a find from this moment answers "known", and
+			its load takes it from the pending list until the writer has
+			written it */
 			set_insert(request.hash, request.stage);
 			dksh.compiled++;
 		}
 		else
 			dksh.failed++;
+		free(dksh_data);
+		dksh_data = NULL;
 		/* what there is to say is said with the lock gone: a host_logf
 		inside it would hold this thread's place in the queue's mutex for
 		as long as the logger takes, and the game thread asks the queue
@@ -444,22 +465,116 @@ static void *compile_thread(void *unused)
 			uint64_t hash = request.hash;
 			uint32_t stage = request.stage;
 			int log_now = ++since_logged >= DKSH_LOG_EVERY;
-			int rename_failed = rename_error != 0;
 
 			if (log_now)
 				since_logged = 0;
 			pthread_mutex_unlock(&dksh.lock);
-			if (!ok && !rename_failed)
-				host_logf(HOST_LOG_ERROR, "dk shader: %c%016llx did not compile (no DKSH was written)",
-					stage ? 'f' : 'v', (unsigned long long)hash);
-			if (rename_failed)
-				host_logf(HOST_LOG_ERROR, "dk shader: %c%016llx compiled but could not be put on the card (%s)",
-					stage ? 'f' : 'v', (unsigned long long)hash, strerror(rename_error));
+			if (!ok)
+				host_logf(HOST_LOG_ERROR, "dk shader: %c%016llx did not compile", stage ? 'f' : 'v',
+					(unsigned long long)hash);
 			if (log_now)
 				host_logf(HOST_LOG_INFO, "dk shader: %lu compiled (%lu failed), %u queued", compiled, failed,
 					(unsigned)queued);
 			continue;
 		}
+	}
+	return NULL;
+}
+
+/* ---------- the writer
+
+Every DKSH_WRITE_INTERVAL seconds, the shaders compiled since go to the card,
+oldest first and one at a time, each under the card's lock for its own write
+only, so the game's file calls get in between. A new shader's file is
+written as it is, under its own name (no .tmp, no delete, no rename: a write
+cut short leaves a short file, which a load takes for broken and the next
+compile replaces); one replacing a file that would not load goes through a
+.tmp and a rename, as this console's rename will not replace a file, the old
+one deleted first. Until it is written, a load takes a shader from memory
+(shader_load); one the console quits before writing is compiled again next
+time. */
+
+/* writes one pending shader; whether it is on the card */
+static int pending_write(const struct dksh_pending *pending)
+{
+	char path[1024], temporary[1032];
+	FILE *file;
+	int written = 0;
+
+	shader_path(path, sizeof(path), pending->stage, pending->hash, 0);
+	shader_path(temporary, sizeof(temporary), pending->stage, pending->hash, 1);
+	host_sd_lock();
+	file = fopen(pending->replaces ? temporary : path, "wb");
+	if (file)
+	{
+		written = fwrite(pending->data, 1, pending->size, file) == pending->size;
+		if (fclose(file) != 0)
+			written = 0;
+		if (!written)
+			unlink(pending->replaces ? temporary : path);
+	}
+	if (written && pending->replaces)
+	{
+		unlink(path);
+		if (rename(temporary, path) != 0)
+		{
+			unlink(temporary);
+			written = 0;
+		}
+	}
+	host_sd_unlock();
+	return written;
+}
+
+static void *writer_thread(void *unused)
+{
+	(void)unused;
+	host_thread_place_on_helper_core();
+	for (;;)
+	{
+		unsigned written = 0, failed = 0;
+
+		sleep(DKSH_WRITE_INTERVAL);
+		for (;;)
+		{
+			struct dksh_pending pending;
+			int ok;
+
+			/* the oldest (compiles only append, so it stays first; loads
+			copy from it meanwhile) */
+			pthread_mutex_lock(&dksh.lock);
+			if (!dksh.pending_count)
+			{
+				pthread_mutex_unlock(&dksh.lock);
+				break;
+			}
+			pending = dksh.pending[0];
+			pthread_mutex_unlock(&dksh.lock);
+
+			ok = pending_write(&pending);
+
+			pthread_mutex_lock(&dksh.lock);
+			memmove(&dksh.pending[0], &dksh.pending[1], (dksh.pending_count - 1) * sizeof(dksh.pending[0]));
+			dksh.pending_count--;
+			if (!ok)
+			{
+				/* not on the card: a shader not loaded yet is compiled again
+				when it is asked for (a load would find no file) */
+				struct dksh_slot *slot = set_find(pending.hash);
+
+				if (slot && !slot->handle)
+					slot->broken = 1;
+			}
+			pthread_mutex_unlock(&dksh.lock);
+			free(pending.data);
+			if (ok)
+				written++;
+			else
+				failed++;
+		}
+		if (written || failed)
+			host_logf(failed ? HOST_LOG_ERROR : HOST_LOG_INFO, "dk shader: %u written to the card%s", written,
+				failed ? " (and some could not be: the card full?)" : "");
 	}
 	return NULL;
 }
@@ -492,6 +607,15 @@ static void service_start(void)
 	{
 		pthread_detach(dksh.compile_thread);
 		host_logf(HOST_LOG_INFO, "dk shader: one compile thread (UAM %s)", HOST_DK_UAM_COMMIT);
+	}
+	{
+		pthread_t writer;
+
+		if (pthread_create(&writer, &attributes, writer_thread, NULL) == 0)
+			pthread_detach(writer);
+		else
+			host_logf(HOST_LOG_ERROR, "dk shader: the writer thread could not be made; compiled shaders are kept "
+				"for this run only");
 	}
 	{
 		pthread_t loader;
@@ -543,27 +667,59 @@ static uint32_t shader_load(uint64_t hash, uint32_t stage)
 	uint32_t handle = 0;
 	/* what to say once the locks are gone */
 	int say_invalid = 0, say_room = 0, say_dksh = 0, say_table = 0;
+	/* (compiled, not yet written: dksh.pending) */
+	int from_memory = 0;
 
 	shader_path(path, sizeof(path), stage, hash, 0);
-	host_sd_lock();
-	file = fopen(path, "rb");
-	if (file)
+	/* compiled and not yet written: from memory (a copy, as the writer
+	frees its own when it has written it) */
+	pthread_mutex_lock(&dksh.lock);
 	{
-		fseek(file, 0, SEEK_END);
-		size = ftell(file);
-		fseek(file, 0, SEEK_SET);
-		if (size >= (long)sizeof(header))
+		uint32_t index;
+
+		for (index = 0; index < dksh.pending_count; index++)
 		{
-			contents = malloc((size_t)size);
-			if (contents && fread(contents, 1, (size_t)size, file) != (size_t)size)
+			if (dksh.pending[index].hash == hash && dksh.pending[index].stage == stage)
 			{
-				free(contents);
-				contents = NULL;
+				contents = malloc(dksh.pending[index].size);
+				if (contents)
+				{
+					memcpy(contents, dksh.pending[index].data, dksh.pending[index].size);
+					size = (long)dksh.pending[index].size;
+					from_memory = 1;
+				}
+				break;
 			}
 		}
-		fclose(file);
 	}
-	host_sd_unlock();
+	pthread_mutex_unlock(&dksh.lock);
+	if (!from_memory)
+	{
+		host_sd_lock();
+		file = fopen(path, "rb");
+		if (file)
+		{
+			fseek(file, 0, SEEK_END);
+			size = ftell(file);
+			fseek(file, 0, SEEK_SET);
+			if (size >= (long)sizeof(header))
+			{
+				contents = malloc((size_t)size);
+				if (contents && fread(contents, 1, (size_t)size, file) != (size_t)size)
+				{
+					free(contents);
+					contents = NULL;
+				}
+			}
+			fclose(file);
+		}
+		host_sd_unlock();
+	}
+	if (contents && size < (long)sizeof(header))
+	{
+		free(contents);
+		contents = NULL;
+	}
 	if (!contents)
 	{
 		/* listed, but gone or unreadable: compiled again rather than read
