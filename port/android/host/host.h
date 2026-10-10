@@ -43,7 +43,11 @@ uint32_t host_memory_window_size(void);
 /* claims the image's range (at preferred_base if it is free, else wherever
 there is room: *base says where) and the Xbox window */
 int host_memory_initialize(uint32_t preferred_base, uint32_t image_size, uint32_t *base);
-/* 1 if the fixed ranges could not be reserved (something else holds them) */
+/* holds the image's linked range as early as the process allows: from
+JNI_OnLoad, before the Java side of the game's process allocates much
+(host_main.c) */
+void host_memory_reserve_early(void);
+/* 1 if no room was found for the window or the image (host_memory_initialize) */
 int host_memory_fixed_unavailable(void);
 /* lists the mappings below 4 GB in logcat and, if file is not NULL, in it */
 void host_memory_report_low_mappings(FILE *file);

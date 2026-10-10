@@ -35,6 +35,7 @@ instead (host_watch_hash.c).
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/system_properties.h>
 #include <ucontext.h>
 #include <unistd.h>
 
@@ -279,6 +280,70 @@ static uint64_t place_window(uint64_t size)
 sections keep the alignment they were linked with (guest.ld) */
 #define IMAGE_ALIGNMENT 0x10000ULL
 
+/* The image's linked range, held from JNI_OnLoad (host_memory_reserve_early),
+when the game's own process (":game") has just started and its Java side has
+allocated little, until host_memory_initialize claims the image's exact range
+there. It is held, not required: the image goes elsewhere if it cannot be
+(host_loader.c moves its pointers), as the window does. Large enough for
+either game image (GL ES or Vulkan). */
+#define EARLY_IMAGE_HOLD 0x03000000ULL
+
+static uint64_t early_hold_base, early_hold_size;
+/* host_memory_initialize found no room for the window or the image */
+static int placement_failed;
+
+void host_memory_reserve_early(void)
+{
+	if (reserve(HALO_GUEST_IMAGE_BASE, EARLY_IMAGE_HOLD) == 0)
+	{
+		early_hold_base = HALO_GUEST_IMAGE_BASE;
+		early_hold_size = EARLY_IMAGE_HOLD;
+		host_logf(HOST_LOG_INFO, "held the guest image's address %08llx at start-up",
+			(unsigned long long)early_hold_base);
+	}
+	else
+		host_logf(HOST_LOG_INFO, "the guest image's address %08llx is taken at start-up (%s); it will go elsewhere",
+			(unsigned long long)HALO_GUEST_IMAGE_BASE, strerror(errno));
+}
+
+int host_memory_fixed_unavailable(void)
+{
+	return placement_failed;
+}
+
+/* the mappings below 4 GB, for a report of why the game's memory could not
+be placed (logcat, and memory_map.txt in the data folder: host_main.c) */
+void host_memory_report_low_mappings(FILE *file)
+{
+	FILE *maps = fopen("/proc/self/maps", "r");
+	char line[512];
+	char model[PROP_VALUE_MAX] = "", heap[PROP_VALUE_MAX] = "", release[PROP_VALUE_MAX] = "";
+
+	__system_property_get("ro.product.model", model);
+	__system_property_get("dalvik.vm.heapsize", heap);
+	__system_property_get("ro.build.version.release", release);
+	if (file)
+	{
+		fprintf(file, "device: %s, Android %s, Java heap %s\n", model[0] ? model : "unknown",
+			release[0] ? release : "unknown", heap[0] ? heap : "unknown");
+		fprintf(file, "mappings below 4 GB:\n");
+	}
+	if (!maps)
+		return;
+	while (fgets(line, sizeof(line), maps))
+	{
+		unsigned long long lo, hi;
+
+		if (sscanf(line, "%llx-%llx", &lo, &hi) != 2 || lo >= LOW_LIMIT)
+			continue;
+		line[strcspn(line, "\n")] = '\0';
+		host_logf(HOST_LOG_INFO, "low mapping: %s", line);
+		if (file)
+			fprintf(file, "%s\n", line);
+	}
+	fclose(maps);
+}
+
 int host_memory_initialize(uint32_t preferred_base, uint32_t size, uint32_t *base)
 {
 	uint64_t minimum = LOW_START;
@@ -290,6 +355,12 @@ int host_memory_initialize(uint32_t preferred_base, uint32_t size, uint32_t *bas
 	search hands back the image's own address */
 	image_base = preferred_base;
 	image_end = preferred_base + round_up(size);
+	/* (the hold from start-up gives way to the image's own range) */
+	if (early_hold_size)
+	{
+		munmap((void *)(uintptr_t)early_hold_base, early_hold_size);
+		early_hold_base = early_hold_size = 0;
+	}
 	image_placed = reserve(image_base, image_end - image_base) == 0;
 	if (!image_placed)
 	{
@@ -319,6 +390,7 @@ int host_memory_initialize(uint32_t preferred_base, uint32_t size, uint32_t *bas
 	{
 		host_logf(HOST_LOG_ERROR, "no free range of %u MB for the Xbox memory window",
 			(unsigned int)(HALO_GUEST_WINDOW_SIZE / (1024 * 1024)));
+		placement_failed = 1;
 		return -1;
 	}
 	window_end = window_base + window_size;
@@ -346,6 +418,7 @@ int host_memory_initialize(uint32_t preferred_base, uint32_t size, uint32_t *bas
 	{
 		host_logf(HOST_LOG_ERROR, "no free range of %u MB for the guest image",
 			(unsigned int)(round_up(size) / (1024 * 1024)));
+		placement_failed = 1;
 		return -1;
 	}
 	*base = (uint32_t)image_base;
