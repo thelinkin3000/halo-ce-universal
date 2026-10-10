@@ -675,6 +675,20 @@ uint32_t host_sdl_gamepad_from_id(uint32_t id)
 	return handle_new(_handle_gamepad, gamepad);
 }
 
+/* (the event thread, when the controller goes: sdl_platform.c) */
+void host_sdl_close_gamepad(uint32_t gamepad)
+{
+	SDL_GameController *object = handle_get(gamepad, _handle_gamepad);
+
+	if (!object)
+		return;
+	pthread_mutex_lock(&handle_lock);
+	handles[gamepad].type = _handle_free;
+	handles[gamepad].object = NULL;
+	pthread_mutex_unlock(&handle_lock);
+	SDL_GameControllerClose(object);
+}
+
 int host_sdl_gamepad_axis(uint32_t gamepad, int axis)
 {
 	SDL_GameController *object = handle_get(gamepad, _handle_gamepad);
@@ -1162,4 +1176,42 @@ int host_sdl_show_simple_message_box(uint32_t flags, const char *title, const ch
 	(void)flags;
 	host_logf(HOST_LOG_WARN, "%s: %s", title, message);
 	return 1;
+}
+
+/* ---------- Android's on-screen touch controls (port/android/host/host_touch.c)
+
+The guest's touch input asks for them through the import list the Switch
+shares; the Switch has no overlay and no system gestures, so they are
+nothing: no edges kept, nothing pressed, no swipe, and the rest is
+ignored (the controller's rumble is host_sdl_rumble_gamepad's). */
+
+void host_gesture_insets(int *insets)
+{
+	memset(insets, 0, 4 * sizeof(*insets));
+}
+
+void host_touch_read(int32_t *state)
+{
+	memset(state, 0, 7 * sizeof(*state));
+}
+
+void host_touch_look_read(float *delta)
+{
+	memset(delta, 0, 4 * sizeof(*delta));
+}
+
+void host_touch_rumble(unsigned int low, unsigned int high)
+{
+	(void)low;
+	(void)high;
+}
+
+void host_touch_scene(int scene)
+{
+	(void)scene;
+}
+
+void host_touch_bindings(const int32_t *controls)
+{
+	(void)controls;
 }
