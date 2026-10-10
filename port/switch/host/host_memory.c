@@ -713,6 +713,20 @@ int host_memory_initialize(uint32_t base, uint32_t size)
 		return -1;
 	}
 
+	/* Custom Edition's tag cache, at the address its maps' tag data is
+	linked to (HALO_GUEST_CUSTOM_EDITION_BASE), which the guest asks for
+	itself when game.custom_edition is on (port/linux/src/xbox_memory.c):
+	kept free of the window and the pools, as the Android host keeps it. The
+	window took it once, at 0x40000000: the guest's request for it then
+	landed inside the window, and lumoria_a.map's tag data was loaded over
+	the game state (game.c's "!game_globals->active"). */
+	if (reserve(HALO_GUEST_CUSTOM_EDITION_BASE, HALO_GUEST_CUSTOM_EDITION_END - HALO_GUEST_CUSTOM_EDITION_BASE, 0) != 0)
+	{
+		host_logf(HOST_LOG_WARN, "Custom Edition's tag cache range %08x-%08x is taken: its maps cannot run",
+			(unsigned)HALO_GUEST_CUSTOM_EDITION_BASE, (unsigned)HALO_GUEST_CUSTOM_EDITION_END);
+		log_conflicts(HALO_GUEST_CUSTOM_EDITION_BASE, HALO_GUEST_CUSTOM_EDITION_END - HALO_GUEST_CUSTOM_EDITION_BASE);
+	}
+
 	/* The window, as large as the console will give: each size is tried
 	 * where the game and its data expect it, then at the address this build
 	 * prefers, then anywhere free (place_window). */
