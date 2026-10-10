@@ -41,6 +41,7 @@ pause it as its pause menu does.
 #include "rasterizer/xbox/rasterizer_xbox_hardware_bitmaps.h"
 
 #include "halo_menus.h"
+#include "custom_edition_cache.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -1863,7 +1864,7 @@ static void pause_campaign_patch(struct cache_file_tag_instance *instances)
 	{
 		struct ui_widget_definition *list;
 		struct ui_widget_child_reference const *rows;
-		short span, grow, bottom;
+		short span, grow, bottom, first;
 		long revert;
 
 		if (children[child].widget_tag.index == NONE)
@@ -1882,11 +1883,19 @@ static void pause_campaign_patch(struct cache_file_tag_instance *instances)
 		if (revert == list->child_widgets.count)
 			return;
 		span = (short)(rows[list->child_widgets.count - 1].vertical_offset - rows[0].vertical_offset);
+		first = rows[0].vertical_offset;
 		bottom = list->bounds.y1;
 		if (pause_list_patch(instances, list, revert, FALSE, &grow))
 		{
-			if (grow)
+			/* (an Xbox map's list, whichever menus the shell has: its bounds
+			reach under the box's B and A hints, so the rows centred in them
+			ran off the box; they keep the span its own rows had, from where
+			its first was. Halo PC's taller list is Custom Edition maps') */
+			if (grow || !custom_edition_cache_tags_loaded())
 			{
+				struct ui_widget_child_reference *fitted = list->child_widgets.address;
+
+				fitted[0].vertical_offset = first;
 				pause_list_fit(list, span);
 				list->bounds.y1 = bottom;
 			}
