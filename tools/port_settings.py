@@ -38,14 +38,14 @@ SCREENS = {
         "platform_places": True,
         # (rows in the place of the row before them: Window Size in
         # Resolution's, port/linux/game/menu_functions.c showing the one the
-        # display mode chosen uses; Android's anti-aliasing in the desktop's;
-        # Android's backend and Vulkan driver in Display Mode's and
-        # Resolution's, which it has not got)
-        "same_place": ["display.window_size", "anti_aliasing_android", "display.renderer", "display.vk_driver"],
+        # display mode chosen uses; Android's anti-aliasing in the desktop's.
+        # Android's backend and Vulkan driver take places of their own:
+        # platform_places packs each platform's rows)
+        "same_place": ["display.window_size", "anti_aliasing_android"],
         # lines of text among the rows, in a place no row of theirs uses:
-        # (text, platform, place). Under Android's backend and driver, in
-        # Resolution Scaling's place, which it has not got either
-        "notes": [("The graphics backend and driver change when the game restarts.", "android", 2)],
+        # (text, platform, place). Below Android's rows (backend, driver,
+        # V-Sync, interpolation, Graphics, FOV and Viewmodels)
+        "notes": [("The graphics backend and driver change when the game restarts.", "android", 6)],
         "rows": [
             ("DISPLAY MODE:", "display.mode",
              [("FULLSCREEN", "fullscreen"), ("BORDERLESS", "borderless"), ("WINDOWED", "windowed")],
@@ -348,25 +348,37 @@ def _screen(folder: str, spec: dict, rows: list, list_inputs: list, list_handler
     return lines
 
 
+def _placed(row: str, shown: list, places: dict) -> list:
+    """platform_places' children of a row shown on the platforms shown: one
+    for each place they have it in, naming the platforms there (none named
+    where every platform has it in the same place)"""
+    at = {}
+    for name in shown:
+        at.setdefault(places[name], []).append(name)
+    if len(at) == 1 and len(shown) == len(places):
+        return [(row, None, places[shown[0]])]
+    return [(row, " ".join(names), place) for place, names in at.items()]
+
+
 def _setting_screen(folder: str, spec: dict) -> list:
     base = f"{PE}/{folder}"
     rows, extra = [], []
     place = -1
     # (platform_places: each platform's rows in places of their own, with
-    # no gap where the other's are; a row for both, a child for each)
-    places = {"desktop": -1, "android": -1}
+    # no gap where another's are; a row in the same place on every platform is
+    # one child, else a child for each place. The Switch's are its own: a row
+    # for "android" is the Android app's, port/linux/src/menu_files.c)
+    places = {"desktop": -1, "android": -1, "switch": -1}
     for index, (label, setting, choices, _, platform, *named) in enumerate(spec["rows"]):
         key = named[0] if named else setting.split(".", 1)[1]
         row = f"{base}/op_{key}"
         shares = setting in spec.get("same_place", ()) or key in spec.get("same_place", ())
         if spec.get("platform_places"):
-            for name in places:
-                if platform in (None, name) and not shares:
+            shown = [name for name in places if platform is None or name in platform.split()]
+            for name in shown:
+                if not shares:
                     places[name] += 1
-            if platform or places["desktop"] == places["android"]:
-                rows.append((row, platform, places[platform or "desktop"]))
-            else:
-                rows += [(row, name, places[name]) for name in places]
+            rows += _placed(row, shown, places)
         else:
             if setting not in spec.get("same_place", ()) and key not in spec.get("same_place", ()):
                 place += 1
@@ -399,10 +411,7 @@ def _setting_screen(folder: str, spec: dict) -> list:
         if spec.get("platform_places"):
             for name in places:
                 places[name] += 1
-            if places["desktop"] == places["android"]:
-                rows.append((row, None, places["desktop"]))
-            else:
-                rows += [(row, name, places[name]) for name in ("desktop", "android")]
+            rows += _placed(row, list(places), places)
         else:
             rows.append((row, None, place + 1 + index))
         extra += _widget(row, [("width", 512), ("height", 28), ("flags", "pass_unhandled_to_focused_child"),
