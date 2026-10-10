@@ -196,6 +196,9 @@ public class HaloActivity extends SDLActivity {
                 touchControls.stopDeviceInput();
         }
         super.onWindowFocusChanged(hasFocus);
+        // the system bars come back after a swipe or after the launcher was over them
+        if (hasFocus)
+            hideSystemBars();
     }
 
     @Override
@@ -312,14 +315,6 @@ public class HaloActivity extends SDLActivity {
                 View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_STABLE |
                 View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
                 View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
-    }
-
-    @Override
-    public void onWindowFocusChanged(boolean hasFocus) {
-        super.onWindowFocusChanged(hasFocus);
-        // they come back after a swipe or after the launcher was over them
-        if (hasFocus)
-            hideSystemBars();
     }
 
     /**
