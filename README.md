@@ -1,27 +1,76 @@
-Halo 1 decompilation
-=============
+# Language-neutral subtitles for the OpenCE guest
 
-<!--
-Replace with your repository's URL.
--->
-[Build Status]: https://github.com/punpckhdq/halo/actions/workflows/build.yml/badge.svg
-[actions]: https://github.com/punpckhdq/halo/actions/workflows/build.yml
-<!--
-decomp.dev progress badges
-See https://decomp.dev/api for an API overview.
--->
-[Code Progress]: https://decomp.dev/punpckhdq/halo.svg?mode=shield&measure=code&label=Code
-[Data Progress]: https://decomp.dev/punpckhdq/halo.svg?mode=shield&measure=data&label=Data
-[progress]: https://decomp.dev/punpckhdq/halo
+Only source code and integration notes are included. No Portuguese captions,
+translation lookup, patched ELF, NRO, game maps or audio are bundled.
+This is a standalone C99 subtitle core adapted from the experimental subtitle
+work. It is not yet wired into the upstream guest or verified on Switch.
 
-This is a work-in-progress (99.5% byte matching) decompilation of Halo: Combat Evolved build 2342 (`cachebeta.exe`, sha256 `4cc87b45f721270392a96f1674ed2b5cd4a7bb4355faeab4531d1cf1884d9520`).
+## Native integration
 
-## Discord: https://discord.gg/DQRgPUq6B8
+Add `subtitles.c` to the guest build and include `subtitles.h`. It uses the C
+runtime (malloc/realloc/free, qsort, memcpy/memset, strlen/strcmp/strchr/memchr)
+and fixed-width integer types. No compiler-specific ABI or binary hooks are used.
+Keep all calls on the same game thread; this API does not provide locking.
 
-## Android, PC, & Linux port: https://github.com/cybersecurity/halo-ce-universal
+1. Create a context with `subtitles_create()` during game initialization.
+2. Load the user-selected UTF-8 caption file using the port's filesystem code,
+   then pass its bytes to `subtitles_load()`. The core copies the data. A failed
+   load preserves the previous caption set. Handle the return value in the UI.
+3. After `sound_new_impulse` successfully creates a sound, obtain its actual
+   tag name, pitch range and permutation from the sound datum. Call
+   `subtitles_sound_start()` with the sound-instance ID and current game time.
+   Use the selected permutation, not a guessed index. Assign a higher priority
+   to story/radio than combat if desired; the core has no language/path heuristic.
+4. Notify `subtitles_sound_stop()` when a sound instance stops, including before
+   its ID is reused. Call `subtitles_reset()` on level changes, save loads,
+   seeks, or time discontinuities. Convert the original 30 Hz game clock to
+   milliseconds in the integration, preserving monotonic time for the session.
+5. Once per rendered frame (the earlier extension used `cinematic_render`),
+   call `subtitles_render()` with a synchronous draw callback. Pass visible=0
+   for disabled subtitles or menus; suppressing display still updates expiry.
+6. Destroy the context on shutdown. Successful file reloads reset active voices.
 
-## 128 player limit build: https://github.com/bnunu/halo-ce-universal
+The draw callback must use native HUD/font types and preserve/restore the
+engine's font, scale, shadow and clipping state. The original binary experiment
+needed the single-player messaging font (offset 0x54 in that exact guest);
+use the named native field instead of copying a binary offset. Draw bounds,
+panel, wrapping, scaling, split-screen, font fallback and settings belong to
+the port's integration. No renderer or menu setting is included here.
 
-Updates will be posted to discord, currently adding in-browser port and custom edition map compatiblity 
+## Caption format
 
-# Installation guide COMING SOON
+Each nonempty, non-comment row contains six tab-separated columns:
+
+`sound_tag | pitch_range | permutation | begin_ms | end_ms | text`
+
+The `|` characters above describe column boundaries: actual files use tabs.
+Sound tag paths must match exactly, including case and literal backslashes.
+Offsets are relative to sound start, expressed in milliseconds. Several
+nonoverlapping rows may describe successive captions for one sound key.
+End is exclusive. Lines beginning with # are comments. UTF-8 BOM and CRLF are
+accepted. Text supports escapes `\n`, `\r`, `\t` and `\\` (a literal backslash).
+No caption file is included. Files can use any language; the core does not
+choose the user's language, download captions or translate audio.
+
+UTF-8 is decoded strictly into UTF-16, including supplementary characters.
+Actual script coverage depends on the font and renderer. Right-to-left layout,
+Arabic shaping, combining marks and other complex scripts require appropriate
+engine support; UTF decoding alone does not implement text shaping.
+
+Limits: 8 MiB input, 20,000 cues, four simultaneous tracked voices, one displayed
+caption. Tag/pitch/permutation lookup uses a sorted table and binary search.
+Higher priority wins; the newest sound breaks ties. Lower priority cannot evict
+four active higher-priority sounds. Gaps allow another eligible voice to display.
+Malformed input, overlapping captions for the same key, and allocation failures
+reject the whole load. The file is external to the game assets and may be
+replaced without rebuilding the core.
+
+## Maintainer review
+
+This source package was prepared with Codex assistance for integration review.
+The generic core has local host tests; the native sound/draw calls must still be
+connected and tested in the port. The earlier patched ELF's CPU/console results
+do not constitute Switch validation of this rewritten core. Upstream code has
+not been modified here, and compatibility with a particular current revision
+is not asserted. Licensing for an upstream contribution should be agreed with
+the contributor; this package asserts no license over upstream or game content.
