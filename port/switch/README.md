@@ -263,3 +263,7 @@ make
 
 `mem` is at its fifth version; the earlier ones found the same things less
 directly, and the comments say what each was for.
+
+### Cinematic letterbox
+
+`display.cinematic_letterbox` defaults to `true`, preserving the original cinematic bars. Set it to `false` to reveal the scene behind the bars without zooming or changing the camera.
