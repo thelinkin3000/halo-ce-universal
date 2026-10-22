@@ -89,6 +89,28 @@ To install the data with the app:
    game starts.
 6. You can delete the disc image.
 
+Alternatively, **Descargar paquete de datos** on the first screen or in touch
+settings downloads a player's HTTPS URL directly on the phone. It accepts an
+Xbox ISO/XISO or a ZIP containing one `maps/` folder (Xbox map format 5, at most
+2 GiB of extracted data). It validates and stages the maps before installation;
+existing maps, saves and configuration are not replaced. No game data or preset
+commercial download URL is included.
+
+Public MediaFire file pages are also accepted. The importer resolves their
+download button over HTTPS, without executing scripts or following ads. Pages
+that require a browser check or do not expose a public file offer **Abrir
+MediaFire** instead. Finish the download in your browser, then return and choose
+the downloaded ISO with **Elegir imagen de disco**. An HTML response is never
+installed as game data; existing Xbox-map validation applies. This does not add
+support for PC game data or compressed 7z/RAR imports.
+
+The separately signed `.controls` edition also has **Actualizar APK** in both
+places. Its channel is `dorlanpabon/halo-ce-universal`, release tags `controles-N`
+with a `halo-controls.apk` asset and version code `10600 + N`. Draft and
+prerelease releases are ignored. Before opening Android's installer it checks
+the downloaded package ID, newer version and current signing certificates. The
+standard edition retains its existing updater.
+
 To install the data from a computer:
 
 1. Start the app one time. The app makes its folders.
@@ -107,6 +129,21 @@ An `adb pull` of the whole `save` folder stops at the `blam.lst` files of
 `save/z`, which adb cannot read.
 
 ## Controls
+
+The touch buttons stay inside the stable system-bar, gesture and display-cutout
+margins on all four edges. Hide and Settings have a separate top row. These
+display adjustments do not overwrite the saved HUD positions. Mobile presets
+keep their earlier arrangement, with an aligned right column, an aligned bottom
+row and slightly smaller Fire targets. Secondary buttons share a 34-unit radius;
+Fire uses 48 and left Fire 44 on the 960 x 540 layout grid. Unchanged earlier
+presets are upgraded; custom HUD positions, visibility and manually changed
+button sizes are preserved. Game Icons silhouettes
+replace the small line drawings; A / SALTO, B / GOLPE, X / USAR and Y / ARMA
+match the profile's actual button bindings without moving the controls.
+The icons' CC BY 3.0 attribution is in `assets/notices/game-icons.txt` in the APK.
+Touch Pause and Back open the Android pause dialog, including in demo maps
+without pause-menu tags. Reanudar or Atrás resumes; Ajustes de controles opens
+the touch options. Physical gamepad Start and Back keep the game's bindings.
 
 The game reads controllers through the gamepad functions of SDL3. All the
 controllers that Android knows operate. The first controller is player 1.
@@ -147,6 +184,10 @@ on-screen keyboard, tap a key to press it, "B =BACK" to cancel and
 
 ### Touch controls
 
+The launcher's "Jugar / Continuar" stays available without game data and opens
+the data-download form instead of starting the engine. Installed data keeps
+the usual Play / Continue flow; demo download and local ISO import remain available.
+
 In a game, the app shows touch controls over the picture. They are a
 controller for player 1. With the default buttons of the profile:
 
@@ -162,9 +203,14 @@ controller for player 1. With the default buttons of the profile:
 | Pause, Back | start, back |
 | Up, Down, Left, Right | D-pad (in a network game, Up opens the text chat's keyboard) |
 
-The names on the buttons follow the profile's "Button layout" (Settings >
-Gamepads): with "Swap triggers", the right trigger's button says "Grenade".
+The action icons follow the profile's "Button layout" (Settings >
+Gamepads): with "Swap triggers", the right trigger's button shows a grenade.
 The stick moves the player with every "Stick layout", southpaw too.
+
+The touch button mapped to Grenade throws when its finger lifts; holding
+and dragging only aims. Release sends an 80 ms controller pulse, while
+cancellation or focus loss clears it. This follows remapped buttons and
+does not change physical gamepads.
 
 A finger that holds a button can also swipe to look, so you can fire and
 aim with one thumb. The controls are a finger wide (48 dp) or larger, but
@@ -175,8 +221,21 @@ view. The swipe aims as the controller's stick does, not as a mouse: the
 aim slows over a target and follows a moving one, as with a controller,
 and it follows the profile's "invert look" (the gyroscope turns the view
 as the phone turns, never inverted). The setting `input.touch_aim_assist`
-turns the aim assist off. "Look sensitivity" sets how far a swipe turns;
-the mouse settings do not apply.
+turns the aim assist off. "Sensibilidad al mirar" sets how far a swipe turns;
+the mouse settings do not apply. Its independent horizontal/vertical swipe
+inversion switches are saved on the device (off by default) and do not affect
+the gyroscope. Vertical swipe inversion combines with the active game profile's
+Invert Look / Invert Flight settings; the preview shows the touch adjustment.
+
+"Configuración interna de Halo" in Pause or the touch settings opens the
+original game menu. Tap Settings to edit the profile; Gamepads contains Invert
+Look and Invert Flight. Native menu taps pass through unchanged.
+The same launcher action opens the main menu on a cold start so a profile
+can be selected or created. It temporarily suppresses the startup map command,
+then restores init.txt exactly after the engine's acknowledgement. It never
+replaces named saves and refuses to restart an already running game.
+Pause/Back also offers "Salir sin guardar": confirming exits the game without
+creating or replacing a save. Cancelling leaves the game paused.
 
 The touch controls show only in a game. In the menus and during
 cinematics they hide, and the touchscreen operates the menus as described
@@ -187,8 +246,8 @@ to "Settings").
 
 The buttons at the top of the screen:
 
-- "Hide" removes the controls (and stops the gyroscope aiming and the
-  vibration) until you push "Touch"; the app remembers it.
+- "Ocultar" removes the controls (and stops gyroscope aiming and
+  vibration) until you push "Mostrar"; the app remembers it.
 
 Aiming with the phone's gyroscope is in the game's settings, as on the
 Switch: open a profile, **GAMEPADS**, then **GYRO AIM**. ON aims with it all
@@ -197,18 +256,67 @@ aiming; OFF (the default) is the swipe and the stick only. The same screen
 sets its sensitivity and invert each way (`1` is the phone's own turn).
 These are `input.gyro_aim` and the four after it in `config.toml`. The
 gyroscope aims while the touch controls show.
-- "Options" opens these items:
-  - "General": the phone's vibration (on by default; it follows the
-    vibration setting of the game's profile), a floating move stick (off by default: the stick goes
+- "Ajustes" stays available during loading and cinematics and opens these items:
+  - "Controles predefinidos": two thumbs, three fingers or the original Ports layout.
+    Three fingers includes a second Fire button above the movement stick; two
+    thumbs keeps it hidden. General > Disparo izquierdo toggles it without
+    replacing the HUD; its visibility can also be changed in the HUD editor.
+    The mobile presets use a floating stick, 60% opacity and no vibration.
+    Hold the movement stick straight forward for 0.6 seconds to lock forward
+    movement, then lift the finger; the lock indicator stays visible. Touch the
+    stick again to resume manual movement. Pausing, opening settings, hiding the
+    HUD, leaving the app or a cancelled touch clears the lock. General > Avance
+    automático disables or enables this gesture; the choice is saved on the phone.
+  - "Perfiles gráficos": five presets. Supremo ligero draws 480 x 360 pixels
+    internally (640 x 480 logical, 4:3), disables shadows and extra effects,
+    and caps presentation at 30 FPS. Ligero panorámico draws 801 x 360
+    (1068 x 480 logical), also capped at 30. Both use OpenGL ES and interpolation.
+    Equilibrado and Alta calidad retain 1068 x 480, try Vulkan with OpenGL ES
+    fallback, and restore render scale 1.0 with no explicit frame cap.
+    Fluidez experimental uses OpenGL ES at 320 x 240 (640 x 480 logical),
+    the cuts of Supremo, interpolation and a 60 FPS cap; actual FPS vary by
+    device and scene. Review the settings, then apply and restart; progress
+    since the last checkpoint is lost. The first use backs up config.toml
+    and init.txt as .before-profiles files.
+  - "Pantalla y resolución": choose the full phone width, 16:9 or classic 4:3,
+    independently of the internal 480p, 360p or 240p detail. Build 107's
+    `display.resolution_limit` also offers "Nativa", the phone's own height;
+    existing higher limits are shown and preserved. Explicit 480p, 360p or
+    240p selections use a 480-line limit before render scaling, so the pixel
+    preview and profiles retain their stated sizes on high-resolution phones.
+    Lower detail keeps
+    the chosen image size. The preview uses the renderer's pixel rounding;
+    review and apply to restart, or cancel without saving. "Restablecer" selects
+    full width and the native resolution in the draft on build 107; old
+    build 106 configuration without `resolution_limit` retains its original
+    480p default and choices. Only resolution settings change
+    (lower detail uses OpenGL ES); FPS, effects and HUD settings are preserved.
+    The first save backs up config.toml as config.toml.before-resolution.
+  - "General": the phone's vibration, a floating move stick (the stick goes
     where your thumb lands in the lower left of the screen), the opacity of
     the controls, "Hide or add buttons" (hide a button, add a copy of a
     button) and "Edit buttons size".
-  - "Edit buttons layout": drag the controls to new positions, then push
-    "Save". "Export" and "Import" write and read a layout file with the
-    file picker of the system.
-  - "Look sensitivity".
+  - "HUD personalizado": three independent HUD slots. Select and drag a
+    button, change its size, opacity or visibility, or use the arrows for
+    fine positioning. Guardar saves all drafts; Salir discards them. Tap
+    the bottom bar to collapse the panel, or drag it to move the panel.
+  - "Sensibilidad al mirar": a numerical 0.25–4x slider, 0.025x step buttons,
+    Preciso (0.75x), Normal (1x) and Rápido (2x). Swipe the preview on the right
+    to compare unzoomed camera response before saving. It uses the same swipe
+    normalization and angular factor, without sending input to the running game.
+    Guardar persists the value with the current HUD; Cancelar discards the draft
+    and Restablecer selects 1x in the draft. Zoom and aim assistance remain the
+    game's own. Resolution and the layout file format are unchanged.
+    Giro horizontal has Clásico (1x), Ágil (2.25x, the default) and Amplio (4x)
+    independently of the vertical response. The preview applies the same gain.
+    Motion remains proportional to distance, without acceleration or inertia;
+    historical touch samples and the last displacement on release are retained.
+    The optional horizontal-sensitivity field travels with each HUD in format 4;
+    layouts without it use Ágil, and older readers can ignore the extra field.
+  - "Exportar HUD" and "Importar HUD". Files use
+    layout version 4 for per-button opacity; versions 1 through 3 still load.
 
-"Hide" and "Options" act when the finger lifts on them: a swipe that
+"Ocultar" and "Ajustes" act when the finger lifts on them: a swipe that
 starts on them turns the view instead.
 
 The app keeps the layout in its own preferences, not in `config.toml`.
@@ -235,6 +343,8 @@ These settings are only for Android:
 | `input.touch_aim_assist` | `true` (the default): the touch controls' swipe aiming gets the aim assist of a controller (the aim slows over a target and follows a moving one). `false`: none, as with a mouse; the bullets' own autoaim stays. |
 | `input.touch_controls` | The touch controls in a game. `"auto"` (the default): shown on a touchscreen while no controller is connected. `"on"`: also shown with a controller. `"off"`: never shown. A device without a touchscreen never shows them. The menus take taps in any case. |
 | `display.screen_width` | The number of columns of the 480-line picture. `0` (the default): the shape of the display (1068 on a 20:9 phone). `640`: the 4:3 shape of the Xbox. |
+| `display.render_scale` | Android OpenGL ES: internal render scale from `0.5` to `1.0` (default). `0.75` draws 360 lines, `0.5` draws 240; logical coordinates and field of view stay unchanged. The Vulkan guest keeps its original resolution. |
+| `display.max_fps` | Android OpenGL ES: `30` or `60` limits presentation using a monotonic clock. `0` (default) leaves it uncapped; interpolation must be enabled to render above the original 30 FPS. The Vulkan guest keeps its original frame timing. |
 | `debug.sample_seconds` | Refer to "Find problems". |
 | `debug.memory_watch` | `true` (the default): the app notices the game's writes to textures and vertices by page protection. `false`: it compares page contents once a frame instead, which is slower. Refer to "Limits". |
 | `debug.profile_hz` | Refer to "Find problems". |
@@ -498,8 +608,8 @@ folder: first make a copy of `maps/` and `save/u`.
 
 ## Widescreen
 
-The game shows 480 lines in the shape of the display, not the 640x480 of
-the Xbox:
+The game's logical picture has 480 lines in the shape of the display,
+not the 640x480 of the Xbox:
 
 - The 3D view is wider. The camera keeps the vertical field of view.
 - The HUD stays at the edges of the screen.

@@ -29,3 +29,8 @@
 - **The Mods menu's warning icons** (a mod out of its requested order, and
   a mod that cannot be played): `triangle-alert` and `circle-x` from
   [Lucide](https://lucide.dev) 1.53.0, under the same licence.
+- **Android touch control silhouettes**: icons made by Delapouite, Lorc,
+  John Colburn and Guard13007, from [Game Icons](https://game-icons.net),
+  licensed under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).
+  The Android vectors omit the SVG black backgrounds; attribution,
+  unmodified SVGs and per-icon sources are in `port/third_party/game-icons`.

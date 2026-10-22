@@ -11,6 +11,9 @@ def staged = new File(rootDir, "../../build/android")
 // none and never look for updates
 def buildNumberText = System.getenv("HALO_BUILD_NUMBER") ?: "0"
 def buildNumber = buildNumberText.isInteger() ? buildNumberText.toInteger() : 0
+// Optional metadata for a separately installed local build; CI keeps its release number.
+def customVersionCode = System.getenv("HALO_ANDROID_VERSION_CODE") ?: ""
+def customVersionName = System.getenv("HALO_ANDROID_VERSION_NAME")
 
 // the workflow's signing key (.github/workflows/build.yml): every build of
 // main signed with it can install over the one before; without it, the
@@ -28,8 +31,9 @@ android {
         applicationId "com.halo.decomp" + (System.getenv("HALO_APPLICATION_ID_SUFFIX") ?: "")
         minSdk 28
         targetSdk 35
-        versionCode Math.max(1, buildNumber)
-        versionName buildNumber > 0 ? "build " + buildNumber : "1.0"
+        versionCode(customVersionCode.isInteger() && customVersionCode.toInteger() > 0
+            ? customVersionCode.toInteger() : Math.max(1, buildNumber))
+        versionName customVersionName ?: (buildNumber > 0 ? "build " + buildNumber : "1.0")
         buildConfigField "int", "HALO_BUILD_NUMBER", "${buildNumber}"
         ndk {
             abiFilters "arm64-v8a"
@@ -40,7 +44,7 @@ android {
         main {
             java.srcDirs += new File(staged, "third_party/SDL3/android-project/app/src/main/java")
             jniLibs.srcDirs = [new File(staged, "jniLibs")]
-            assets.srcDirs = [new File(staged, "assets")]
+            assets.srcDirs = ["src/main/assets", new File(staged, "assets")]
         }
     }
 
@@ -52,11 +56,17 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging true
+            if (System.getenv("HALO_ANDROID_KEEP_DEBUG_SYMBOLS") == "1")
+                keepDebugSymbols += ["**/*.so"]
         }
     }
 
     buildFeatures {
         buildConfig true
+    }
+
+    testOptions {
+        unitTests.includeAndroidResources = true
     }
 
     signingConfigs {
@@ -86,4 +96,21 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+}
+
+androidComponents {
+    beforeVariants(selector().withBuildType("release")) { variant ->
+        variant.enableUnitTest = true
+    }
+}
+
+dependencies {
+    testImplementation "junit:junit:4.13.2"
+    testImplementation "org.robolectric:robolectric:4.17"
+}
+
+tasks.withType(Test).configureEach {
+    maxParallelForks = 1
+    maxHeapSize = "2g"
+    systemProperty "robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2"
 }

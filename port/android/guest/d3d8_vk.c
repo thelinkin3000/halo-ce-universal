@@ -32,6 +32,7 @@ host's Vulkan backend (port/android/host/host_vk.c).
 #include "vk_shaders.h"
 #include "vk_device.h"
 #include "hud_hires.h"
+#include "android_checkpoint.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -39,6 +40,11 @@ host's Vulkan backend (port/android/host/host_vk.c).
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+
+int android_checkpoint_renderer(void)
+{
+	return 1;
+}
 
 void d3d8_surface_initialize(D3DSurface *surface, D3DFORMAT format, unsigned long width, unsigned long height);
 void d3d8_surface_resize(D3DSurface *surface, D3DFORMAT format, unsigned long width, unsigned long height);

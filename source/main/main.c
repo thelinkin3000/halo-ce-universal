@@ -404,6 +404,7 @@ symbols in this file:
 #include "tag_files/files.h"
 #include "custom_edition_cache.h" /* port: custom_edition_level_name */
 #include "view_fov.h" /* port: display.fov, before the projection and culling */
+#include "android_checkpoint.h" /* port: Android's save-and-continue protocol */
 
 #if defined(HALO_WINDOWS) || defined(HALO_ANDROID) || defined(__linux__)
 #define HALO_NATIVE_BUILD_INFO 1
@@ -1504,6 +1505,10 @@ static void main_new_map(
 
 	if (main_globals.allow_persistent_storage)
 		game_state_try_and_load_from_persistent_storage();
+#ifdef HALO_ANDROID
+	/* port: a validated mobile checkpoint needs this map's allocations first. */
+	android_checkpoint_after_new_map();
+#endif
 	ui_widgets_disable_pause_game(30);
 
 	return;
@@ -3461,6 +3466,10 @@ void main_loop(
 	debug_keys_initialize();
 	game_initialize();
 	console_startup();
+#ifdef HALO_ANDROID
+	/* port: Continue overrides init.txt's map only after validating its file. */
+	android_checkpoint_boot_prepare();
+#endif
 	main_setup_connection();
 	main_initialize_time();
 
@@ -3578,6 +3587,10 @@ static boolean main_loop_iteration(
 		telnet_console_process();
 		profile_scope_exit(main_platform_events_section)
 
+#ifdef HALO_ANDROID
+		/* port: the game thread handles the request even with a game menu up. */
+		android_checkpoint_poll(system_milliseconds());
+#endif
 		if (!shell_application_is_paused())
 		{
 			render_frame = TRUE;

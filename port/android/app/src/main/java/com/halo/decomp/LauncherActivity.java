@@ -1,6 +1,8 @@
 package com.halo.decomp;
 
 import android.app.Activity;
+import android.app.ActivityManager;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.graphics.Color;
 import android.net.Uri;
@@ -47,6 +49,14 @@ public class LauncherActivity extends Activity {
     private ProgressBar progress;
     private Button pick;
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private CheckpointStore checkpointStore;
+    private CheckpointSlots checkpointSlots;
+    private boolean checkpointChoiceStarted, checkpointPreparing;
+    private Thread checkpointWorker;
+    private boolean demoRequested;
+    private String demoBootId;
+    private boolean gameMenuRequested;
+    private String gameMenuBootId;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -59,7 +69,10 @@ public class LauncherActivity extends Activity {
         passOnHardwareId();
         passOnInvite(getIntent());
         Updater.moveToVulkanDefault(dataRoot);
-        if (haveData()) {
+        if (haveData() && (hasRunningGame()
+                || (Intent.ACTION_VIEW.equals(getIntent().getAction()) && getIntent().getData() != null)
+                || getIntent().getBooleanExtra("resume-after-graphics", false))) {
+            demoRequested = !hasRunningGame() && getIntent().getBooleanExtra("launch-demo", false);
             startGameAfterDriver();
             return;
         }
@@ -124,12 +137,291 @@ public class LauncherActivity extends Activity {
 
     private boolean gameStarted;
 
-    private void startGame() {
-        if (gameStarted)
+    void startGame() {
+        if (gameStarted || checkpointChoiceStarted || isFinishing() || isDestroyed())
+            return;
+        if (hasRunningGame()) {
+            if (gameMenuRequested) {
+                gameMenuRequested = false;
+                driverStarted = false;
+                gameMenuBlocked();
+            } else {
+                launchGame(null);
+            }
+            return;
+        }
+        checkpointChoiceStarted = true;
+        boolean invite = Intent.ACTION_VIEW.equals(getIntent().getAction()) && getIntent().getData() != null;
+        checkpointWorker = new Thread(() -> {
+            try {
+                DemoLaunch demo = new DemoLaunch(dataRoot, getFilesDir());
+                demo.recover();
+                CheckpointStore store = checkpointStore();
+                // A request abandoned before the engine started must not be replayed on a later launch.
+                store.clearAbandonedRequests();
+                if (demoRequested || gameMenuRequested) {
+                    String id = CheckpointStore.newId();
+                    store.writeBoot(id, false);
+                    if (gameMenuRequested)
+                        demo.prepareMenu(id);
+                    else
+                        demo.prepare(id);
+                    handler.post(() -> {
+                        if (gameMenuRequested)
+                            gameMenuBootId = id;
+                        else
+                            demoBootId = id;
+                        launchGame(null);
+                    });
+                    return;
+                }
+                CheckpointStore.Candidate candidate = invite ? null : store.inspect();
+                java.util.List<CheckpointSlots.Entry> saves = java.util.Collections.emptyList();
+                if (!invite) {
+                    if (candidate.kind == CheckpointStore.Kind.READY || candidate.kind == CheckpointStore.Kind.INCOMPATIBLE)
+                        checkpointSlots().preserveLegacy();
+                    saves = checkpointSlots().list();
+                }
+                java.util.List<CheckpointSlots.Entry> choices = saves;
+                handler.post(() -> {
+                    if (isFinishing() || isDestroyed())
+                        return;
+                    if (candidate == null)
+                        launchGame(null);
+                    else if (!choices.isEmpty())
+                        showSavedGames(choices);
+                    else if (candidate.kind == CheckpointStore.Kind.ABSENT)
+                        launchGame(null);
+                    else
+                        showCheckpointChoice(candidate);
+                });
+            } catch (java.io.IOException e) {
+                if (demoRequested || gameMenuRequested) {
+                    try {
+                        checkpointStore().clearBoot();
+                        new DemoLaunch(dataRoot, getFilesDir()).recover();
+                    } catch (java.io.IOException ignored) { }
+                }
+                handler.post(() -> {
+                    if (isFinishing() || isDestroyed())
+                        return;
+                    if (demoRequested || gameMenuRequested) {
+                        boolean menu = gameMenuRequested;
+                        checkpointChoiceStarted = false;
+                        driverStarted = false;
+                        demoRequested = false;
+                        gameMenuRequested = false;
+                        new AlertDialog.Builder(this).setTitle(menu ? "Menú no disponible" : "Demo no disponible")
+                            .setMessage(menu ? "No se pudo preparar el menú de Halo. Se conservaron tus datos."
+                                : "No se pudo preparar la demo. Comprueba que sus datos estén instalados.")
+                            .setPositiveButton("Aceptar", null).show();
+                    } else {
+                        checkpointLaunchError(null);
+                    }
+                });
+            }
+        }, "checkpoint startup");
+        checkpointWorker.start();
+    }
+
+    void startDemo() {
+        if (gameStarted || checkpointChoiceStarted || driverStarted || isFinishing() || isDestroyed()
+                || DataPackages.isBusy())
+            return;
+        if (hasRunningGame()) {
+            new AlertDialog.Builder(this).setTitle("Hay una partida abierta")
+                .setMessage("Guarda y sal de la partida antes de iniciar la demo.")
+                .setPositiveButton("Volver a la partida", (d, which) -> launchGame(null))
+                .setNegativeButton("Cancelar", null).show();
+            return;
+        }
+        DataPackages.playDemo(this, () -> {
+            if (isFinishing() || isDestroyed())
+                return;
+            gameMenuRequested = false;
+            demoRequested = true;
+            startGameAfterDriver();
+        }, dialog -> dialog.show());
+    }
+
+    void startGameMenu() {
+        if (gameStarted || checkpointChoiceStarted || driverStarted || isFinishing() || isDestroyed()
+                || DataPackages.isBusy() || !haveData())
+            return;
+        if (hasRunningGame()) {
+            gameMenuBlocked();
+            return;
+        }
+        demoRequested = false;
+        gameMenuRequested = true;
+        startGameAfterDriver();
+    }
+
+    private void gameMenuBlocked() {
+        new AlertDialog.Builder(this).setTitle("Hay una partida abierta")
+            .setMessage("Guarda y sal de la partida antes de abrir la configuración interna de Halo.")
+            .setPositiveButton("Aceptar", null).show();
+    }
+
+    private boolean haveDemo() {
+        return dataRoot != null && GameDataPackage.demoAvailable(dataRoot);
+    }
+
+    private CheckpointStore checkpointStore() throws java.io.IOException {
+        if (checkpointStore == null)
+            checkpointStore = new CheckpointStore(dataRoot, name -> getAssets().open(name));
+        return checkpointStore;
+    }
+
+    private CheckpointSlots checkpointSlots() throws java.io.IOException {
+        if (checkpointSlots == null)
+            checkpointSlots = new CheckpointSlots(dataRoot, checkpointStore());
+        return checkpointSlots;
+    }
+
+    void showSavedGames(java.util.List<CheckpointSlots.Entry> saves) {
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Partidas guardadas")
+            .setAdapter(new LauncherSaveAdapter(this, saves), (d, which) -> {
+                CheckpointSlots.Entry entry = saves.get(which);
+                if (entry.candidate.kind == CheckpointStore.Kind.READY) {
+                    prepareCheckpointBoot(entry.candidate, true, entry.id);
+                } else {
+                    AlertDialog unavailable = new AlertDialog.Builder(this).setTitle("Partida no disponible")
+                        .setMessage("El guardado se conserva, pero está dañado o pertenece a otro motor gráfico o versión.")
+                        .setPositiveButton("Volver", (back, button) -> showSavedGames(saves)).show();
+                    unavailable.setOnCancelListener(back -> resetLaunchChoice());
+                }
+            })
+            .setNeutralButton("Nueva partida", (d, which) -> prepareCheckpointBoot(null, false))
+            .setNegativeButton("Volver", (d, which) -> resetLaunchChoice()).create();
+        dialog.setOnCancelListener(d -> resetLaunchChoice());
+        dialog.show();
+        LauncherDialogs.style(dialog);
+    }
+
+    private void resetLaunchChoice() {
+        checkpointChoiceStarted = false;
+        driverStarted = false;
+    }
+
+    boolean hasRunningGame() {
+        ActivityManager manager = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
+        if (manager == null)
+            return false;
+        try {
+            boolean running = false;
+            java.util.List<ActivityManager.RunningAppProcessInfo> processes = manager.getRunningAppProcesses();
+            if (processes != null)
+                for (ActivityManager.RunningAppProcessInfo process : processes)
+                    running |= process.uid == android.os.Process.myUid()
+                        && process.processName.equals(getPackageName() + ":game");
+            if (running)
+                for (ActivityManager.AppTask task : manager.getAppTasks()) {
+                    ActivityManager.RecentTaskInfo info = task.getTaskInfo();
+                    android.content.ComponentName component = info.baseIntent.getComponent();
+                    if (info.numActivities > 0 && component != null
+                            && component.getClassName().equals(HaloActivity.class.getName()))
+                        return true;
+                }
+        } catch (SecurityException ignored) { }
+        return false;
+    }
+
+    void showCheckpointChoice(CheckpointStore.Candidate candidate) {
+        if (isFinishing() || isDestroyed())
+            return;
+        String message = candidate.kind == CheckpointStore.Kind.READY
+            ? "Puedes continuar desde el último punto de control. Nueva partida conserva ese guardado hasta que guardes otro."
+            : candidate.kind == CheckpointStore.Kind.INCOMPATIBLE
+                ? "El guardado pertenece a otra versión del juego. Se conserva, pero esta APK no puede continuarlo."
+                : "El archivo de guardado está incompleto o dañado. Se conserva y no se cargará.";
+        AlertDialog dialog = new AlertDialog.Builder(this)
+            .setTitle("Partida guardada")
+            .setMessage(message)
+            .setPositiveButton("Continuar", (d, which) -> prepareCheckpointBoot(candidate, true))
+            .setNeutralButton("Nueva partida", (d, which) -> prepareCheckpointBoot(candidate, false))
+            .setNegativeButton("Cancelar", (d, which) -> finish())
+            .create();
+        dialog.setCanceledOnTouchOutside(false);
+        dialog.setOnCancelListener(d -> finish());
+        dialog.show();
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(candidate.kind == CheckpointStore.Kind.READY);
+    }
+
+    private void prepareCheckpointBoot(CheckpointStore.Candidate candidate, boolean resume) {
+        prepareCheckpointBoot(candidate, resume, null);
+    }
+
+    private void prepareCheckpointBoot(CheckpointStore.Candidate candidate, boolean resume, String slotId) {
+        if (checkpointPreparing || gameStarted || isFinishing() || isDestroyed())
+            return;
+        checkpointPreparing = true;
+        AlertDialog preparing = new AlertDialog.Builder(this)
+            .setMessage("Preparando la partida…").setCancelable(false).create();
+        preparing.show();
+        String id = CheckpointStore.newId();
+        checkpointWorker = new Thread(() -> {
+            try {
+                if (slotId != null)
+                    checkpointSlots().activate(slotId);
+                checkpointStore().writeBoot(id, resume);
+                handler.post(() -> {
+                    if (isFinishing() || isDestroyed())
+                        return;
+                    preparing.dismiss();
+                    launchGame(resume ? id : null);
+                });
+            } catch (java.io.IOException e) {
+                handler.post(() -> {
+                    preparing.dismiss();
+                    if (isFinishing() || isDestroyed())
+                        return;
+                    checkpointPreparing = false;
+                    if (slotId == null) {
+                        checkpointLaunchError(candidate);
+                    } else {
+                        resetLaunchChoice();
+                        new AlertDialog.Builder(this).setTitle("No se pudo abrir la partida")
+                            .setMessage("Tus partidas se conservan. Comprueba el espacio disponible y vuelve a intentarlo.")
+                            .setPositiveButton("Aceptar", null).show();
+                    }
+                });
+            }
+        }, "checkpoint boot request");
+        checkpointWorker.start();
+    }
+
+    private void checkpointLaunchError(CheckpointStore.Candidate candidate) {
+        if (isFinishing() || isDestroyed())
+            return;
+        AlertDialog.Builder dialog = new AlertDialog.Builder(this).setTitle("Guardado no disponible")
+            .setMessage("No se pudo preparar la partida. Tu archivo guardado se conserva.")
+            .setNegativeButton("Salir", (d, which) -> finish());
+        if (candidate != null)
+            dialog.setPositiveButton("Volver", (d, which) -> showCheckpointChoice(candidate));
+        dialog.show().setOnCancelListener(d -> finish());
+    }
+
+    private void launchGame(String bootId) {
+        if (gameStarted || isFinishing() || isDestroyed())
             return;
         gameStarted = true;
-        startActivity(new Intent(this, HaloActivity.class));
+        Intent game = new Intent(this, HaloActivity.class);
+        if (bootId != null)
+            game.putExtra(HaloActivity.CHECKPOINT_BOOT_ID, bootId);
+        if (demoBootId != null)
+            game.putExtra(HaloActivity.DEMO_BOOT_ID, demoBootId);
+        if (gameMenuBootId != null)
+            game.putExtra(HaloActivity.GAME_MENU_BOOT_ID, gameMenuBootId);
+        startActivity(game);
         finish();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (checkpointWorker != null)
+            checkpointWorker.interrupt();
+        super.onDestroy();
     }
 
     /* ---------- the Vulkan driver, before the game */
@@ -224,74 +516,46 @@ public class LauncherActivity extends Activity {
     }
 
     private void buildInterface() {
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setGravity(Gravity.CENTER);
-        layout.setPadding(dp(48), dp(24), dp(48), dp(24));
-        layout.setBackgroundColor(Color.rgb(12, 16, 20));
-
-        TextView title = new TextView(this);
-        title.setText("Halo needs its game data");
-        title.setTextColor(Color.WHITE);
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 24);
-        title.setGravity(Gravity.CENTER);
-        layout.addView(title);
-
-        TextView message = new TextView(this);
-        message.setText("Choose an Xbox disc image of Halo: Combat Evolved (an .iso or .xiso file, any "
-            + "version) on this device. Its maps folder is copied into the app's storage (about 1.8 GB), "
-            + "and you can delete the image afterwards.\n\n"
-            + "You can also copy a maps folder from a computer:\n"
-            + "adb push <folder with maps>/. " + (dataRoot != null ? dataRoot.getAbsolutePath() : "") + "/");
-        message.setTextColor(Color.rgb(200, 205, 210));
-        message.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        message.setGravity(Gravity.CENTER);
-        message.setPadding(0, dp(16), 0, dp(16));
-        layout.addView(message);
-
-        pick = new Button(this);
-        pick.setText("Choose disc image");
-        pick.setOnClickListener(v -> {
-            // (disc images have no MIME type of their own: any file, checked
-            // when it is read)
+        LauncherScreen screen = new LauncherScreen(this, haveData(), haveDemo(), () -> {
+            if (DataPackages.isBusy())
+                return;
+            if (haveData())
+                startGameAfterDriver();
+            else
+                DataPackages.show(this, this::buildInterface, dialog -> dialog.show());
+        }, this::startDemo, () -> {
+            if (DataPackages.isBusy())
+                return;
             Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
             intent.addCategory(Intent.CATEGORY_OPENABLE);
             intent.setType("*/*");
             startActivityForResult(intent, PICK_IMAGE);
-        });
-        layout.addView(pick, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT));
-
-        progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        progress.setMax(1000);
-        progress.setVisibility(View.GONE);
-        LinearLayout.LayoutParams progressLayout = new LinearLayout.LayoutParams(dp(480),
-            LinearLayout.LayoutParams.WRAP_CONTENT);
-        progressLayout.topMargin = dp(16);
-        layout.addView(progress, progressLayout);
-
-        status = new TextView(this);
-        status.setTextColor(Color.rgb(160, 200, 160));
-        status.setGravity(Gravity.CENTER);
-        status.setPadding(0, dp(8), 0, 0);
-        layout.addView(status);
-
-        setContentView(layout);
-        pick.requestFocus();
+        }, () -> {
+            if (!DataPackages.isBusy())
+                DataPackages.show(this, this::buildInterface, dialog -> dialog.show());
+        }, () -> ControlsUpdater.show(this, dialog -> dialog.show()));
+        screen.addGameMenuAction(haveData(), this::startGameMenu);
+        pick = screen.pick;
+        progress = screen.progress;
+        status = screen.status;
+        setContentView(screen);
+        (screen.play.isEnabled() ? screen.play : screen.demo).requestFocus();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
         // data pushed with adb while this screen was open
-        if (pick != null && pick.isEnabled() && haveData())
-            startGameAfterDriver();
+        if (pick != null && pick.isEnabled() && !DataPackages.isBusy() && haveData())
+            buildInterface();
     }
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode != PICK_IMAGE || resultCode != RESULT_OK || data == null || data.getData() == null)
+            return;
+        if (DataPackages.isBusy())
             return;
         Uri image = data.getData();
         pick.setEnabled(false);

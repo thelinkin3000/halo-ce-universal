@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="GameMenuTheme" parent="@android:style/Theme.Material.Dialog.Alert">
+        <item name="android:colorAccent">#a0e1f5</item>
+        <item name="android:colorControlNormal">#a4b9c8</item>
+        <item name="android:colorControlActivated">#a0e1f5</item>
+        <item name="android:colorControlHighlight">#3368cbe8</item>
+        <item name="android:textColorPrimary">#edf5fb</item>
+        <item name="android:textColorSecondary">#a4b9c8</item>
+        <item name="android:textColorHint">#a4b9c8</item>
+        <item name="android:colorBackground">#101b27</item>
+        <item name="android:colorBackgroundFloating">#152633</item>
+        <item name="android:windowBackground">#101b27</item>
+        <item name="android:fontFamily">sans-serif</item>
+    </style>
+</resources>

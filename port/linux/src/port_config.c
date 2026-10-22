@@ -153,6 +153,10 @@ static const struct config_setting config_settings[] =
 	{ "display.screen_width", _config_integer, "0", "HALO_SCREEN_WIDTH", _environment_value, _platform_android,
 		"Columns of the 480-line picture: 0 for the display's shape, 640 for the\n"
 		"Xbox's 4:3." },
+	{ "display.render_scale", _config_real, "1.0", "HALO_RENDER_SCALE", _environment_value, _platform_android,
+		"OpenGL ES: multiply resolution_limit's pixels by 0.5 to 1.0.\n"
+		"0.75 uses 75% of each dimension; 1.0 keeps the selected resolution.\n"
+		"Changes between frames; the game's coordinates and field of view stay." },
 #ifndef HALO_SWITCH
 	/* read by the Android host (port/android/host/host_vk_driver.c) */
 	{ "display.vk_driver", _config_string, "\"\"", "HALO_VK_DRIVER", _environment_value, _platform_android,
@@ -171,9 +175,11 @@ static const struct config_setting config_settings[] =
 #endif
 	{ "display.vsync", _config_boolean, "true", "HALO_NO_VSYNC", _environment_set_is_false, _platform_all,
 		"Wait for the display between frames; false draws as fast as possible." },
-	{ "display.max_fps", _config_integer, "0", "HALO_MAX_FPS", _environment_value, _platform_desktop,
+	{ "display.max_fps", _config_integer, "0", "HALO_MAX_FPS", _environment_value, _platform_desktop | _platform_android,
 		"With vsync off, the most frames a second: 0 for twice the display's\n"
-		"refresh rate, -1 for no limit (which can hang some Intel graphics)." },
+		"refresh rate, -1 for no limit (which can hang some Intel graphics).\n"
+		"Android OpenGL ES: 30 or 60 caps frames even with vsync on; 0 (the\n"
+		"default), or any other value, leaves the Android frame rate uncapped." },
 	{ "display.anti_aliasing", _config_string, "\"off\"", "HALO_ANTI_ALIASING", _environment_value, _platform_all,
 		"Smoothing of jagged edges, which the Xbox did not have: \"off\"; \"fxaa\"\n"
 		"or \"smaa\" smooth the 3D view once it is drawn (the HUD and menus stay\n"

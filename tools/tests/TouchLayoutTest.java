@@ -62,7 +62,7 @@ public final class TouchLayoutTest {
         check(wide.add(4) == 4 && wide.shown(4), "Add must restore a hidden button first");
         wide.setShown(TouchLayout.LEFT, false);
         check(wide.add(TouchLayout.LEFT) == TouchLayout.LEFT, "Hidden move stick must be restorable");
-        reject(exported.replace("version=3", "version=9"));
+        reject(exported.replace("version=4", "version=9"));
         reject(exported.replace("control.18.type=4", "control.18.type=16"));
         reject(exported.replace("control.18.x=240.0", "control.18.x=NaN"));
         reject(exported.replace("count=19", "count=10000"));
@@ -86,7 +86,7 @@ public final class TouchLayoutTest {
         reject(sizedText.replace("control.18.size=1.6", "control.18.size=3.0"));
         reject(sizedText.replace("rumble=false", "rumble=invalid"));
         reject(sizedText.replace("gyroscope=true", "gyroscope=invalid"));
-        String legacy = sizedText.replace("version=3", "version=1").replaceAll("(?m)^.*\\.size=.*\\R", "")
+        String legacy = sizedText.replace("version=4", "version=1").replaceAll("(?m)^.*\\.size=.*\\R", "")
             .replaceAll("(?m)^(rumble|gyroscope|opacity|floating-stick)=.*\\R", "");
         TouchLayout.Configuration old = TouchLayout.importConfiguration(legacy);
         check(old.layout.sizeScale(copy) == 1 && old.layout.rumbleEnabled && !old.layout.gyroscopeEnabled,
@@ -102,7 +102,7 @@ public final class TouchLayoutTest {
               "The floating stick must survive export/import");
         sized.layout.floatingStick = false;
         reject(translucent.replace("floating-stick=false", "floating-stick=maybe"));
-        String version2 = translucent.replace("version=3", "version=2").replaceAll("(?m)^(opacity|floating-stick)=.*\\R", "");
+        String version2 = translucent.replace("version=4", "version=2").replaceAll("(?m)^(opacity|floating-stick)=.*\\R", "");
         check(TouchLayout.importConfiguration(version2).layout.opacity == 1f
               && !TouchLayout.importConfiguration(version2).layout.floatingStick,
               "Version 2 layouts load fully opaque, with the stick in its place");
@@ -113,6 +113,25 @@ public final class TouchLayoutTest {
         } catch (IllegalArgumentException expected) {
             // refused
         }
+        // Version 4 keeps each button's opacity independent and still reads version 3.
+        TouchLayout perButton = new TouchLayout();
+        perButton.setOpacity(0.6f);
+        perButton.setOpacity(4, 0.1f);
+        check(perButton.opacity(4) == 0.1f && perButton.opacity(5) == 0.6f,
+              "A button's opacity must not change the other buttons");
+        check(perButton.opacity(perButton.duplicate(4)) == 0.1f, "Copies inherit their source opacity");
+        String perButtonText = perButton.exportConfiguration(1f);
+        check(TouchLayout.importConfiguration(perButtonText).layout.opacity(4) == 0.1f,
+              "Individual opacity must survive version 4 export/import");
+        for (String invalid : new String[] {"NaN", "Infinity", "-Infinity", "0.09", "1.01"})
+            reject(perButtonText.replace("control.4.opacity=0.1", "control.4.opacity=" + invalid));
+        reject(perButtonText.replaceAll("(?m)^control\\.4\\.opacity=.*\\R", ""));
+        String version3 = perButtonText.replace("version=4", "version=3")
+            .replaceAll("(?m)^control\\.\\d+\\.opacity=.*\\R", "");
+        check(TouchLayout.importConfiguration(version3).layout.opacity(4) == 0.6f,
+              "Version 3 buttons must inherit the global opacity");
+        perButton.resetDefaults();
+        check(perButton.opacity(4) == 0.6f, "Reset must restore global opacity inheritance");
         // A finger-sized minimum radius enlarges small buttons and keeps them on the display.
         TouchLayout fingers = new TouchLayout();
         fingers.setMinimumRadius(30);

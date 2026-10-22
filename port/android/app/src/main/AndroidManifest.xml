@@ -84,6 +84,12 @@
                 android:value="game" />
         </activity>
 
+        <!-- restart the game after applying its graphics profile -->
+        <activity
+            android:name=".ProfileRestartActivity"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape" />
+
         <!-- the downloaded new version, for the package installer (Updater) -->
         <provider
             android:name=".UpdateProvider"

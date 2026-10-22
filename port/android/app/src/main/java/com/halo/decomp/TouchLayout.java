@@ -11,7 +11,7 @@ import java.util.Properties;
  * size and whether it shows, with the settings that go with them, in the
  * overlay's logical units. Places are kept for the display the layout is
  * on and saved on a 960 x 540 grid, so a layout moves between displays of
- * other shapes. A layout file is Java properties text (version 3; 1 and 2
+ * other shapes. A layout file is Java properties text (version 4; 1, 2 and 3
  * are still read).
  */
 final class TouchLayout {
@@ -23,9 +23,13 @@ final class TouchLayout {
     static final float MIN_SIZE = 0.5f;
     static final float MAX_SIZE = 2f;
     static final float MIN_OPACITY = 0.2f;
+    static final float MIN_CONTROL_OPACITY = 0.1f;
     static final float MAX_OPACITY = 1f;
     static final float MIN_SENSITIVITY = 0.25f;
     static final float MAX_SENSITIVITY = 4f;
+    static final float DEFAULT_HORIZONTAL_SENSITIVITY = 2.25f;
+    static final float MIN_HORIZONTAL_SENSITIVITY = 1f;
+    static final float MAX_HORIZONTAL_SENSITIVITY = 4f;
     /**
      * the largest minimum radius: a finger's width is capped here on a small,
      * dense display, where the D-pad's buttons (69 apart) would overlap
@@ -35,12 +39,12 @@ final class TouchLayout {
     /** the saved grid */
     private static final float GRID_WIDTH = 960;
     private static final float GRID_HEIGHT = 540;
-    private static final int VERSION = 3;
+    private static final int VERSION = 4;
     private static final int MAX_FILE_LENGTH = 65536;
 
     /** each kind's default place on the grid, and its radius */
     private static final float[][] DEFAULTS = {
-        {856, 447}, {913, 377}, {794, 377}, {850, 312}, {915, 239}, {802, 239},
+        {913, 377}, {856, 447}, {794, 377}, {850, 312}, {915, 239}, {802, 239},
         {236, 449}, {691, 449}, {360, 490}, {438, 490}, {570, 36}, {390, 36},
         {100, 237}, {100, 335}, {51, 286}, {149, 286}, {115, 440}, {255, 239}
     };
@@ -54,6 +58,7 @@ final class TouchLayout {
         float y;
         boolean shown = true;
         float size = 1f;
+        float opacity = Float.NaN;
 
         Control(int type, float x, float y) {
             this.type = type;
@@ -66,10 +71,16 @@ final class TouchLayout {
     static final class Configuration {
         final TouchLayout layout;
         final float sensitivity;
+        final float horizontalSensitivity;
 
         Configuration(TouchLayout layout, float sensitivity) {
+            this(layout, sensitivity, DEFAULT_HORIZONTAL_SENSITIVITY);
+        }
+
+        Configuration(TouchLayout layout, float sensitivity, float horizontalSensitivity) {
             this.layout = layout;
             this.sensitivity = sensitivity;
+            this.horizontalSensitivity = horizontalSensitivity;
         }
     }
 
@@ -78,6 +89,8 @@ final class TouchLayout {
     private float height = GRID_HEIGHT;
     /** the smallest radius a control is drawn and touched at, in logical units */
     private float minimumRadius;
+    /** Display-only margins; saved positions keep the author's full-screen grid. */
+    private float safeLeft, safeTop, safeRight, safeBottom;
 
     boolean rumbleEnabled = true;
     /**
@@ -127,19 +140,49 @@ final class TouchLayout {
     }
 
     float x(int control) {
-        return controls.get(control).x;
+        float usable = Math.max(0, width - safeLeft - safeRight);
+        return constrainX(safeLeft + controls.get(control).x * usable / width, radius(control));
     }
 
     float y(int control) {
-        return controls.get(control).y;
+        return constrainY(controls.get(control).y, radius(control));
     }
 
     float savedX(int control) {
-        return x(control) * GRID_WIDTH / width;
+        return controls.get(control).x * GRID_WIDTH / width;
     }
 
     float savedY(int control) {
-        return y(control) * GRID_HEIGHT / height;
+        return controls.get(control).y * GRID_HEIGHT / height;
+    }
+
+    /** Exchange the base jump and melee positions without changing either control's settings. */
+    void swapJumpMeleePositions() {
+        Control jump = controls.get(0), melee = controls.get(1);
+        float x = jump.x, y = jump.y;
+        jump.x = melee.x;
+        jump.y = melee.y;
+        melee.x = x;
+        melee.y = y;
+    }
+
+    void safeInsets(float left, float top, float right, float bottom) {
+        safeLeft = Math.max(0, left);
+        safeTop = Math.max(0, top);
+        safeRight = Math.max(0, right);
+        safeBottom = Math.max(0, bottom);
+    }
+
+    float constrainX(float x, float radius) {
+        return constrain(x, safeLeft + radius, width - safeRight - radius);
+    }
+
+    float constrainY(float y, float radius) {
+        return constrain(y, safeTop + radius, height - safeBottom - radius);
+    }
+
+    private static float constrain(float value, float low, float high) {
+        return low <= high ? Math.max(low, Math.min(high, value)) : (low + high) / 2;
     }
 
     float radius(int control) {
@@ -171,6 +214,17 @@ final class TouchLayout {
         this.opacity = opacity;
     }
 
+    float opacity(int control) {
+        float value = controls.get(control).opacity;
+        return Float.isNaN(value) ? opacity : value;
+    }
+
+    void setOpacity(int control, float opacity) {
+        if (!validControlOpacity(opacity))
+            throw new IllegalArgumentException("Button opacity must be between 10% and 100%");
+        controls.get(control).opacity = opacity;
+    }
+
     /** the default controls, at their default places, sizes and visibility */
     void resetDefaults() {
         controls.clear();
@@ -186,6 +240,7 @@ final class TouchLayout {
         float offset = radius(source) * 2 + 12;
         Control added = new Control(type(source), x(source) + offset, y(source));
         added.size = sizeScale(source);
+        added.opacity = controls.get(source).opacity;
         controls.add(added);
         int index = size() - 1;
         // where there is no room to the right, the copy goes to the left
@@ -213,8 +268,10 @@ final class TouchLayout {
         if (!Float.isFinite(x) || !Float.isFinite(y))
             return;
         float radius = radius(control);
-        controls.get(control).x = Math.max(radius, Math.min(width - radius, x));
-        controls.get(control).y = Math.max(radius, Math.min(height - radius, y));
+        float usable = width - safeLeft - safeRight;
+        controls.get(control).x = usable > 0
+            ? (constrainX(x, radius) - safeLeft) * width / usable : width / 2;
+        controls.get(control).y = constrainY(y, radius);
     }
 
     /** puts a control at a saved place on the grid, if it is a valid one */
@@ -226,13 +283,21 @@ final class TouchLayout {
     }
 
     private void keepAllInside() {
-        for (int i = 0; i < size(); i++)
-            move(i, x(i), y(i));
+        for (int i = 0; i < size(); i++) {
+            Control control = controls.get(i);
+            float radius = radius(i);
+            control.x = Math.max(radius, Math.min(width - radius, control.x));
+            control.y = Math.max(radius, Math.min(height - radius, control.y));
+        }
     }
 
     /** the layout as a layout file's text, with the look sensitivity */
     String exportConfiguration(float sensitivity) {
-        if (!validSensitivity(sensitivity))
+        return exportConfiguration(sensitivity, DEFAULT_HORIZONTAL_SENSITIVITY);
+    }
+
+    String exportConfiguration(float sensitivity, float horizontalSensitivity) {
+        if (!validSensitivity(sensitivity) || !validHorizontalSensitivity(horizontalSensitivity))
             throw new IllegalArgumentException("Invalid sensitivity");
         Properties values = new Properties();
         values.setProperty("format", "halo-touch-layout");
@@ -243,6 +308,7 @@ final class TouchLayout {
         values.setProperty("floating-stick", Boolean.toString(floatingStick));
         values.setProperty("count", Integer.toString(size()));
         values.setProperty("sensitivity", Float.toString(sensitivity));
+        values.setProperty("horizontal-sensitivity", Float.toString(horizontalSensitivity));
         for (int i = 0; i < size(); i++) {
             String key = "control." + i + ".";
             values.setProperty(key + "type", Integer.toString(type(i)));
@@ -250,6 +316,7 @@ final class TouchLayout {
             values.setProperty(key + "y", Float.toString(savedY(i)));
             values.setProperty(key + "visible", Boolean.toString(shown(i)));
             values.setProperty(key + "size", Float.toString(sizeScale(i)));
+            values.setProperty(key + "opacity", Float.toString(opacity(i)));
         }
         StringWriter text = new StringWriter();
         try {
@@ -270,7 +337,10 @@ final class TouchLayout {
             int version = readVersion(values);
             int count = Integer.parseInt(values.getProperty("count"));
             float sensitivity = Float.parseFloat(values.getProperty("sensitivity"));
-            if (count < BASE_COUNT || count > MAX_CONTROLS || !validSensitivity(sensitivity))
+            float horizontalSensitivity = Float.parseFloat(values.getProperty("horizontal-sensitivity",
+                Float.toString(DEFAULT_HORIZONTAL_SENSITIVITY)));
+            if (count < BASE_COUNT || count > MAX_CONTROLS || !validSensitivity(sensitivity)
+                    || !validHorizontalSensitivity(horizontalSensitivity))
                 throw new IllegalArgumentException("Invalid layout settings");
             TouchLayout layout = new TouchLayout();
             layout.controls.clear();
@@ -287,7 +357,7 @@ final class TouchLayout {
             }
             for (int i = 0; i < count; i++)
                 layout.controls.add(readControl(values, i, version));
-            return new Configuration(layout, sensitivity);
+            return new Configuration(layout, sensitivity, horizontalSensitivity);
         } catch (IOException | NullPointerException e) {
             throw new IllegalArgumentException("Incomplete layout file", e);
         }
@@ -320,6 +390,12 @@ final class TouchLayout {
         Control control = new Control(type, x, y);
         control.shown = Boolean.parseBoolean(shown);
         control.size = size;
+        if (version >= 4) {
+            float opacity = Float.parseFloat(values.getProperty(key + "opacity"));
+            if (!validControlOpacity(opacity))
+                throw new IllegalArgumentException("Invalid control opacity in layout file");
+            control.opacity = opacity;
+        }
         return control;
     }
 
@@ -334,7 +410,15 @@ final class TouchLayout {
         return Float.isFinite(value) && value >= MIN_SENSITIVITY && value <= MAX_SENSITIVITY;
     }
 
+    static boolean validHorizontalSensitivity(float value) {
+        return Float.isFinite(value) && value >= MIN_HORIZONTAL_SENSITIVITY && value <= MAX_HORIZONTAL_SENSITIVITY;
+    }
+
     static boolean validOpacity(float value) {
         return Float.isFinite(value) && value >= MIN_OPACITY && value <= MAX_OPACITY;
+    }
+
+    static boolean validControlOpacity(float value) {
+        return Float.isFinite(value) && value >= MIN_CONTROL_OPACITY && value <= MAX_OPACITY;
     }
 }

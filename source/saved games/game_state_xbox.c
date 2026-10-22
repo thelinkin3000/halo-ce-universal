@@ -105,6 +105,7 @@ symbols in this file:
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include "android_checkpoint.h" /* port: Android's save-and-continue protocol */
 
 /* ---------- constants */
 
@@ -468,6 +469,30 @@ boolean game_state_read_from_file(
 
 	return result;
 }
+
+#ifdef HALO_ANDROID
+/* port: save-and-quit keeps the last completed checkpoint, rather than
+reverting the running map or capturing an unsafe moment in the live state. */
+int android_checkpoint_snapshot(void *image, long size)
+{
+	unsigned long bytes_read;
+
+	if (!image || !xbox_game_state_globals.file_open ||
+		!xbox_game_state_globals.file_valid_for_read ||
+		size != xbox_game_state_globals.buffer_size)
+		return FALSE;
+	game_state_writer_wait();
+	if (game_state_writer.snapshot_valid)
+	{
+		memcpy(image, game_state_writer.snapshot, size);
+		return TRUE;
+	}
+	return SetFilePointer(xbox_game_state_globals.handle, 0, NULL, FILE_BEGIN) !=
+			INVALID_SET_FILE_POINTER &&
+		ReadFile(xbox_game_state_globals.handle, image, size, &bytes_read, NULL) &&
+		bytes_read == (unsigned long)size;
+}
+#endif
 
 boolean game_state_write_core(
 	const char *name,

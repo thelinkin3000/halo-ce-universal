@@ -124,6 +124,12 @@ symbols in this file:
 #include "lruv_cache.h"
 #include "memory_pool.h"
 #include "cluster_partitions.h"
+#include "android_checkpoint.h" /* port: Android's save-and-continue protocol */
+#ifdef HALO_ANDROID
+#include "scenario/scenario_definitions.h"
+#include "cutscene/cinematics.h"
+#include <unistd.h>
+#endif
 /* port: object_bounds_cache.c's */
 void object_bounds_cache_invalidate(void);
 
@@ -837,7 +843,9 @@ static boolean game_state_image_lruv_cache_valid(
 	return game_state_image_data_valid(image, blocks_live, allocation->maximum_count, sizeof(struct lruv_cache_block));
 }
 
-boolean game_state_image_accept(
+/* port: Android validates the complete image before any before-load callback
+can change the running world's sound or cluster references. */
+static boolean game_state_image_valid(
 	void *image,
 	long size)
 {
@@ -869,6 +877,15 @@ boolean game_state_image_accept(
 		if (!valid)
 			return FALSE;
 	}
+	return TRUE;
+}
+
+boolean game_state_image_accept(
+	void *image,
+	long size)
+{
+	if (!game_state_image_valid(image, size))
+		return FALSE;
 	csmemcpy(game_state_globals.base_address, image, size);
 	error(_error_silent, "the saved game is taken");
 
@@ -1071,5 +1088,375 @@ void game_state_initialize(
 
 	return;
 }
+
+#ifdef HALO_ANDROID
+/* port: one mobile checkpoint independent of the shell's player profile.
+The 512-byte envelope is shared with Android; its integers are little-endian
+and its payload CRC32 uses the IEEE final complement, like java.util.zip. */
+#define ANDROID_CHECKPOINT_FILE "z:\\mobile-checkpoint.bin"
+#define ANDROID_CHECKPOINT_TEMP "z:\\mobile-checkpoint.bin.tmp"
+#define ANDROID_CHECKPOINT_REQUEST "z:\\mobile-checkpoint.request"
+#define ANDROID_CHECKPOINT_BOOT "z:\\mobile-checkpoint.boot"
+#define ANDROID_CHECKPOINT_STATUS "z:\\mobile-checkpoint.status"
+#define ANDROID_CHECKPOINT_STATUS_TEMP "z:\\mobile-checkpoint.status.tmp"
+#define ANDROID_CHECKPOINT_HEADER_SIZE 512
+
+struct android_checkpoint_request
+{
+	char id[33];
+	char operation[9];
+	char fingerprint[2][65];
+};
+
+static void *android_checkpoint_pending_image;
+static char android_checkpoint_pending_id[33];
+
+static unsigned long android_checkpoint_get32(byte const *bytes)
+{
+	return (unsigned long)bytes[0] | ((unsigned long)bytes[1] << 8) |
+		((unsigned long)bytes[2] << 16) | ((unsigned long)bytes[3] << 24);
+}
+
+static void android_checkpoint_put32(byte *bytes, unsigned long value)
+{
+	bytes[0] = (byte)value;
+	bytes[1] = (byte)(value >> 8);
+	bytes[2] = (byte)(value >> 16);
+	bytes[3] = (byte)(value >> 24);
+}
+
+static boolean android_checkpoint_hex(char const *text, long length)
+{
+	long index;
+
+	if ((long)strlen(text) != length)
+		return FALSE;
+	for (index = 0; index < length; index++)
+	{
+		char c = text[index];
+
+		if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+			return FALSE;
+	}
+	return TRUE;
+}
+
+/* Only a complete, single line can be consumed. Android publishes it with
+rename so that a partially written request cannot start a save. */
+static boolean android_checkpoint_request_read(char const *path,
+	struct android_checkpoint_request *request)
+{
+	FILE *file;
+	char line[256], extra[2];
+	boolean valid = FALSE;
+
+	file = fopen(path, "rb");
+	if (!file)
+		return FALSE;
+	memset(request, 0, sizeof(*request));
+	if (fgets(line, sizeof(line), file) && strchr(line, '\n') &&
+		fgetc(file) == EOF && !ferror(file) &&
+		sscanf(line, "%32s %8s %64s %64s %1s", request->id, request->operation,
+			request->fingerprint[0], request->fingerprint[1], extra) == 4 &&
+		android_checkpoint_hex(request->id, 32) &&
+		android_checkpoint_hex(request->fingerprint[0], 64) &&
+		android_checkpoint_hex(request->fingerprint[1], 64))
+	{
+		valid = TRUE;
+	}
+	if (fclose(file))
+		valid = FALSE;
+	if (valid && remove(path))
+		valid = FALSE;
+	return valid;
+}
+
+static boolean android_checkpoint_status(char const *id, char const *status)
+{
+	FILE *file;
+	boolean success;
+
+	file = fopen(ANDROID_CHECKPOINT_STATUS_TEMP, "wb");
+	if (!file)
+		return FALSE;
+	success = fprintf(file, "%s\n%s\n", id, status) > 0;
+	if (fflush(file) || fsync(fileno(file)))
+		success = FALSE;
+	if (fclose(file))
+		success = FALSE;
+	if (success && rename(ANDROID_CHECKPOINT_STATUS_TEMP, ANDROID_CHECKPOINT_STATUS))
+		success = FALSE;
+	if (!success)
+		remove(ANDROID_CHECKPOINT_STATUS_TEMP);
+	return success;
+}
+
+static boolean android_checkpoint_map_valid(char const *map)
+{
+	long index;
+
+	if (!memchr(map, 0, 256) ||
+		(strncmp(map, "levels\\", 7) && strncmp(map, "custom_maps\\", 12)))
+		return FALSE;
+	for (index = 0; map[index]; index++)
+	{
+		char c = map[index];
+
+		if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '_' || c == '-' || c == '\\'))
+			return FALSE;
+	}
+	return index > 7 && map[index - 1] != '\\';
+}
+
+static unsigned long android_checkpoint_crc(void const *image)
+{
+	unsigned long checksum;
+
+	crc_new(&checksum);
+	crc_checksum_buffer(&checksum, image, GAME_STATE_SIZE);
+	return checksum ^ 0xffffffffUL;
+}
+
+static char const *android_checkpoint_write(struct android_checkpoint_request const *request)
+{
+	struct game_state_header *header;
+	byte envelope[ANDROID_CHECKPOINT_HEADER_SIZE];
+	void *image;
+	FILE *file;
+	boolean success;
+	int renderer = android_checkpoint_renderer();
+
+	if (!game_in_progress() || game_connection() != _game_connection_local ||
+		player_spawn_count != 1 || !global_scenario ||
+		global_scenario->type != _scenario_type_solo || cinematic_in_progress())
+		return "unsupported";
+	if (!game_state_globals.saved_game_valid)
+		return "no_checkpoint";
+	image = malloc(GAME_STATE_SIZE);
+	if (!image)
+		return "io_error";
+	if (!android_checkpoint_snapshot(image, GAME_STATE_SIZE))
+	{
+		free(image);
+		return "io_error";
+	}
+	header = image;
+	if (!android_checkpoint_map_valid(header->map_name) ||
+		!game_state_header_valid(header, FALSE) || !game_state_image_valid(image, GAME_STATE_SIZE) ||
+		header->difficulty < 0 || header->difficulty > 3)
+	{
+		free(image);
+		return "unsupported";
+	}
+	memset(envelope, 0, sizeof(envelope));
+	memcpy(envelope, "OCESAVE1", 8);
+	android_checkpoint_put32(envelope + 8, 1);
+	android_checkpoint_put32(envelope + 12, sizeof(envelope));
+	android_checkpoint_put32(envelope + 16, GAME_STATE_SIZE);
+	android_checkpoint_put32(envelope + 20, android_checkpoint_crc(image));
+	android_checkpoint_put32(envelope + 24, header->difficulty);
+	android_checkpoint_put32(envelope + 28, renderer);
+	memcpy(envelope + 32, request->fingerprint[renderer], 64);
+	memcpy(envelope + 96, header->map_name, strlen(header->map_name));
+	file = fopen(ANDROID_CHECKPOINT_TEMP, "wb");
+	if (!file)
+	{
+		free(image);
+		return "io_error";
+	}
+	success = fwrite(envelope, 1, sizeof(envelope), file) == sizeof(envelope) &&
+		fwrite(image, 1, GAME_STATE_SIZE, file) == GAME_STATE_SIZE;
+	if (fflush(file) || fsync(fileno(file)))
+		success = FALSE;
+	if (fclose(file))
+		success = FALSE;
+	if (success && rename(ANDROID_CHECKPOINT_TEMP, ANDROID_CHECKPOINT_FILE))
+		success = FALSE;
+	if (!success)
+		remove(ANDROID_CHECKPOINT_TEMP);
+	free(image);
+	return success ? "saved" : "io_error";
+}
+
+/* The container and CRC are checked before choosing a map. Pointer/layout
+and allocation checks follow only once that map has been initialized. */
+static char const *android_checkpoint_read_close(FILE *file, char const *result)
+{
+	return fclose(file) ? "io_error" : result;
+}
+
+static char const *android_checkpoint_read(struct android_checkpoint_request const *request,
+	void **image_out)
+{
+	byte envelope[ANDROID_CHECKPOINT_HEADER_SIZE];
+	char fingerprint[65];
+	struct game_state_header *header;
+	void *image;
+	FILE *file;
+	long index;
+	char const *result = "corrupt";
+	int renderer = android_checkpoint_renderer();
+
+	*image_out = NULL;
+	file = fopen(ANDROID_CHECKPOINT_FILE, "rb");
+	if (!file)
+		return "io_error";
+	if (fread(envelope, 1, sizeof(envelope), file) != sizeof(envelope))
+	{
+		if (ferror(file))
+			result = "io_error";
+		return android_checkpoint_read_close(file, result);
+	}
+	if (memcmp(envelope, "OCESAVE1", 8) || android_checkpoint_get32(envelope + 8) != 1 ||
+		android_checkpoint_get32(envelope + 12) != sizeof(envelope) ||
+		android_checkpoint_get32(envelope + 16) != GAME_STATE_SIZE ||
+		android_checkpoint_get32(envelope + 24) > 3 ||
+		android_checkpoint_get32(envelope + 28) > 1 ||
+		!android_checkpoint_map_valid((char const *)envelope + 96))
+	{
+		return android_checkpoint_read_close(file, "corrupt");
+	}
+	for (index = 96 + strlen((char const *)envelope + 96); index < sizeof(envelope); index++)
+	{
+		if (envelope[index])
+		{
+			return android_checkpoint_read_close(file, "corrupt");
+		}
+	}
+	memcpy(fingerprint, envelope + 32, 64);
+	fingerprint[64] = 0;
+	if (!android_checkpoint_hex(fingerprint, 64))
+	{
+		return android_checkpoint_read_close(file, "corrupt");
+	}
+	if (android_checkpoint_get32(envelope + 28) != (unsigned long)renderer ||
+		memcmp(fingerprint, request->fingerprint[renderer], 64))
+	{
+		return android_checkpoint_read_close(file, "incompatible");
+	}
+	image = malloc(GAME_STATE_SIZE);
+	if (!image)
+	{
+		return android_checkpoint_read_close(file, "io_error");
+	}
+	if (fread(image, 1, GAME_STATE_SIZE, file) == GAME_STATE_SIZE &&
+		fgetc(file) == EOF && !ferror(file))
+	{
+		header = image;
+		if (android_checkpoint_crc(image) == android_checkpoint_get32(envelope + 20) &&
+			android_checkpoint_map_valid(header->map_name) &&
+			memchr(header->build_number, 0, sizeof(header->build_number)) &&
+			!strcmp(header->map_name, (char const *)envelope + 96) &&
+			header->difficulty == (short)android_checkpoint_get32(envelope + 24) &&
+			header->player_count == 1)
+		{
+			result = header->layout_address == (unsigned long)game_state_globals.base_address &&
+				header->image_shift == PORT_IMAGE_SHIFT ? "ready" : "incompatible";
+		}
+	}
+	else if (ferror(file))
+	{
+		result = "io_error";
+	}
+	if (fclose(file))
+		result = "io_error";
+	if (!strcmp(result, "ready"))
+		*image_out = image;
+	else
+		free(image);
+	return result;
+}
+
+void android_checkpoint_boot_prepare(void)
+{
+	struct android_checkpoint_request request;
+	struct game_state_header *header;
+	char const *result;
+
+	if (!android_checkpoint_request_read(ANDROID_CHECKPOINT_BOOT, &request))
+		return;
+	if (!strcmp(request.operation, "new"))
+	{
+		main_disallow_persistent_storage();
+		android_checkpoint_status(request.id, "new");
+		return;
+	}
+	if (strcmp(request.operation, "continue"))
+	{
+		android_checkpoint_status(request.id, "unsupported");
+		return;
+	}
+	/* port: cseries' debug_free requires a non-null allocation. */
+	if (android_checkpoint_pending_image)
+		free(android_checkpoint_pending_image);
+	android_checkpoint_pending_image = NULL;
+	result = android_checkpoint_read(&request, &android_checkpoint_pending_image);
+	if (strcmp(result, "ready"))
+	{
+		android_checkpoint_status(request.id, result);
+		return;
+	}
+	header = android_checkpoint_pending_image;
+	strcpy(android_checkpoint_pending_id, request.id);
+	main_set_map_name(header->map_name);
+	main_set_difficulty(header->difficulty);
+	main_disallow_persistent_storage();
+}
+
+void android_checkpoint_after_new_map(void)
+{
+	struct game_state_header *header = android_checkpoint_pending_image;
+	char const *result;
+
+	if (!header)
+		return;
+	result = "incompatible";
+	if (game_connection() == _game_connection_local && player_spawn_count == 1 &&
+		global_scenario && global_scenario->type == _scenario_type_solo &&
+		header->difficulty == main_get_difficulty() && game_state_header_valid(header, FALSE))
+	{
+		result = "corrupt";
+		if (game_state_image_valid(header, GAME_STATE_SIZE))
+		{
+			game_state_call_before_load_procs();
+			/* The image has passed every check before the first callback. */
+			csmemcpy(game_state_globals.base_address, header, GAME_STATE_SIZE);
+			game_difficulty_level_set(main_get_difficulty());
+			game_state_call_after_load_procs();
+			game_state_note_event("mobile checkpoint loaded");
+			game_state_save();
+			result = "resumed";
+		}
+	}
+	free(android_checkpoint_pending_image);
+	android_checkpoint_pending_image = NULL;
+	android_checkpoint_status(android_checkpoint_pending_id, result);
+}
+
+void android_checkpoint_poll(unsigned long milliseconds)
+{
+	static unsigned long polled;
+	static boolean first = TRUE;
+	struct android_checkpoint_request request;
+	char const *result;
+
+	if (!first && milliseconds - polled < 250)
+		return;
+	first = FALSE;
+	polled = milliseconds;
+	if (!android_checkpoint_request_read(ANDROID_CHECKPOINT_REQUEST, &request))
+		return;
+	if (strcmp(request.operation, "save"))
+	{
+		android_checkpoint_status(request.id, "unsupported");
+		return;
+	}
+	main_stop_time();
+	result = android_checkpoint_write(&request);
+	main_start_time();
+	android_checkpoint_status(request.id, result);
+}
+#endif
 
 /* ---------- private code */

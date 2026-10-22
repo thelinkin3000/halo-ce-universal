@@ -27,6 +27,10 @@ and the debug keyboard that the game's console reads.
 /* port/windows/src/win32_window.c, compiled with the Windows SDK */
 void win32_window_borderless_apply(SDL_Window *window);
 #endif
+#ifdef HALO_ANDROID
+#include <errno.h>
+#include <time.h>
+#endif
 #if !defined(_WIN32) && !defined(HALO_ANDROID)
 #include <signal.h>
 #endif
@@ -1363,7 +1367,58 @@ void platform_video_drawable_size(int *width, int *height)
 	SDL_GetWindowSizeInPixels(platform_window, width, height);
 }
 
-#ifndef HALO_ANDROID
+#ifdef HALO_ANDROID
+static int frame_clock_ns(Uint64 *value)
+{
+	struct timespec now;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &now))
+		return 0;
+	*value = (Uint64)now.tv_sec * 1000000000ULL + (Uint64)now.tv_nsec;
+	return 1;
+}
+
+/* Explicit 30/60 limits keep the default unlimited. Every late frame starts
+its own interval, rather than presenting a burst to catch up to old times. */
+static void frame_limit_android(void)
+{
+	static unsigned long read_at = (unsigned long)-1;
+	static Uint64 interval, next_frame;
+	Uint64 now;
+
+	if (read_at != config_changes())
+	{
+		long maximum = config_integer("display.max_fps");
+
+		read_at = config_changes();
+		interval = maximum == 30 || maximum == 60 ? 1000000000ULL / (Uint64)maximum : 0;
+		next_frame = 0;
+	}
+	if (!interval)
+		return;
+	if (!frame_clock_ns(&now))
+	{
+		next_frame = 0;
+		return;
+	}
+	while (next_frame > now)
+	{
+		Uint64 remaining = next_frame - now;
+		struct timespec wait;
+
+		wait.tv_sec = (time_t)(remaining / 1000000000ULL);
+		wait.tv_nsec = (long)(remaining % 1000000000ULL);
+		if (nanosleep(&wait, NULL) && errno != EINTR)
+			break;
+		if (!frame_clock_ns(&now))
+		{
+			next_frame = 0;
+			return;
+		}
+	}
+	next_frame = now + interval;
+}
+#else
 /* with vsync off, the time between frames display.max_fps asks for (0:
 twice the display's refresh rate), or 0 for no limit. A GPU never left idle
 can hang (Intel's Raptor Lake graphics, whose reset then takes the desktop
@@ -1406,11 +1461,14 @@ void web_js_post(int kind, const char *text);
 
 void platform_video_swap(void)
 {
-	Uint64 swap_start = SDL_GetTicks(), swap_time;
-#ifndef HALO_ANDROID
+	Uint64 swap_start, swap_time;
+#ifdef HALO_ANDROID
+	frame_limit_android();
+#else
 	static Uint64 next_frame;
 	Uint64 interval, now;
 #endif
+	swap_start = SDL_GetTicks();
 #ifdef HALO_WINDOWS
 	/* SDL can restore its fullscreen styles on a mode or focus change.
 	Keep borderless on the desktop before the driver presents a frame. */

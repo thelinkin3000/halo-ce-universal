@@ -6,6 +6,7 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.graphics.Paint;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
@@ -14,6 +15,8 @@ import android.hardware.SensorManager;
 import android.hardware.input.InputManager;
 import android.media.AudioAttributes;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
@@ -23,6 +26,8 @@ import android.util.SparseIntArray;
 import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.LinearLayout;
@@ -54,8 +59,6 @@ public final class TouchControls extends View implements SensorEventListener, In
     /** the toolbar's items (at the top of the screen) */
     private static final int TOOLBAR_TOGGLE = -3;
     private static final int TOOLBAR_OPTIONS = -4;
-    private static final int TOOLBAR_EXPORT = -6;
-    private static final int TOOLBAR_IMPORT = -7;
     private static final float TOOLBAR_RADIUS = 28;
     private static final float OPTIONS_RADIUS = 34;
 
@@ -70,14 +73,17 @@ public final class TouchControls extends View implements SensorEventListener, In
     private static final float STICK_DEAD_ZONE = 0.12f;
     private static final float STICK_REACH = 1.28f;
     private static final float STICK_KNOB_RADIUS = 24;
+    private static final long AUTO_WALK_HOLD_MS = 600;
     /** a floating stick goes where a thumb lands in this part of the display (from the lower left) */
     private static final float FLOATING_ZONE_WIDTH = 0.45f;
     private static final float FLOATING_ZONE_TOP = 0.35f;
     /** radians per logical unit of swipe (the mouse's rate: xinput_sdl.c) */
-    private static final float LOOK_RADIANS_PER_UNIT = 0.0022f;
+    static final float LOOK_RADIANS_PER_UNIT = 0.0022f;
     /** a label is at most this many radii wide */
     private static final float LABEL_WIDTH = 1.7f;
     private static final long POLL_MS = 16;
+    /** Long enough for the game's 30 Hz input to read a released grenade tap. */
+    private static final long GRENADE_PULSE_MS = 80;
     /** the game is in play this long before the controls show (no flash at a level's first frame) */
     private static final long SHOW_DELAY_MS = 200;
     private static final long VIBRATION_MS = 110;
@@ -92,6 +98,10 @@ public final class TouchControls extends View implements SensorEventListener, In
     private static final String PREFERENCES = "touch-layout-v1";
     private static final String KEY_CONFIGURATION = "configuration";
     private static final String KEY_HIDDEN = "hidden";
+    private static final String KEY_AUTO_WALK = "auto-walk";
+    private static final String KEY_INVERT_SWIPE_X = "invert-swipe-x";
+    private static final String KEY_INVERT_SWIPE_Y = "invert-swipe-y";
+    private static final String KEY_JUMP_MELEE_SWAPPED = "jump-melee-swapped-v1";
 
     /**
      * a kind of control: the SDL button bit or trigger axis it sends (-1 for
@@ -138,7 +148,7 @@ public final class TouchControls extends View implements SensorEventListener, In
 
     /** the game's controls (input_abstraction.c's _game_control_*), as the buttons name them */
     private static final String[] GAME_CONTROLS = {
-        "Jump", "Gren. type", "Reload", "Weapon", "Melee", "Light",
+        "Jump", "Gren. type", "Usar / entrar / recargar", "Cambiar arma", "Melee", "Light",
         "Grenade", "Fire", "Pause", "Back", "Crouch", "Zoom",
     };
     /** the default profile's mapping, until the game sends the player's own */
@@ -156,6 +166,7 @@ public final class TouchControls extends View implements SensorEventListener, In
     private static native int nativeBindings(int[] controls);
 
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final TouchIcons icons = new TouchIcons(getResources());
     private final SharedPreferences preferences;
     private final SensorManager sensors;
     private final Sensor gyroscope;
@@ -171,15 +182,32 @@ public final class TouchControls extends View implements SensorEventListener, In
 
     private TouchLayout layout = new TouchLayout();
     private float sensitivity = 1f;
+    private float horizontalSensitivity = TouchLayout.DEFAULT_HORIZONTAL_SENSITIVITY;
+    private boolean invertSwipeX, invertSwipeY;
+    private boolean gameMenuPending;
+    private final Runnable releaseMenuButton = () -> nativeState(0, 0, 0, 0, 0, 0, 0);
     /** the controls removed by the toolbar's Hide, until its Touch */
     private boolean hidden;
     private boolean editing;
+    private HudEditorPanel editorPanel;
+    private int selectedControl = 4;
+    private int activeHud;
+    private int hudBeforeEditing;
+    private String layoutBeforeEditing;
+    private boolean hiddenBeforeEditing;
+    private final String[] hudDrafts = new String[3];
     /** the option dialogs open (one opens before the last one's dismissal is told) */
     private int openDialogs;
 
     /** what each finger holds: a control, LOOK, or (in toolbarFingers) a toolbar item */
     private final SparseIntArray owners = new SparseIntArray();
-    /** where each finger on a button went down, in pixels: dragged, it swipes */
+    private final Handler releaseHandler = new Handler(Looper.getMainLooper());
+    private int grenadePulseType = NOTHING;
+    private final Runnable clearGrenadePulse = () -> {
+        grenadePulseType = NOTHING;
+        publish();
+    };
+    /** button swipe origins and inactive aiming fingers' latest positions, in pixels */
     private final SparseArray<float[]> buttonTouches = new SparseArray<>();
     /** each finger on a toolbar item: {x, y, item}; the item acts when it lifts there */
     private final SparseArray<float[]> toolbarFingers = new SparseArray<>();
@@ -191,6 +219,10 @@ public final class TouchControls extends View implements SensorEventListener, In
     private boolean stickFloating;
     private float stickX;
     private float stickY;
+    private boolean autoWalkEnabled;
+    private boolean autoWalkLocked;
+    private long autoWalkSince = -1;
+    private final Runnable lockAutoWalk = this::latchAutoWalk;
     private int dragPointer = -1;
     private int dragControl = -1;
     private float dragOffsetX;
@@ -200,8 +232,7 @@ public final class TouchControls extends View implements SensorEventListener, In
     private float scale = 1;
     private float logicalWidth = GRID_WIDTH;
     private float logicalHeight = GRID_HEIGHT;
-    private int insetRight;
-    private int insetTop;
+    private int insetLeft, insetTop, insetRight, insetBottom;
 
     private int scene;
     private boolean controllerConnected;
@@ -226,6 +257,7 @@ public final class TouchControls extends View implements SensorEventListener, In
             if (!deviceInputActive)
                 return;
             scene = nativeScene();
+            tryOpenGameMenu();
             int mode = nativeGyroMode();
             if (mode != gyroMode) {
                 gyroMode = mode;
@@ -251,35 +283,80 @@ public final class TouchControls extends View implements SensorEventListener, In
         inputManager = (InputManager) context.getSystemService(Context.INPUT_SERVICE);
         touchscreenFeature = context.getPackageManager().hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN);
         preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE);
+        migrateJumpMeleeLayout(context);
+        autoWalkEnabled = preferences.getBoolean(KEY_AUTO_WALK, true);
+        invertSwipeX = preferences.getBoolean(KEY_INVERT_SWIPE_X, false);
+        invertSwipeY = preferences.getBoolean(KEY_INVERT_SWIPE_Y, false);
+        activeHud = Math.max(0, Math.min(2, preferences.getInt("hud-slot", 0)));
         loadLayout(context);
         hidden = preferences.getBoolean(KEY_HIDDEN, false);
         refreshInputDevices();
         setFocusable(false);
         setContentDescription("Halo touch controller");
         setOnApplyWindowInsetsListener((view, insets) -> {
-            // (only the toolbar moves: the fingers stay held as the system bars come and go)
-            int right = insetRight;
-            int top = insetTop;
-            insetRight = insets.getSystemWindowInsetRight();
-            insetTop = insets.getSystemWindowInsetTop();
+            // Stable margins keep controls out of system gestures without moving when bars fade.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                Insets bars = insets.getInsetsIgnoringVisibility(WindowInsets.Type.systemBars()
+                    | WindowInsets.Type.displayCutout());
+                insetLeft = bars.left;
+                insetTop = bars.top;
+                insetRight = bars.right;
+                insetBottom = bars.bottom;
+            } else {
+                insetLeft = insets.getStableInsetLeft();
+                insetTop = insets.getStableInsetTop();
+                insetRight = insets.getStableInsetRight();
+                insetBottom = insets.getStableInsetBottom();
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                Insets gestures = insets.getSystemGestureInsets();
+                insetLeft = Math.max(insetLeft, gestures.left);
+                insetTop = Math.max(insetTop, gestures.top);
+                insetRight = Math.max(insetRight, gestures.right);
+                insetBottom = Math.max(insetBottom, gestures.bottom);
+            }
             if (insets.getDisplayCutout() != null) {
+                insetLeft = Math.max(insetLeft, insets.getDisplayCutout().getSafeInsetLeft());
                 insetRight = Math.max(insetRight, insets.getDisplayCutout().getSafeInsetRight());
                 insetTop = Math.max(insetTop, insets.getDisplayCutout().getSafeInsetTop());
+                insetBottom = Math.max(insetBottom, insets.getDisplayCutout().getSafeInsetBottom());
             }
-            if (insetRight != right || insetTop != top)
-                invalidate();
+            updateSafeBounds();
+            invalidate();
             return insets;
         });
+    }
+
+    private void migrateJumpMeleeLayout(Context context) {
+        if (preferences.getBoolean(KEY_JUMP_MELEE_SWAPPED, false))
+            return;
+        SharedPreferences.Editor changes = preferences.edit();
+        for (String key : new String[] {KEY_CONFIGURATION, "hud-layout-0", "hud-layout-1", "hud-layout-2"}) {
+            String configuration = preferences.getString(key, null);
+            if (configuration == null)
+                continue;
+            try {
+                TouchLayout.Configuration saved = TouchLayout.importConfiguration(configuration);
+                saved.layout.swapJumpMeleePositions();
+                changes.putString(key, saved.layout.exportConfiguration(saved.sensitivity, saved.horizontalSensitivity));
+            } catch (IllegalArgumentException e) {
+                // Leave an unreadable layout for the existing fallback and retain the user's file.
+            }
+        }
+        if (!changes.putBoolean(KEY_JUMP_MELEE_SWAPPED, true).commit())
+            Toast.makeText(context, "No se pudo guardar el cambio de Salto y Puño. Inténtalo de nuevo.",
+                Toast.LENGTH_LONG).show();
     }
 
     private void loadLayout(Context context) {
         String configuration = preferences.getString(KEY_CONFIGURATION, null);
         if (configuration == null)
-            return;
+            configuration = TouchPresets.twoThumbs();
         try {
-            TouchLayout.Configuration saved = TouchLayout.importConfiguration(configuration);
+            TouchLayout.Configuration saved = TouchLayout.importConfiguration(TouchPresets.upgradeMobileLayout(configuration));
             layout = saved.layout;
             sensitivity = saved.sensitivity;
+            horizontalSensitivity = saved.horizontalSensitivity;
         } catch (IllegalArgumentException e) {
             Toast.makeText(context, "The saved touch layout could not be read. Using the default one.",
                 Toast.LENGTH_LONG).show();
@@ -301,6 +378,7 @@ public final class TouchControls extends View implements SensorEventListener, In
     }
 
     public void stopDeviceInput() {
+        gameMenuPending = false;
         deviceInputActive = false;
         removeCallbacks(poll);
         if (inputManager != null)
@@ -330,7 +408,13 @@ public final class TouchControls extends View implements SensorEventListener, In
         logicalHeight = height / scale;
         layout.bounds(logicalWidth, logicalHeight);
         layout.setMinimumRadius(minimumRadius());
+        updateSafeBounds();
         invalidate();
+    }
+
+    private void updateSafeBounds() {
+        float toolbarBottom = toolbarY() + toolbarRadius(OPTIONS_RADIUS) + 8;
+        layout.safeInsets(insetLeft / scale, toolbarBottom, insetRight / scale, insetBottom / scale);
     }
 
     /** a finger's width, in logical units (at most TouchLayout.MAX_MINIMUM_RADIUS) */
@@ -351,11 +435,19 @@ public final class TouchControls extends View implements SensorEventListener, In
         return logicalWidth - Math.max(42, insetRight / scale + 42);
     }
 
+    private float toggleX() {
+        return (insetLeft / scale + logicalWidth - insetRight / scale) / 2;
+    }
+
     private float toolbarRadius(float radius) {
         return Math.max(radius, minimumRadius());
     }
 
     // ---------- when the controls show
+
+    boolean isGameplayVisible() {
+        return showing && !editing && openDialogs == 0;
+    }
 
     /**
      * whether the controls belong on screen: in a game (no menu or
@@ -440,6 +532,9 @@ public final class TouchControls extends View implements SensorEventListener, In
 
     /** lets go of every finger and sends a released controller */
     public void reset() {
+        releaseHandler.removeCallbacks(releaseMenuButton);
+        cancelGrenadePulse();
+        cancelAutoWalk();
         dragPointer = -1;
         dragControl = -1;
         owners.clear();
@@ -467,12 +562,30 @@ public final class TouchControls extends View implements SensorEventListener, In
             if (control < 0 || control >= layout.size())
                 continue;
             Kind kind = KINDS[layout.type(control)];
+            if (isGrenade(kind))
+                continue;
+            if (kind.bit >= 0)
+                bits |= 1 << kind.bit;
+            if (kind.trigger >= 0)
+                axes[kind.trigger] = 32767;
+        }
+        if (grenadePulseType >= 0) {
+            Kind kind = KINDS[grenadePulseType];
             if (kind.bit >= 0)
                 bits |= 1 << kind.bit;
             if (kind.trigger >= 0)
                 axes[kind.trigger] = 32767;
         }
         nativeState(axes[0], axes[1], axes[2], axes[3], axes[4], axes[5], bits);
+    }
+
+    private boolean isGrenade(Kind kind) {
+        return kind.gamepadButton >= 0 && bindings[kind.gamepadButton] == 6;
+    }
+
+    private void cancelGrenadePulse() {
+        releaseHandler.removeCallbacks(clearGrenadePulse);
+        grenadePulseType = NOTHING;
     }
 
     private boolean held(int control) {
@@ -511,9 +624,60 @@ public final class TouchControls extends View implements SensorEventListener, In
         }
         axes[0] = Math.round(dx * 32767);
         axes[1] = Math.round(dy * 32767);
+        if (!autoWalkEnabled || !forwardForAutoWalk()) {
+            cancelAutoWalk();
+        } else if (autoWalkLocked) {
+            axes[0] = 0;
+            axes[1] = -32767;
+        } else if (autoWalkSince < 0) {
+            autoWalkSince = SystemClock.uptimeMillis();
+            releaseHandler.postDelayed(lockAutoWalk, AUTO_WALK_HOLD_MS);
+        }
+    }
+
+    private boolean forwardForAutoWalk() {
+        return axes[1] <= -0.9f * 32767 && Math.abs(axes[0]) <= 0.25f * 32767;
+    }
+
+    private void cancelAutoWalk() {
+        releaseHandler.removeCallbacks(lockAutoWalk);
+        autoWalkSince = -1;
+        autoWalkLocked = false;
+    }
+
+    private void latchAutoWalk() {
+        autoWalkSince = -1;
+        if (!autoWalkEnabled || !held(TouchLayout.LEFT) || !forwardForAutoWalk()
+                || !showing || hidden || editing || openDialogs > 0)
+            return;
+        autoWalkLocked = true;
+        axes[0] = 0;
+        axes[1] = -32767;
+        publish();
+        invalidate();
     }
 
     // ---------- fingers
+
+    private void pulseMenuButton(int bit) {
+        reset();
+        nativeState(0, 0, 0, 0, 0, 0, 1 << bit);
+        releaseHandler.postDelayed(releaseMenuButton, GRENADE_PULSE_MS);
+    }
+
+    void openGameMenu() {
+        gameMenuPending = true;
+        post(this::tryOpenGameMenu);
+    }
+
+    private void tryOpenGameMenu() {
+        if (!gameMenuPending || editing || openDialogs > 0 || !deviceInputActive
+                || (scene & SCENE_KNOWN) == 0)
+            return;
+        gameMenuPending = false;
+        if ((scene & SCENE_MENUS) == 0)
+            pulseMenuButton(6); // SDL Start, independent of the profile's gameplay binding.
+    }
 
     private static boolean inside(float x, float y, float cx, float cy, float radius) {
         return (x - cx) * (x - cx) + (y - cy) * (y - cy) <= radius * radius;
@@ -521,24 +685,29 @@ public final class TouchControls extends View implements SensorEventListener, In
 
     /** what is under a point (logical units): a toolbar item, a control, or NOTHING */
     private int hit(float x, float y) {
-        if (inside(x, y, optionsX(), toolbarY(), toolbarRadius(OPTIONS_RADIUS)))
+        if (!editing && inside(x, y, optionsX(), toolbarY(), toolbarRadius(OPTIONS_RADIUS)))
             return TOOLBAR_OPTIONS;
-        if (editing && inside(x, y, optionsX() - 156, toolbarY(), toolbarRadius(OPTIONS_RADIUS)))
-            return TOOLBAR_EXPORT;
-        if (editing && inside(x, y, optionsX() - 78, toolbarY(), toolbarRadius(OPTIONS_RADIUS)))
-            return TOOLBAR_IMPORT;
-        if (!editing && inside(x, y, logicalWidth / 2, toolbarY(), toolbarRadius(TOOLBAR_RADIUS)))
+        if (!editing && inside(x, y, toggleX(), toolbarY(), toolbarRadius(TOOLBAR_RADIUS)))
             return TOOLBAR_TOGGLE;
         if (hidden && !editing)
             return NOTHING;
+        int nearest = NOTHING;
+        float distance = Float.POSITIVE_INFINITY;
         for (int i = 0; i < layout.size(); i++) {
-            if (layout.shown(i) && layout.type(i) != TouchLayout.LEFT
-                    && inside(x, y, layout.x(i), layout.y(i), layout.radius(i)))
-                return i;
+            if ((editing || layout.shown(i)) && layout.type(i) != TouchLayout.LEFT) {
+                float dx = x - layout.x(i), dy = y - layout.y(i), radius = layout.radius(i);
+                float relative = (dx * dx + dy * dy) / (radius * radius);
+                if (relative <= 1 && relative < distance) {
+                    nearest = i;
+                    distance = relative;
+                }
+            }
         }
+        if (nearest != NOTHING)
+            return nearest;
         int stick = TouchLayout.LEFT;
         float reach = editing ? 1 : STICK_REACH;
-        if (layout.shown(stick) && !held(stick)
+        if ((editing || layout.shown(stick)) && !held(stick)
                 && inside(x, y, layout.x(stick), layout.y(stick), layout.radius(stick) * reach))
             return stick;
         return NOTHING;
@@ -560,19 +729,39 @@ public final class TouchControls extends View implements SensorEventListener, In
     public boolean onTouchEvent(MotionEvent event) {
         int action = event.getActionMasked();
         if (!showing && !editing && openDialogs == 0) {
-            // the menus and cinematics take the fingers (SDL's surface below)
-            if (action == MotionEvent.ACTION_DOWN)
+            // Keep settings reachable while the game loads or plays a cinematic.
+            if (action == MotionEvent.ACTION_DOWN) {
+                if (hit(logical(event.getX()), logical(event.getY())) == TOOLBAR_OPTIONS) {
+                    toolbarFingers.put(event.getPointerId(0), new float[] {event.getX(), event.getY(), TOOLBAR_OPTIONS});
+                    return true;
+                }
                 return false;
+            }
+            if (toolbarFingers.size() > 0) {
+                if (action == MotionEvent.ACTION_UP) {
+                    toolbarFingers.clear();
+                    if (hit(logical(event.getX()), logical(event.getY())) == TOOLBAR_OPTIONS)
+                        showOptions();
+                } else if (action == MotionEvent.ACTION_CANCEL) {
+                    toolbarFingers.clear();
+                }
+                return true;
+            }
             if (owners.size() > 0 || lookPointer >= 0)
                 reset();
             return true;
         }
+        int previousStickX = axes[0];
+        int previousStickY = axes[1];
         if (editing)
             editTouch(event);
         else
             gameTouch(event);
         publish();
-        invalidate();
+        // Aiming changes the game, not this overlay; keep input unthrottled.
+        if (editing || action != MotionEvent.ACTION_MOVE
+                || axes[0] != previousStickX || axes[1] != previousStickY)
+            invalidate();
         return true;
     }
 
@@ -591,11 +780,17 @@ public final class TouchControls extends View implements SensorEventListener, In
                 fingerDown(id, event.getX(index), event.getY(index));
                 break;
             case MotionEvent.ACTION_MOVE:
+                for (int h = 0; h < event.getHistorySize(); h++)
+                    for (int i = 0; i < event.getPointerCount(); i++)
+                        fingerMoved(event.getPointerId(i), event.getHistoricalX(i, h), event.getHistoricalY(i, h));
                 for (int i = 0; i < event.getPointerCount(); i++)
                     fingerMoved(event.getPointerId(i), event.getX(i), event.getY(i));
                 break;
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_POINTER_UP:
+                // The lift can contain the last displacement even without a preceding MOVE.
+                if (id == lookPointer)
+                    fingerMoved(id, event.getX(index), event.getY(index));
                 fingerUp(id, event.getX(index), event.getY(index));
                 break;
             case MotionEvent.ACTION_CANCEL:
@@ -616,23 +811,36 @@ public final class TouchControls extends View implements SensorEventListener, In
         int stick = TouchLayout.LEFT;
         if (target == NOTHING && layout.floatingStick && !hidden && layout.shown(stick) && !held(stick)
                 && inFloatingZone(x, y) && !inGestureZone(px, py, false)) {
-            floatStick(x, y);
             target = stick;
         }
-        if (target == TOOLBAR_OPTIONS || target == TOOLBAR_TOGGLE) {
+        if (target == TOOLBAR_OPTIONS || target == TOOLBAR_TOGGLE
+                || (target >= 0 && (layout.type(target) == 10 || layout.type(target) == 11))) {
             toolbarFingers.put(id, new float[] {px, py, target});
         } else if (target != NOTHING) {
             owners.put(id, target);
-            if (layout.type(target) == TouchLayout.LEFT)
+            if (layout.type(target) == TouchLayout.LEFT) {
+                cancelAutoWalk();
+                // Every floating-stick press starts neutral, including inside its resting circle.
+                if (layout.floatingStick)
+                    floatStick(x, y);
                 moveStick(target, x, y);
-            else
+            } else
                 buttonTouches.put(id, new float[] {px, py});
-        } else if (!hidden && lookPointer < 0 && !inGestureZone(px, py, false)) {
+        } else if (!hidden && !inGestureZone(px, py, false)) {
+            // A dedicated aiming finger takes over from dragging a held Fire button.
+            buttonTouches.put(id, new float[] {px, py});
             startLook(id, px, py);
         }
     }
 
     private void startLook(int id, float px, float py) {
+        if (lookPointer >= 0 && lookPointer != id) {
+            float[] previous = buttonTouches.get(lookPointer);
+            if (previous != null) {
+                previous[0] = lookX;
+                previous[1] = lookY;
+            }
+        }
         lookPointer = id;
         lookX = px;
         lookY = py;
@@ -657,7 +865,7 @@ public final class TouchControls extends View implements SensorEventListener, In
         }
         float[] origin = buttonTouches.get(id);
         if (origin != null && lookPointer >= 0 && lookPointer != id) {
-            // while another finger aims, a held button's finger may only take over from where it is
+            // A waiting finger takes over from its latest position, without a camera jump.
             origin[0] = px;
             origin[1] = py;
         }
@@ -668,7 +876,12 @@ public final class TouchControls extends View implements SensorEventListener, In
             lookY = origin[1];
         }
         if (id == lookPointer) {
-            nativeLook(logical(px - lookX) * sensitivity, logical(py - lookY) * sensitivity);
+            float dx = logical(px - lookX) * sensitivity * horizontalSensitivity;
+            float dy = logical(py - lookY) * sensitivity;
+            if (invertSwipeX) dx = -dx;
+            if (invertSwipeY) dy = -dy;
+            if (dx != 0 || dy != 0)
+                nativeLook(dx, dy);
             lookX = px;
             lookY = py;
         }
@@ -684,15 +897,38 @@ public final class TouchControls extends View implements SensorEventListener, In
             return;
         }
         int control = owners.get(id, NOTHING);
+        int releasedType = control >= 0 ? layout.type(control) : NOTHING;
         if (control >= 0 && layout.type(control) == TouchLayout.LEFT) {
-            axes[0] = 0;
-            axes[1] = 0;
-            stickFloating = false;
+            moveStick(control, logical(px), logical(py));
+            releaseHandler.removeCallbacks(lockAutoWalk);
+            autoWalkSince = -1;
+            if (!autoWalkLocked) {
+                axes[0] = 0;
+                axes[1] = 0;
+                stickFloating = false;
+            }
         }
-        if (id == lookPointer)
-            lookPointer = -1;
+        boolean wasLooking = id == lookPointer;
         owners.delete(id);
         buttonTouches.remove(id);
+        if (releasedType >= 0 && isGrenade(KINDS[releasedType])) {
+            cancelGrenadePulse();
+            grenadePulseType = releasedType;
+            releaseHandler.postDelayed(clearGrenadePulse, GRENADE_PULSE_MS);
+        }
+        if (wasLooking) {
+            lookPointer = -1;
+            for (int i = owners.size() - 1; i >= 0; i--) {
+                if (owners.valueAt(i) == LOOK) {
+                    int next = owners.keyAt(i);
+                    float[] position = buttonTouches.get(next);
+                    if (position != null) {
+                        startLook(next, position[0], position[1]);
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     private void toolbarAction(int item) {
@@ -700,6 +936,11 @@ public final class TouchControls extends View implements SensorEventListener, In
             showOptions();
         else if (item == TOOLBAR_TOGGLE)
             setHidden(!hidden);
+        else if (item >= 0 && item < layout.size()
+                && (layout.type(item) == 10 || layout.type(item) == 11)) {
+            reset();
+            ((HaloActivity) getContext()).showTouchPauseMenu();
+        }
         performClick();
     }
 
@@ -714,16 +955,9 @@ public final class TouchControls extends View implements SensorEventListener, In
             float x = logical(event.getX(index));
             float y = logical(event.getY(index));
             int target = hit(x, y);
-            if (target == TOOLBAR_OPTIONS) {
-                if (saveLayout()) {
-                    reset();
-                    editing = false;
-                    performClick();
-                }
-            } else if (target == TOOLBAR_EXPORT || target == TOOLBAR_IMPORT) {
-                reset();
-                ((HaloActivity) getContext()).chooseLayoutFile(target == TOOLBAR_EXPORT, exportLayout());
-            } else if (target >= 0) {
+            if (target >= 0) {
+                selectedControl = target;
+                refreshEditor(false);
                 dragPointer = id;
                 dragControl = target;
                 dragOffsetX = x - layout.x(target);
@@ -734,6 +968,7 @@ public final class TouchControls extends View implements SensorEventListener, In
             if (pointer >= 0) {
                 layout.move(dragControl, logical(event.getX(pointer)) - dragOffsetX,
                     logical(event.getY(pointer)) - dragOffsetY);
+                editorPanel.setDirty(true);
             }
         } else if (action == MotionEvent.ACTION_CANCEL
                 || ((action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_POINTER_UP) && id == dragPointer)) {
@@ -751,6 +986,10 @@ public final class TouchControls extends View implements SensorEventListener, In
         bindingsSerial = serial;
         if (!Arrays.equals(bindingsRead, bindings)) {
             System.arraycopy(bindingsRead, 0, bindings, 0, bindings.length);
+            if (grenadePulseType >= 0) {
+                cancelGrenadePulse();
+                publish();
+            }
             invalidate();
         }
     }
@@ -773,14 +1012,17 @@ public final class TouchControls extends View implements SensorEventListener, In
     // ---------- the layout, saved and in files
 
     private boolean saveLayout() {
-        boolean saved = preferences.edit().putString(KEY_CONFIGURATION, exportLayout()).commit();
+        String configuration = exportLayout();
+        boolean saved = preferences.edit().putString(KEY_CONFIGURATION, configuration)
+            .putString("hud-layout-" + activeHud, configuration)
+            .putBoolean(KEY_INVERT_SWIPE_X, invertSwipeX).putBoolean(KEY_INVERT_SWIPE_Y, invertSwipeY).commit();
         if (!saved)
             Toast.makeText(getContext(), "The touch layout could not be saved. Try again.", Toast.LENGTH_LONG).show();
         return saved;
     }
 
     public String exportLayout() {
-        return layout.exportConfiguration(sensitivity);
+        return layout.exportConfiguration(sensitivity, horizontalSensitivity);
     }
 
     /** replaces the layout with a layout file's (saved first: it throws if the file is not valid) */
@@ -788,12 +1030,15 @@ public final class TouchControls extends View implements SensorEventListener, In
         TouchLayout.Configuration imported = TouchLayout.importConfiguration(text);
         imported.layout.bounds(logicalWidth, logicalHeight);
         imported.layout.setMinimumRadius(minimumRadius());
-        String normalized = imported.layout.exportConfiguration(imported.sensitivity);
-        if (!preferences.edit().putString(KEY_CONFIGURATION, normalized).commit())
+        String normalized = imported.layout.exportConfiguration(imported.sensitivity, imported.horizontalSensitivity);
+        if (!preferences.edit().putString(KEY_CONFIGURATION, normalized)
+                .putString("hud-layout-" + activeHud, normalized).commit())
             throw new IllegalArgumentException("Could not save the imported layout");
         reset();
         layout = imported.layout;
+        updateSafeBounds();
         sensitivity = imported.sensitivity;
+        horizontalSensitivity = imported.horizontalSensitivity;
         setHidden(false);
         cancelRumble();
         invalidate();
@@ -808,32 +1053,196 @@ public final class TouchControls extends View implements SensorEventListener, In
             if (openDialogs > 0)
                 return;
             openDialogs = 0;
-            saveLayout();
+            if (!editing)
+                saveLayout();
             reset();
             updateSensors();
         });
         openDialogs++;
         reset();
         dialog.show();
+        GameMenuStyle.style(dialog);
     }
 
-    private void showOptions() {
-        String[] items = {"General", "Edit buttons layout", "Look sensitivity"};
-        AlertDialog dialog = new AlertDialog.Builder(getContext())
-            .setTitle("Options")
-            .setItems(items, (d, which) -> {
+    void showOptions() {
+        String[] items = {"Controles predefinidos", "Perfiles gráficos", "Pantalla y resolución", "General",
+            "HUD personalizado", "Sensibilidad al mirar", "Exportar HUD", "Importar HUD",
+            "Descargar paquete de datos", "Actualizar APK", "Configuración interna de Halo"};
+        String[] details = {"Dos pulgares, tres dedos u original", "Rendimiento y calidad de imagen",
+            "Formato de pantalla y nitidez", "Vibración, movimiento y botones",
+            "Tamaño, opacidad y visibilidad", "Velocidad y precisión de cámara",
+            "Guardar tu distribución en un archivo", "Cargar una distribución guardada",
+            "Instalar datos desde un enlace", "Comprobar si hay una versión nueva",
+            "Menú del juego: Settings, perfil y cámara"};
+        AlertDialog dialog = GameMenuStyle.builder(getContext())
+            .setTitle("Halo · Controles")
+            .setAdapter(new SettingsMenuAdapter(getContext(), items, details), (d, which) -> {
                 if (which == 0) {
-                    post(this::showGeneral);
+                    post(this::showPresets);
                 } else if (which == 1) {
-                    editing = true;
-                    setHidden(false);
-                } else {
+                    post(() -> GraphicsProfiles.show((HaloActivity) getContext(),
+                        () -> ((HaloActivity) getContext()).restartForGraphicsProfile(), this::openDialog));
+                } else if (which == 2) {
+                    post(() -> ScreenSettings.show((HaloActivity) getContext(),
+                        () -> ((HaloActivity) getContext()).restartForGraphicsProfile(), this::openDialog));
+                } else if (which == 3) {
+                    post(this::showGeneral);
+                } else if (which == 4) {
+                    post(this::beginEditor);
+                } else if (which == 5) {
                     post(this::showSensitivity);
+                } else if (which == 6 || which == 7) {
+                    ((HaloActivity) getContext()).chooseLayoutFile(which == 6, exportLayout());
+                } else if (which == 8) {
+                    post(() -> DataPackages.show((HaloActivity) getContext(), () -> {}, this::openDialog));
+                } else if (which == 9) {
+                    post(() -> ControlsUpdater.show((HaloActivity) getContext(), this::openDialog));
+                } else if (which == 10) {
+                    ((HaloActivity) getContext()).openOriginalGameMenu();
                 }
             })
-            .setNegativeButton("Close", null)
+            .setNegativeButton("Cerrar", null)
             .create();
         openDialog(dialog);
+    }
+
+    private void beginEditor() {
+        layoutBeforeEditing = exportLayout();
+        hudBeforeEditing = activeHud;
+        String[] defaults = {TouchPresets.twoThumbs(), TouchPresets.threeFingers(), TouchPresets.original()};
+        for (int i = 0; i < hudDrafts.length; i++)
+            hudDrafts[i] = preferences.getString("hud-layout-" + i, defaults[i]);
+        hudDrafts[activeHud] = layoutBeforeEditing;
+        editing = true;
+        hiddenBeforeEditing = hidden;
+        hidden = false;
+        reset();
+        selectedControl = 4;
+        editorPanel = new HudEditorPanel(getContext(), new HudEditorPanel.Listener() {
+            @Override public void onExit() { cancelEditor(); }
+            @Override public void onSave() { saveEditor(); }
+            @Override public void onReset() {
+                applyEditorLayout(defaults[activeHud]);
+                refreshEditor(true);
+            }
+            @Override public void onSelectHud(int slot) {
+                hudDrafts[activeHud] = exportLayout();
+                activeHud = slot;
+                applyEditorLayout(hudDrafts[activeHud]);
+                refreshEditor(true);
+            }
+            @Override public void onSize(float size) {
+                layout.setSize(selectedControl, size);
+                refreshEditor(true);
+            }
+            @Override public void onOpacity(float opacity) {
+                layout.setOpacity(selectedControl, opacity);
+                refreshEditor(true);
+            }
+            @Override public void onVisibility(boolean visible) {
+                layout.setShown(selectedControl, visible);
+                refreshEditor(true);
+            }
+            @Override public void onNudge(float x, float y) {
+                layout.move(selectedControl, layout.x(selectedControl) + x, layout.y(selectedControl) + y);
+                refreshEditor(true);
+            }
+        });
+        ((ViewGroup) getParent()).addView(editorPanel, new ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        editorPanel.setVisibility(View.VISIBLE);
+        ((HaloActivity) getContext()).setHudEditorPaused(true);
+        refreshEditor(false);
+    }
+
+    private void applyEditorLayout(String configuration) {
+        TouchLayout.Configuration saved = TouchLayout.importConfiguration(TouchPresets.upgradeMobileLayout(configuration));
+        reset();
+        layout = saved.layout;
+        sensitivity = saved.sensitivity;
+        horizontalSensitivity = saved.horizontalSensitivity;
+        layout.bounds(logicalWidth, logicalHeight);
+        layout.setMinimumRadius(minimumRadius());
+        updateSafeBounds();
+        selectedControl = Math.min(selectedControl, layout.size() - 1);
+    }
+
+    private void refreshEditor(boolean dirty) {
+        String[] actions = {"Saltar", "Tipo de granada", "Usar / entrar; mantener: recoger", "Cambiar arma equipada",
+            "Golpear", "Linterna", "Granada", "Disparar", "Pausa", "Atrás", "Agacharse", "Mira"};
+        int type = layout.type(selectedControl);
+        int action = KINDS[type].gamepadButton >= 0 ? bindings[KINDS[type].gamepadButton] : -1;
+        String name = type == TouchLayout.LEFT ? "Movimiento"
+            : action >= 0 && action < actions.length ? actions[action] : label(type);
+        if (action == 2 || action == 3)
+            name = KINDS[type].buttonName + " · " + name;
+        editorPanel.bind(activeHud, name, layout.sizeScale(selectedControl), layout.opacity(selectedControl),
+            layout.shown(selectedControl));
+        if (dirty)
+            editorPanel.setDirty(true);
+        invalidate();
+    }
+
+    private void saveEditor() {
+        hudDrafts[activeHud] = exportLayout();
+        SharedPreferences.Editor changes = preferences.edit().putInt("hud-slot", activeHud)
+            .putString(KEY_CONFIGURATION, hudDrafts[activeHud]).putBoolean(KEY_HIDDEN, false);
+        for (int i = 0; i < hudDrafts.length; i++)
+            changes.putString("hud-layout-" + i, hudDrafts[i]);
+        if (!changes.commit()) {
+            toast("No se pudo guardar el HUD. Inténtalo de nuevo.");
+            return;
+        }
+        closeEditor();
+        toast("HUD " + (activeHud + 1) + " guardado");
+    }
+
+    public boolean cancelEditor() {
+        if (!editing)
+            return false;
+        activeHud = hudBeforeEditing;
+        applyEditorLayout(layoutBeforeEditing);
+        hidden = hiddenBeforeEditing;
+        closeEditor();
+        return true;
+    }
+
+    public boolean isEditing() {
+        return editing;
+    }
+
+    private void closeEditor() {
+        ((ViewGroup) getParent()).removeView(editorPanel);
+        editorPanel = null;
+        editing = false;
+        reset();
+        ((HaloActivity) getContext()).setHudEditorPaused(false);
+        updateSensors();
+    }
+
+    private void showPresets() {
+        String previous = preferences.getString("previous-layout", null);
+        String[] names = previous == null
+            ? new String[] {"Dos pulgares · estilo Free Fire", "Tres dedos · disparo izquierdo", "Original Ports 106"}
+            : new String[] {"Dos pulgares · estilo Free Fire", "Tres dedos · disparo izquierdo", "Original Ports 106",
+                "Restaurar diseño anterior"};
+        openDialog(GameMenuStyle.builder(getContext())
+            .setTitle("Controles predefinidos")
+            .setItems(names, (dialog, which) -> {
+                String next = which == 0 ? TouchPresets.twoThumbs()
+                    : which == 1 ? TouchPresets.threeFingers()
+                    : which == 2 ? TouchPresets.original() : previous;
+                String current = exportLayout();
+                try {
+                    importLayout(next);
+                    preferences.edit().putString("previous-layout", current).apply();
+                    Toast.makeText(getContext(), "Diseño guardado. Arrastra el disparo para apuntar.",
+                        Toast.LENGTH_LONG).show();
+                } catch (IllegalArgumentException e) {
+                    Toast.makeText(getContext(), e.getMessage(), Toast.LENGTH_LONG).show();
+                }
+            })
+            .setNegativeButton("Cancelar", null).create());
     }
 
     private TextView text(String value) {
@@ -881,6 +1290,28 @@ public final class TouchControls extends View implements SensorEventListener, In
         });
         panel.addView(floating);
 
+        Switch leftFire = new Switch(getContext());
+        leftFire.setText("Disparo izquierdo");
+        leftFire.setChecked(layout.shown(TouchLayout.FIRE_LEFT));
+        leftFire.setOnCheckedChangeListener((view, enabled) -> {
+            reset();
+            layout.setShown(TouchLayout.FIRE_LEFT, enabled);
+            saveLayout();
+            invalidate();
+        });
+        panel.addView(leftFire);
+
+        Switch autoWalk = new Switch(getContext());
+        autoWalk.setText("Avance automático");
+        autoWalk.setChecked(autoWalkEnabled);
+        autoWalk.setOnCheckedChangeListener((view, enabled) -> {
+            autoWalkEnabled = enabled;
+            reset();
+            preferences.edit().putBoolean(KEY_AUTO_WALK, enabled).commit();
+        });
+        panel.addView(autoWalk);
+        panel.addView(text("Mantén el joystick arriba para fijar el avance. Tócalo de nuevo para detenerte."));
+
         TextView opacityLabel = text("");
         SeekBar opacity = new SeekBar(getContext());
         int steps = Math.round((TouchLayout.MAX_OPACITY - TouchLayout.MIN_OPACITY) * 20);
@@ -892,7 +1323,10 @@ public final class TouchControls extends View implements SensorEventListener, In
         opacity.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar bar, int progress, boolean user) {
-                layout.setOpacity(Math.min(TouchLayout.MAX_OPACITY, TouchLayout.MIN_OPACITY + progress / 20f));
+                float value = Math.min(TouchLayout.MAX_OPACITY, TouchLayout.MIN_OPACITY + progress / 20f);
+                layout.setOpacity(value);
+                for (int i = 0; i < layout.size(); i++)
+                    layout.setOpacity(i, value);
                 showOpacity.run();
                 invalidate();
             }
@@ -909,9 +1343,11 @@ public final class TouchControls extends View implements SensorEventListener, In
         panel.addView(opacityLabel);
         panel.addView(opacity);
 
-        AlertDialog dialog = new AlertDialog.Builder(getContext())
+        ScrollView scroll = new ScrollView(getContext());
+        scroll.addView(panel);
+        AlertDialog dialog = GameMenuStyle.builder(getContext())
             .setTitle("General")
-            .setView(panel)
+            .setView(scroll)
             .setPositiveButton("Done", null)
             .create();
         panel.addView(button("Hide or add buttons", view -> {
@@ -971,7 +1407,7 @@ public final class TouchControls extends View implements SensorEventListener, In
         }
         ScrollView scroll = new ScrollView(getContext());
         scroll.addView(list);
-        openDialog(new AlertDialog.Builder(getContext())
+        openDialog(GameMenuStyle.builder(getContext())
             .setTitle("Edit buttons size")
             .setView(scroll)
             .setPositiveButton("Done", null)
@@ -1020,7 +1456,7 @@ public final class TouchControls extends View implements SensorEventListener, In
         refresh[0].run();
         ScrollView scroll = new ScrollView(getContext());
         scroll.addView(list);
-        AlertDialog dialog = new AlertDialog.Builder(getContext())
+        AlertDialog dialog = GameMenuStyle.builder(getContext())
             .setTitle("Hide or add buttons")
             .setView(scroll)
             .setPositiveButton("Done", null)
@@ -1033,7 +1469,7 @@ public final class TouchControls extends View implements SensorEventListener, In
     }
 
     private void confirmReset(Runnable refresh) {
-        new AlertDialog.Builder(getContext())
+        GameMenuStyle.builder(getContext())
             .setTitle("Reset the buttons?")
             .setMessage("This puts every button back in its place and size, shows them all and removes the copies.")
             .setNegativeButton("Cancel", null)
@@ -1052,7 +1488,7 @@ public final class TouchControls extends View implements SensorEventListener, In
         String[] names = new String[TouchLayout.BASE_COUNT];
         for (int i = 0; i < names.length; i++)
             names[i] = controlName(i);
-        new AlertDialog.Builder(getContext())
+        GameMenuStyle.builder(getContext())
             .setTitle("Add button")
             .setItems(names, (d, type) -> {
                 reset();
@@ -1068,39 +1504,40 @@ public final class TouchControls extends View implements SensorEventListener, In
     }
 
     private void showSensitivity() {
-        LinearLayout panel = new LinearLayout(getContext());
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(32, 16, 32, 16);
-        TextView value = text("");
-        SeekBar slider = new SeekBar(getContext());
-        int steps = Math.round((TouchLayout.MAX_SENSITIVITY - TouchLayout.MIN_SENSITIVITY) / 0.025f);
-        slider.setMax(steps);
-        slider.setProgress(Math.round((sensitivity - TouchLayout.MIN_SENSITIVITY) / 0.025f));
-        Runnable showValue = () -> value.setText(String.format(Locale.US, "Look sensitivity: %.2fx", sensitivity));
-        showValue.run();
-        slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar bar, int progress, boolean user) {
-                sensitivity = Math.min(TouchLayout.MAX_SENSITIVITY, TouchLayout.MIN_SENSITIVITY + progress * 0.025f);
-                showValue.run();
-            }
-
-            @Override
-            public void onStartTrackingTouch(SeekBar bar) {
-            }
-
-            @Override
-            public void onStopTrackingTouch(SeekBar bar) {
-                saveLayout();
-            }
-        });
-        panel.addView(value);
-        panel.addView(slider);
-        openDialog(new AlertDialog.Builder(getContext())
-            .setTitle("Look sensitivity")
+        LookSensitivityPanel panel = new LookSensitivityPanel(getContext(), sensitivity, horizontalSensitivity, logical(1));
+        panel.setInvertedAxes(invertSwipeX, invertSwipeY);
+        AlertDialog dialog = GameMenuStyle.builder(getContext())
+            .setTitle("Sensibilidad al mirar")
             .setView(panel)
-            .setPositiveButton("Done", null)
-            .create());
+            .setNegativeButton("Cancelar", null)
+            .setNeutralButton("Restablecer", null)
+            .setPositiveButton("Guardar", null)
+            .create();
+        dialog.setOnShowListener(d -> {
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> {
+                panel.setValue(1f);
+                panel.setHorizontalValue(TouchLayout.DEFAULT_HORIZONTAL_SENSITIVITY);
+                panel.setInvertedAxes(false, false);
+            });
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+                float previous = sensitivity;
+                float previousHorizontal = horizontalSensitivity;
+                boolean previousX = invertSwipeX, previousY = invertSwipeY;
+                sensitivity = panel.value();
+                horizontalSensitivity = panel.horizontalValue();
+                invertSwipeX = panel.invertedHorizontal();
+                invertSwipeY = panel.invertedVertical();
+                if (saveLayout()) {
+                    dialog.dismiss();
+                } else {
+                    invertSwipeX = previousX;
+                    invertSwipeY = previousY;
+                    sensitivity = previous;
+                    horizontalSensitivity = previousHorizontal;
+                }
+            });
+        });
+        openDialog(dialog);
     }
 
     private void toast(String message) {
@@ -1196,7 +1633,7 @@ public final class TouchControls extends View implements SensorEventListener, In
         paint.setColor(alpha(active ? 0xffaee7ff : 0xffffffff, opacity));
         canvas.drawCircle(x, y, radius, paint);
         paint.setStyle(Paint.Style.FILL);
-        paint.setColor(alpha(Color.WHITE, Math.max(opacity, 0.5f)));
+        paint.setColor(alpha(Color.WHITE, opacity));
         paint.setTextAlign(Paint.Align.CENTER);
         paint.setTextSize(textSize);
         // (a long name, "Y / Weapon", is made smaller to fit inside the circle)
@@ -1214,17 +1651,10 @@ public final class TouchControls extends View implements SensorEventListener, In
     }
 
     private void drawToolbar(Canvas canvas) {
-        if (editing) {
-            toolbarItem(canvas, optionsX(), OPTIONS_RADIUS, "Save");
-            toolbarItem(canvas, optionsX() - 156, OPTIONS_RADIUS, "Export");
-            toolbarItem(canvas, optionsX() - 78, OPTIONS_RADIUS, "Import");
-            paint.setColor(Color.WHITE);
-            paint.setTextSize(14);
-            canvas.drawText("Drag the controls, then push Save", logicalWidth / 2, toolbarY() + 58, paint);
-        } else {
-            toolbarItem(canvas, logicalWidth / 2, TOOLBAR_RADIUS, hidden ? "Touch" : "Hide");
-            toolbarItem(canvas, optionsX(), OPTIONS_RADIUS, "Options");
-        }
+        if (editing)
+            return;
+        toolbarItem(canvas, toggleX(), TOOLBAR_RADIUS, hidden ? "Mostrar" : "Ocultar");
+        toolbarItem(canvas, optionsX(), OPTIONS_RADIUS, "Ajustes");
     }
 
     private void drawStick(Canvas canvas) {
@@ -1232,28 +1662,72 @@ public final class TouchControls extends View implements SensorEventListener, In
         float radius = layout.radius(stick);
         float size = layout.sizeScale(stick);
         // (a floating stick near an edge is drawn whole, nearer the middle than its centre)
-        float x = Math.max(radius, Math.min(logicalWidth - radius, stickCenterX()));
-        float y = Math.max(radius, Math.min(logicalHeight - radius, stickCenterY()));
-        circle(canvas, x, y, radius, "Move", false, 11 * size, layout.opacity);
+        float x = layout.constrainX(stickCenterX(), radius);
+        float y = layout.constrainY(stickCenterY(), radius);
+        float opacity = editing && !layout.shown(stick) ? 0.15f : layout.opacity(stick);
+        circle(canvas, x, y, radius, "", false, 11 * size, opacity);
         circle(canvas, x + axes[0] / 32767f * radius, y + axes[1] / 32767f * radius,
-            Math.max(STICK_KNOB_RADIUS * size, radius * 0.375f), "", held(stick), 11, layout.opacity);
+            Math.max(STICK_KNOB_RADIUS * size, radius * 0.375f), "", held(stick) || autoWalkLocked, 11, opacity);
+        if (!editing && (autoWalkLocked || autoWalkSince >= 0)) {
+            float badgeY = layout.constrainY(y - radius - 40, 20);
+            circle(canvas, x, badgeY, 18, "", autoWalkLocked, 11, Math.max(opacity, .8f));
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(2);
+            if (autoWalkLocked) {
+                canvas.drawRoundRect(x - 7, badgeY - 3, x + 7, badgeY + 8, 2, 2, paint);
+                canvas.drawArc(x - 5, badgeY - 11, x + 5, badgeY + 1, 180, 180, false, paint);
+            } else {
+                float progress = Math.min(1, (SystemClock.uptimeMillis() - autoWalkSince) / (float) AUTO_WALK_HOLD_MS);
+                paint.setColor(0xffaee7ff);
+                canvas.drawArc(x - 20, badgeY - 20, x + 20, badgeY + 20, -90, progress * 360, false, paint);
+                postInvalidateDelayed(33);
+            }
+            paint.setStyle(Paint.Style.FILL);
+            paint.setTextSize(11);
+            canvas.drawText(autoWalkLocked ? "AVANCE FIJO" : "MANTÉN ↑", x, badgeY + 33, paint);
+        }
     }
 
     @Override
     protected void onDraw(Canvas canvas) {
-        if (!showing && !editing)
-            return;
         canvas.save();
         canvas.scale(scale, scale);
+        if (!showing && !editing) {
+            toolbarItem(canvas, optionsX(), OPTIONS_RADIUS, "Ajustes");
+            canvas.restore();
+            return;
+        }
+        if (editing)
+            canvas.drawColor(0x66000000);
         if (!hidden || editing) {
-            if (layout.shown(TouchLayout.LEFT))
+            if (editing || layout.shown(TouchLayout.LEFT))
                 drawStick(canvas);
             for (int i = 0; i < layout.size(); i++) {
-                if (!layout.shown(i) || layout.type(i) == TouchLayout.LEFT)
+                if ((!editing && !layout.shown(i)) || layout.type(i) == TouchLayout.LEFT)
                     continue;
                 float textSize = 11 * Math.max(layout.sizeScale(i), layout.radius(i) / 36f);
-                circle(canvas, layout.x(i), layout.y(i), layout.radius(i), label(layout.type(i)),
-                    held(i) || dragControl == i, Math.min(textSize, 16), layout.opacity);
+                int type = layout.type(i);
+                int action = KINDS[type].gamepadButton >= 0 ? bindings[KINDS[type].gamepadButton] : -1;
+                float opacity = editing && !layout.shown(i) ? 0.15f : layout.opacity(i);
+                circle(canvas, layout.x(i), layout.y(i), layout.radius(i), action < 0 ? label(type) : "",
+                    held(i) || dragControl == i, Math.min(textSize, 16), opacity);
+                if (action == 0 || action == 2 || action == 3 || action == 4)
+                    icons.drawCaption(canvas, paint, layout.x(i), layout.y(i), layout.radius(i),
+                        KINDS[type].buttonName, action == 0 ? "SALTO" : action == 4 ? "GOLPE"
+                            : action == 2 ? "USAR" : "ARMA");
+                else if (action >= 0) {
+                    icons.draw(canvas, paint, layout.x(i), layout.y(i), layout.radius(i), action);
+                    icons.drawLabel(canvas, paint, layout.x(i), layout.y(i), layout.radius(i), action);
+                }
+            }
+            if (editing) {
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(2);
+                paint.setColor(0xffffc400);
+                float radius = layout.radius(selectedControl) + 6;
+                canvas.drawRect(layout.x(selectedControl) - radius, layout.y(selectedControl) - radius,
+                    layout.x(selectedControl) + radius, layout.y(selectedControl) + radius, paint);
+                paint.setStyle(Paint.Style.FILL);
             }
         }
         drawToolbar(canvas);
