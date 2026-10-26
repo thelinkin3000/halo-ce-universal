@@ -74,6 +74,7 @@ symbols in this file:
 #include "scenario/scenario_definitions.h"
 #include "text/draw_string.h"
 #include "text/text_group.h"
+#include "port_config.h" /* port: optional cinematic letterbox setting */
 #include "network_coop.h" /* port: port/linux/game/network_coop.c */
 
 /* ---------- constants */
@@ -332,7 +333,9 @@ void cinematic_render(
 			real bar_height;
 			real viewport_height;
 
-			bar_height = cinematic_globals->letterbox_amount * 0.125f;
+			/* port: reveal the scene without changing the camera. */
+bar_height = config_boolean("display.cinematic_letterbox") ?
+    cinematic_globals->letterbox_amount * 0.125f : 0.0f;
 			viewport_height = (real)(
 				render.camera.viewport_bounds.y1 -
 				render.camera.viewport_bounds.y0);
