@@ -89,7 +89,7 @@ public final class TouchControls extends View implements SensorEventListener, In
      * touch_input.c's TOUCH_OVERLAY_BUTTON_BIT: past SDL's 15)
      */
     private static final int MENU_BIT = 15;
-    private static final int MENU_FINGERS = 3;
+    private static final int MENU_FINGERS = 4;
     private static final long MENU_TAP_MS = 250;
     private static final long MENU_PRESS_MS = 150;
 
