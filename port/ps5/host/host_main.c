@@ -40,14 +40,14 @@ was given), loads /app0/halo_guest.elf, reads config.toml's debugging
 settings, and runs the game's main; the game ends the process itself
 (host_exit, host_common.c).
 
-The log is one file, /data/halo/halo.log, and the kernel log (klogsrv,
-port 3232), where each line is prefixed "halo: "; lines are queued with no
-lock and no stdio and written by a thread of the log's own, since a line
-costs its writer milliseconds, and errors, the end and a crash report are
-written at once, so signal handlers log through it and a crash leaves
-everything up to it. tools/ps5_deploy.py follows the kernel
-log, stops at the host's last line ("the host ends", or the hold's), and
-fetches the file.
+The log is one file, /data/halo/halo.log (unless config.toml's
+debug.halo_log is false), and the kernel log (klogsrv, port 3232), where
+each line is prefixed "halo: "; lines are queued with no lock and no stdio
+and written by a thread of the log's own, since a line costs its writer
+milliseconds, and errors, the end and a crash report are written at once,
+so signal handlers log through it and a crash leaves everything up to it.
+tools/ps5_deploy.py follows the kernel log, stops at the host's last line
+("the host ends", or the hold's), and fetches the file.
 
 When the game ends, its end is reported (the system calls answered
 -ENOSYS, the GL names called, the mmap calls through the wrap, the
@@ -387,12 +387,39 @@ static int is_folder(const char *path)
 	return stat(path, &status) == 0 && S_ISDIR(status.st_mode);
 }
 
+/* config.toml's debug.halo_log: true unless false (or, in a file from
+before it, debug.log_files false, as the Switch's and Android's hosts read
+it) */
+static int log_wanted(void)
+{
+	toml_result_t result = toml_parse_file_ex(PS5_DATA_FOLDER "/config.toml");
+	int wanted = 1;
+
+	if (!result.ok)
+		return 1;
+	{
+		toml_datum_t setting = toml_seek(result.toptab, "debug.halo_log");
+
+		if (setting.type != TOML_BOOLEAN)
+			setting = toml_seek(result.toptab, "debug.log_files");
+		wanted = !(setting.type == TOML_BOOLEAN && !setting.u.boolean);
+	}
+	toml_free(result);
+	return wanted;
+}
+
 /* the log file in the data folder, or the title's own when there is none;
-FTP's user sees only what everyone may, so it is made 0666 */
+FTP's user sees only what everyone may, so it is made 0666. None when
+debug.halo_log is false */
 static void log_open(void)
 {
 	const char *path = is_folder(PS5_DATA_FOLDER) ? PS5_DATA_FOLDER "/halo.log" : PS5_TITLE_FOLDER "/halo.log";
 
+	if (!log_wanted())
+	{
+		ps5_log("halo.log: not written (debug.halo_log); the kernel log only");
+		return;
+	}
 	log_file = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
 	if (log_file >= 0)
 		chmod(path, 0666);

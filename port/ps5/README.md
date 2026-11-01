@@ -100,7 +100,10 @@ FTP server can delete the maps (the next start extracts them again), edit
 
 The host's log is `/data/halo/halo.log` (or `halo.log` in the title's folder
 when there is no `/data/halo`), and every line goes to the kernel log too,
-prefixed `halo: `. It has the ranges of memory the game was given, the
+prefixed `halo: `. `halo_log = false` in the `[debug]` section of
+`config.toml` (the overlay's **Write halo.log**) writes the kernel log
+only, from the next start; `log_files = false` (**Write debug.txt**)
+writes no `debug.txt`. It has the ranges of memory the game was given, the
 game's own output (`game: `), the files the extraction writes, the maps
 opened, and every 5 s a heartbeat: the frames swapped, their mean and
 longest time, how many took over 20 and over 33 ms (and over 10 and 17 ms

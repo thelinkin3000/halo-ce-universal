@@ -98,7 +98,7 @@ To install the data from a computer:
 | --- | --- |
 | Saved games (`z:\` and `u:\`) | `save` |
 | Mods (`docs/mods.md`) | `mods`: `adb push <mod folder> /sdcard/Android/data/com.halo.decomp/files/mods/`; the main menu's Mods orders them and turns them off |
-| Log | `debug.txt` |
+| Log | `debug.txt`, the log of the game, and `halo.log`, the log of the app (`log_files = false` and `halo_log = false` in `[debug]` turn them off) |
 | Settings | `config.toml` |
 
 To make a copy of the saved games, enter
@@ -490,6 +490,10 @@ again.
 - For each renderer and driver that you tried: the line from the main menu,
   what looked wrong, and screenshots of the same scene.
 - `debug.txt` from the data folder.
+- `halo.log` from the data folder: the lines of `adb logcat -s halo`,
+  without a computer. If **Write halo.log** in the overlay's System folder
+  (`halo_log` in the `[debug]` section of `config.toml`) is off, turn it
+  on, then start the game again and play until the problem.
 - If you can use adb: the output of `adb logcat -s halo` during the run.
 - If you want to help more: set `vk_probe = "all"` in the `[debug]` section
   of `config.toml` and start the app. The app tests the Vulkan driver
@@ -816,7 +820,9 @@ and reload, address reuse and allocation failure.
 ## Find problems
 
 - Enter `adb logcat -s halo` to see the log of the port and the errors of
-  the game. `files/debug.txt` is the log of the game.
+  the game. `files/debug.txt` is the log of the game, and
+  `files/halo.log` has logcat's lines too, begun again each start
+  (`debug.halo_log`, the overlay's **Write halo.log**, from the next start).
 - If the guest code stops, the log shows the registers and the frame chain
   (`host/host_arch.c`), from a stack of the signal handler's own, so a
   stack overflow is reported too.

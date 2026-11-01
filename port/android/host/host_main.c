@@ -34,6 +34,12 @@ it grows, from where it ended when the run began: the file keeps every
 run's), and the CPU profiler
 (profile.bin: host_debug.c, at debug.profile_hz, 500 if that is 0) and the
 Vulkan renderer's GPU times (gpu.txt: host_vk_profile.c) write there.
+
+debug.halo_log (true by default) writes the log to halo.log in the data
+folder too, begun again each start, as the Switch's is beside its program
+and the PS5's in /data/halo: from when
+config.toml is read, so the lines before it (the memory's reservation, the
+start) are logcat's only.
 */
 
 #include "host.h"
@@ -65,32 +71,58 @@ static void log_to_logcat(int priority, const char *line)
 	__android_log_write(priority, "halo", line);
 }
 
-/* ---------- a profiled run's folder (debug.profile_run) */
+/* ---------- the log's files: a profiled run's (debug.profile_run) and the data folder's (debug.halo_log) */
 
 static char profile_folder[512];
-/* its halo.log, written as logcat is (write: the sink may be called from a signal handler, host_debug.c) */
+/* their halo.log, written as logcat is (write: the sink may be called from a signal handler, host_debug.c) */
 static int profile_log = -1;
-static struct timespec profile_started;
+static int data_log = -1;
+static struct timespec log_started;
 
-static void log_to_logcat_and_profile(int priority, const char *line)
+static void log_to_file(int descriptor, const char *prefix, const char *line)
 {
-	static const char levels[] = "??VDIWEF";
-	struct timespec now;
-	char prefix[32];
-	double seconds;
 	struct iovec parts[3];
 
-	__android_log_write(priority, "halo", line);
-	clock_gettime(CLOCK_MONOTONIC, &now);
-	seconds = (double)(now.tv_sec - profile_started.tv_sec) + (double)(now.tv_nsec - profile_started.tv_nsec) / 1e9;
-	snprintf(prefix, sizeof(prefix), "%8.2f %c ", seconds, priority >= 0 && priority < 8 ? levels[priority] : '?');
-	parts[0].iov_base = prefix;
+	parts[0].iov_base = (void *)prefix;
 	parts[0].iov_len = strlen(prefix);
 	parts[1].iov_base = (void *)line;
 	parts[1].iov_len = strlen(line);
 	parts[2].iov_base = (void *)"\n";
 	parts[2].iov_len = 1;
-	writev(profile_log, parts, 3);
+	writev(descriptor, parts, 3);
+}
+
+static void log_to_logcat_and_files(int priority, const char *line)
+{
+	static const char levels[] = "??VDIWEF";
+	struct timespec now;
+	char prefix[32];
+	double seconds;
+
+	__android_log_write(priority, "halo", line);
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	seconds = (double)(now.tv_sec - log_started.tv_sec) + (double)(now.tv_nsec - log_started.tv_nsec) / 1e9;
+	snprintf(prefix, sizeof(prefix), "%8.2f %c ", seconds, priority >= 0 && priority < 8 ? levels[priority] : '?');
+	if (profile_log >= 0)
+		log_to_file(profile_log, prefix, line);
+	if (data_log >= 0)
+		log_to_file(data_log, prefix, line);
+}
+
+/* the data folder's halo.log, begun again (debug.halo_log) */
+static void data_log_begin(const char *data_root_path)
+{
+	char path[600];
+
+	snprintf(path, sizeof(path), "%s/halo.log", data_root_path);
+	data_log = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0664);
+	if (data_log < 0)
+	{
+		host_logf(HOST_LOG_WARN, "cannot write %s (%s); the log is logcat's only", path, strerror(errno));
+		return;
+	}
+	host_log_set_sink(log_to_logcat_and_files);
+	host_logf(HOST_LOG_INFO, "the log goes to %s too (debug.halo_log)", path);
 }
 
 /* every folder along path made */
@@ -190,7 +222,6 @@ static void profile_run_begin(const char *data_root_path, int *profile_hz)
 	char path[600];
 	FILE *named;
 
-	clock_gettime(CLOCK_MONOTONIC, &profile_started);
 	snprintf(path, sizeof(path), "%s/profile_folder.txt", data_root_path);
 	named = fopen(path, "r");
 	if (named)
@@ -222,7 +253,7 @@ static void profile_run_begin(const char *data_root_path, int *profile_hz)
 	snprintf(path, sizeof(path), "%s/halo.log", profile_folder);
 	profile_log = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0664);
 	if (profile_log >= 0)
-		host_log_set_sink(log_to_logcat_and_profile);
+		host_log_set_sink(log_to_logcat_and_files);
 	snprintf(host_vk_profile_folder, sizeof(host_vk_profile_folder), "%s", profile_folder);
 	debug_copy_begin(data_root_path);
 	if (*profile_hz <= 0)
@@ -385,6 +416,7 @@ struct host_settings
 {
 	int profile_hz;
 	int profile_run; /* debug.profile_run */
+	int halo_log; /* debug.halo_log */
 	int gpu_split_parts; /* debug.gpu_split_parts */
 	int original_multisample; /* debug.original_multisample */
 	char vk_probe[128]; /* empty: the game runs */
@@ -409,6 +441,7 @@ static void config_read(const char *path, struct host_settings *settings)
 	memset(settings, 0, sizeof(*settings));
 	/* the defaults of port_config.c's rows, for a file not written yet (the first start) or without them */
 	snprintf(settings->renderer, sizeof(settings->renderer), "vulkan");
+	settings->halo_log = 1;
 	if (!result.ok)
 	{
 		host_logf(HOST_LOG_WARN, "cannot read %s: %s; the host's settings are the defaults", path, result.errmsg);
@@ -424,6 +457,8 @@ static void config_read(const char *path, struct host_settings *settings)
 		toml_datum_t marker = toml_seek(result.toptab, "debug.vk_present_marker");
 		toml_datum_t self_test = toml_seek(result.toptab, "debug.vk_self_test");
 		toml_datum_t profile_run = toml_seek(result.toptab, "debug.profile_run");
+		toml_datum_t halo_log = toml_seek(result.toptab, "debug.halo_log");
+		toml_datum_t log_files = toml_seek(result.toptab, "debug.log_files");
 		toml_datum_t split = toml_seek(result.toptab, "debug.gpu_split_parts");
 		toml_datum_t multisample = toml_seek(result.toptab, "debug.original_multisample");
 		toml_datum_t window = toml_seek(result.toptab, "debug.window_base");
@@ -442,6 +477,11 @@ static void config_read(const char *path, struct host_settings *settings)
 		settings->vk_present_marker = marker.type == TOML_BOOLEAN && marker.u.boolean;
 		settings->vk_self_test = self_test.type == TOML_BOOLEAN && self_test.u.boolean;
 		settings->profile_run = profile_run.type == TOML_BOOLEAN && profile_run.u.boolean;
+		/* (true unless false; a file from before it, which the game has not
+		completed yet, says with debug.log_files, as the Switch's host does) */
+		if (halo_log.type != TOML_BOOLEAN)
+			halo_log = log_files;
+		settings->halo_log = !(halo_log.type == TOML_BOOLEAN && !halo_log.u.boolean);
 		settings->gpu_split_parts = split.type == TOML_BOOLEAN && split.u.boolean;
 		settings->original_multisample = multisample.type == TOML_BOOLEAN && multisample.u.boolean;
 		if (window.type == TOML_INT64 && window.u.int64 > 0 && window.u.int64 < 0x100000000LL)
@@ -488,6 +528,7 @@ static void *game_main(void *unused)
 	struct host_settings settings;
 
 	(void)unused;
+	clock_gettime(CLOCK_MONOTONIC, &log_started);
 	external = SDL_GetAndroidExternalStoragePath();
 	if (!external)
 		host_fatal("Android storage is unavailable: %s", SDL_GetError());
@@ -522,6 +563,8 @@ static void *game_main(void *unused)
 	snprintf(path, sizeof(path), "%s/config.toml", data_root);
 
 	config_read(path, &settings);
+	if (settings.halo_log)
+		data_log_begin(data_root);
 	if (settings.profile_run)
 		profile_run_begin(data_root, &settings.profile_hz);
 	host_vk_profile_split = settings.profile_run && settings.gpu_split_parts;

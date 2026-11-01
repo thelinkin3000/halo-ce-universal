@@ -95,6 +95,13 @@ enum
 #define PLATFORM_VULKAN _platform_android
 #endif
 
+/* the rows the hosts read: Android's and the Switch's, and the PS5's */
+#ifdef HALO_PS5
+#define PLATFORM_HOST (_platform_android | _platform_ps5)
+#else
+#define PLATFORM_HOST _platform_android
+#endif
+
 /* the gyroscope's rows: Android's (the phone's, and the Switch's controllers),
 and the PS5's (the DualSense's) */
 #ifdef HALO_PS5
@@ -1425,10 +1432,18 @@ static const struct config_setting config_settings[] =
 	{ "debug.texture_dump_directory", _config_string, "\"\"", "HALO_TEXTURE_DUMP", _environment_value, _platform_all,
 		"A folder to write every texture to as it is uploaded; empty none." },
 	{ "debug.log_files", _config_boolean, "true", "HALO_LOG_FILES", _environment_value, _platform_all,
-		"Write the logs to files: the game's debug.txt (beside the data, and on the\n"
-		"Switch the program's halo.log too). false writes neither, which spares the\n"
-		"storage a write for each line; nothing is kept to say what went wrong.\n"
-		"halo.log takes it the next start." },
+		"Write the game's log to debug.txt, beside the data. false writes none,\n"
+		"which spares the storage a write for each line; nothing is kept to say\n"
+		"what went wrong. Changes at once." },
+#if defined(HALO_ANDROID) || defined(HALO_PS5)
+	/* (read by the host before the game starts: port/android/host/host_main.c,
+	port/switch/host/host_main.c, port/ps5/host/host_main.c) */
+	{ "debug.halo_log", _config_boolean, "true", "HALO_HALO_LOG", _environment_value, PLATFORM_HOST,
+		"Write the program's log to halo.log too, begun again each start: beside\n"
+		"the data on Android (logcat's lines of tag \"halo\"), beside the program\n"
+		"on the Switch (nxlink's), in /data/halo on the PS5 (the kernel log's).\n"
+		"false writes none. Takes effect the next start." },
+#endif
 	{ "debug.texture_log", _config_boolean, "false", "HALO_TEXTURE_LOG", _environment_set_is_true, _platform_all,
 		"Log texture uploads." },
 	{ "debug.texture_no_cache", _config_boolean, "false", "HALO_TEXTURE_NO_CACHE", _environment_set_is_true, _platform_all,
@@ -2406,7 +2421,8 @@ static void config_replace_string(const char *name, const char *text)
 
 /* settings added after an older one that meant both: a file that has
 game.ragdoll and not game.ragdoll_players or game.ragdoll_ai gives that
-value to the one it lacks (a new file has both, at "none") */
+value to the one it lacks (a new file has both, at "none"), and one with
+debug.log_files false and no debug.halo_log has that false too */
 static void config_apply_older_settings(toml_datum_t table)
 {
 	toml_datum_t legacy = toml_seek(table, "game.ragdoll");
@@ -2418,6 +2434,16 @@ static void config_apply_older_settings(toml_datum_t table)
 		if (toml_seek(table, "game.ragdoll_ai").type == TOML_UNKNOWN)
 			config_replace_string("game.ragdoll_ai", legacy.u.s);
 	}
+#if defined(HALO_ANDROID) || defined(HALO_PS5)
+	/* (debug.log_files false once meant no log file at all: the Switch's
+	halo.log neither) */
+	legacy = toml_seek(table, "debug.log_files");
+	if (legacy.type == TOML_BOOLEAN && !legacy.u.boolean &&
+		toml_seek(table, "debug.halo_log").type == TOML_UNKNOWN && config_setting_index("debug.halo_log") >= 0)
+	{
+		config_values[config_setting_index("debug.halo_log")].boolean = 0;
+	}
+#endif
 }
 
 /* whether length bytes of text are word, in any case (ASCII) */

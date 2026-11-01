@@ -378,6 +378,15 @@ static struct overlay_entry overlay_system_entries[] =
 	/* (a host's recording of its games: network_replay.c, port/linux/REPLAY.md) */
 	OVERLAY_TOGGLE_NOTE("Record Replays", _overlay_state_config, "config network.record_replays true",
 		"config network.record_replays false", "network.record_replays", "From the next network game"),
+	/* (the game's log, source/cseries/errors.c; the host's, from the next
+	start: port/android/host/host_main.c, port/switch/host/host_main.c,
+	port/ps5/host/host_main.c) */
+	OVERLAY_TOGGLE("Write debug.txt", _overlay_state_config, "config debug.log_files true",
+		"config debug.log_files false", "debug.log_files", 0.0f, FALSE),
+#if defined(HALO_ANDROID) || defined(HALO_PS5)
+	OVERLAY_TOGGLE_NOTE("Write halo.log", _overlay_state_config, "config debug.halo_log true",
+		"config debug.halo_log false", "debug.halo_log", "Applies at the next restart"),
+#endif
 #if defined(HALO_SWITCH) || defined(HALO_PS5)
 	OVERLAY_TOGGLE_NOTE("Xbox Button Pictures", _overlay_state_config, "config display.xbox_buttons true",
 		"config display.xbox_buttons false", "display.xbox_buttons", "Applies at the next restart"),

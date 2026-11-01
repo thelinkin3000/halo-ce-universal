@@ -78,7 +78,7 @@ fprintf that cannot affect it. Every line goes to both, and each is flushed
 at once, so the file is readable the moment a line is written.
 */
 static int log_descriptor = -1;
-/* config.toml's debug.log_files: halo.log written at all */
+/* config.toml's debug.halo_log: halo.log written at all */
 static int log_files = 1;
 
 /* The log is written from the main thread, from the game thread and from the
@@ -1372,17 +1372,20 @@ int main(int argc, char *argv[])
 	{
 		char log_path[PATH_MAX + 32];
 
-		/* (config.toml's debug.log_files false: none at all, the lines going
-		to nxlink and the console only; debug.txt is the guest's,
-		source/cseries/errors.c) */
+		/* (config.toml's debug.halo_log false: none at all, the lines going
+		to nxlink and the console only; or, in a file from before it,
+		debug.log_files false, which meant debug.txt and halo.log both.
+		debug.txt is the guest's, source/cseries/errors.c) */
 		snprintf(log_path, sizeof(log_path), "%s/config.toml", executable_root);
 		{
 			toml_result_t result = toml_parse_file_ex(log_path);
 
 			if (result.ok)
 			{
-				toml_datum_t datum = toml_seek(result.toptab, "debug.log_files");
+				toml_datum_t datum = toml_seek(result.toptab, "debug.halo_log");
 
+				if (datum.type != TOML_BOOLEAN)
+					datum = toml_seek(result.toptab, "debug.log_files");
 				log_files = !(datum.type == TOML_BOOLEAN && !datum.u.boolean);
 				toml_free(result);
 			}
