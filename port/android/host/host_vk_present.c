@@ -757,6 +757,7 @@ uint32_t host_vk_present_record(VkCommandBuffer command, struct host_vk_target *
 	VkPipelineStageFlags source_stage, destination_stage;
 	VkImageBlit blit;
 	int attempt, acquired = 0;
+	uint64_t acquire_start;
 	int64_t width, height, x, y;
 
 	if (!ensure_swapchain())
@@ -771,9 +772,19 @@ uint32_t host_vk_present_record(VkCommandBuffer command, struct host_vk_target *
 		if (!B.chain.handle)
 			return UINT32_MAX;
 	}
+	acquire_start = now_ns();
 	for (attempt = 0; attempt < 2 && !acquired; attempt++)
 	{
-		result = vkAcquireNextImageKHR(B.device, B.chain.handle, ACQUIRE_TIMEOUT_NS, frame->acquired, VK_NULL_HANDLE, &index);
+		uint64_t waited = now_ns() - acquire_start;
+
+		result = vkAcquireNextImageKHR(B.device, B.chain.handle, waited < ACQUIRE_TIMEOUT_NS ? ACQUIRE_TIMEOUT_NS - waited : 0,
+			frame->acquired, VK_NULL_HANDLE, &index);
+		/* (a timeout before its time is waited out again: host_vk_wait_fence) */
+		if (result == VK_TIMEOUT && now_ns() - acquire_start < ACQUIRE_TIMEOUT_NS)
+		{
+			attempt--;
+			continue;
+		}
 		if (result == VK_SUCCESS)
 		{
 			acquired = 1;

@@ -264,7 +264,11 @@ static void image_dirty_remove(struct host_vk_image *image)
 fence passing means both are done (the other was submitted before it) */
 static void image_retire(struct host_vk_image *image)
 {
-	unsigned slot = (unsigned)B.frame;
+	unsigned slot;
+
+	/* (the graveyard of a frame being recorded: host_vk_static_free_command) */
+	host_vk_frame_command();
+	slot = (unsigned)B.frame;
 
 	image_dirty_remove(image);
 	if (graveyard_count[slot] == graveyard_capacity[slot])

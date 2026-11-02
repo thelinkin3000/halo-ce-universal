@@ -86,16 +86,29 @@ int host_vk_check(VkResult result, const char *call)
 void host_vk_wait_fence(VkFence fence, const char *what, uint64_t number)
 {
 	uint64_t start = now_ns();
-	VkResult result = vkWaitForFences(B.device, 1, &fence, VK_TRUE, 2000000000ull);
+	int said = 0;
+	VkResult result;
 
-	if (result == VK_TIMEOUT)
+	/* (a timeout before its time is waited out again: a Mali-G78's driver gives one at once when a signal reaches
+	the thread waiting, as the profiler's do, debug.profile_hz; said only for a wait of two seconds and more) */
+	for (;;)
 	{
-		host_logf(HOST_LOG_WARN, "vk: waiting for %s (submission %llu) has taken more than two seconds; waiting on",
-			what, (unsigned long long)number);
-		result = vkWaitForFences(B.device, 1, &fence, VK_TRUE, UINT64_MAX);
+		uint64_t waited = now_ns() - start;
+
+		result = vkWaitForFences(B.device, 1, &fence, VK_TRUE, waited < 2000000000ull ? 2000000000ull - waited :
+			UINT64_MAX);
+		if (result != VK_TIMEOUT)
+			break;
+		if (!said && now_ns() - start >= 2000000000ull)
+		{
+			host_logf(HOST_LOG_WARN, "vk: waiting for %s (submission %llu) has taken more than two seconds; waiting on",
+				what, (unsigned long long)number);
+			said = 1;
+		}
+	}
+	if (said)
 		host_logf(HOST_LOG_WARN, "vk: %s (submission %llu) was ready after %.1f s", what, (unsigned long long)number,
 			(double)(now_ns() - start) / 1e9);
-	}
 	HOST_VK_CHECK(result);
 }
 

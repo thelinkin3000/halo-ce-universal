@@ -347,10 +347,15 @@ uint32_t host_vk_static_make(uint32_t address, uint32_t size)
 void host_vk_static_free_command(const struct vk_command_static_free *command)
 {
 	uint32_t id = command->id & ~VK_DATA_STATIC;
-	unsigned slot = (unsigned)B.frame;
+	unsigned slot;
 
 	if (!(command->id & VK_DATA_STATIC) || id < 1 || id >= STATIC_LIMIT || !statics[id].buffer)
 		return;
+	/* (the graveyard of a frame being recorded: between frames - a map's load, as its ranges are let go - B.frame is
+	the next frame's slot, whose graveyard goes as its recording begins, under the frame before, which may still be
+	drawing with it: the validation layer's VUID-vkDestroyBuffer-buffer-00922) */
+	host_vk_frame_command();
+	slot = (unsigned)B.frame;
 	if (static_graveyard_count[slot] == static_graveyard_capacity[slot])
 	{
 		unsigned capacity = static_graveyard_capacity[slot] ? static_graveyard_capacity[slot] * 2 : 64;
