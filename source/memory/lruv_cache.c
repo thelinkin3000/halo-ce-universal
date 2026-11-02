@@ -518,7 +518,6 @@ long lruv_block_new(
 {
 	struct lruv_cache_hole holes[MAXIMUM_LRUV_CACHE_HOLES];
 	struct lruv_cache_hole best_hole;
-	struct data_iterator iterator;
 	struct lruv_cache_block *block;
 	struct lruv_cache_block *next_block;
 	struct lruv_cache_block *new_block;
@@ -645,18 +644,29 @@ long lruv_block_new(
 
 	if (found_hole)
 	{
-		data_iterator_new(&iterator, cache->blocks);
-		while ((block = data_iterator_next(&iterator)) != NULL)
+		/* port: the blocks under the hole, found along the list (in the
+		order of their pages: those under it follow the block before it,
+		best_hole.block_index), not by looking at every block in the array;
+		each one's deletion is its own, whatever the order */
+		block_index = best_hole.block_index == NONE ? cache->first_block_index :
+			((struct lruv_cache_block *)datum_get(cache->blocks, best_hole.block_index))->next_block_index;
+		while (block_index != NONE)
 		{
-			if (block->first_page_index < best_hole.first_page_index + desired_page_count &&
-				block->first_page_index + block->page_count > best_hole.first_page_index)
+			long next_index;
+
+			block = datum_get(cache->blocks, block_index);
+			if (block->first_page_index >= best_hole.first_page_index + desired_page_count)
+				break;
+			next_index = block->next_block_index;
+			if (block->first_page_index + block->page_count > best_hole.first_page_index)
 			{
 				match_assert(
 					"c:\\halo\\SOURCE\\memory\\lruv_cache.c",
 					375,
-					!cache->locked_block_proc || !cache->locked_block_proc(iterator.index));
-				lruv_block_delete(cache, iterator.datum_index);
+					!cache->locked_block_proc || !cache->locked_block_proc(block_index));
+				lruv_block_delete(cache, block_index);
 			}
+			block_index = next_index;
 		}
 
 		if (cache->blocks->actual_count == cache->blocks->maximum_count &&
