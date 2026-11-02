@@ -174,7 +174,7 @@ struct host_vk_swapchain
 	uint32_t count;
 	VkImage images[HOST_VK_SWAPCHAIN_IMAGES];
 	VkSemaphore render_done[HOST_VK_SWAPCHAIN_IMAGES];
-	VkImageView views[HOST_VK_SWAPCHAIN_IMAGES]; /* only with debug.vk_present_marker */
+	VkImageView views[HOST_VK_SWAPCHAIN_IMAGES]; /* the images drawn into: host_vk_present.c */
 };
 
 struct host_vk_backend
@@ -189,6 +189,9 @@ struct host_vk_backend
 	VkPhysicalDeviceMemoryProperties memory;
 	VkFormat color_format, depth_format;
 	VkFilter blit_filter;
+	/* the colour targets' images can be sampled (their format's features): the picture is then presented by a draw,
+	host_vk_present.c */
+	int color_sampled;
 	/* the optional device features that were enabled */
 	int sampler_anisotropy, fill_mode_non_solid, occlusion_query_precise, texture_compression_bc;
 	/* VK_EXT_multisampled_render_to_single_sampled: a multisampled rendering draws into the targets' own images, its samples

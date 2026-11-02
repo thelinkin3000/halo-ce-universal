@@ -259,8 +259,12 @@ static void layout_use(VkImageLayout layout, VkPipelineStageFlags *stage, VkAcce
 		*uses = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 		break;
 	case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
-		/* (the game's shaders sample in the fragment shader; the vertex shader too, for safety) */
-		*stage = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		/* (sampled in the fragment shader alone: every texture binding is the fragment stage's - the Xbox's vertex
+		shaders read no texture - and so a rendering into a texture that the next samples lets that one's vertex
+		shading and binning go ahead while its pixels are drawn, which a tiler pays dearly for otherwise: on a
+		Mali-G78, Damnation's object shadows' small renderings took 2.8 ms of the GPU's frame with the vertex shader
+		here, 1.2 ms without, and the frame 11.1 ms on Blood Gulch, 8.4 without) */
+		*stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
 		*writes = 0;
 		*uses = VK_ACCESS_SHADER_READ_BIT;
 		break;
@@ -1783,6 +1787,7 @@ static int device_create(void)
 		color_usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 	if (color_features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)
 		color_usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+	B.color_sampled = (color_usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0;
 	color_blit_destination = (color_usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) &&
 		(color_features & VK_FORMAT_FEATURE_BLIT_DST_BIT);
 	B.blit_filter = (color_features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;

@@ -5,8 +5,13 @@ The Vulkan renderer's surface and swapchain (port/android/VULKAN.md, phase 2),
 on the game's window: the surface is made with vkCreateAndroidSurfaceKHR on the
 window's ANativeWindow (no SDL_Vulkan_* call: SDL would load the phone's driver
 beside the chosen one), the swapchain is FIFO with the surface's own images'
-count plus one, and a frame is shown by a letterboxed blit of the game's back
-buffer into the acquired image.
+count plus one, and a frame is shown by drawing the game's back buffer,
+letterboxed, into the acquired image: one rendering, cleared black as it begins
+(the bars), with one triangle over the picture's rectangle that samples the
+back buffer. On a tiler that is one write of the image, where clearing it and
+blitting into it, as was done before, wrote it twice and read it once more; a
+driver that cannot make that pass, or a back buffer that cannot be sampled,
+has the clear and the blit still.
 
 Android destroys the window's ANativeWindow when the app goes to the background
 and makes a new one on return; SDL's lifecycle events do not reach the game's
@@ -308,9 +313,8 @@ static int swapchain_create(struct host_vk_swapchain *chain, VkSwapchainKHR old,
 			swapchain_destroy(chain);
 			return 0;
 		}
-		if (host_vk_present_marker)
 		{
-			/* the marker is drawn in a rendering on the image */
+			/* the picture is drawn in a rendering on the image (and the marker with it) */
 			VkImageViewCreateInfo view = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
 
 			view.image = chain->images[index];
@@ -443,6 +447,301 @@ static void extent_check(void)
 		swapchain_recreate("the surface's size changed");
 }
 
+/* ---------- the drawn present */
+
+static struct
+{
+	/* made: for the swapchain format `format`; failed: it cannot be (said once), and the blit is used */
+	int made, failed;
+	VkFormat format;
+	VkShaderModule vertex, fragment;
+	VkDescriptorSetLayout set_layout;
+	VkPipelineLayout layout;
+	VkPipeline pipeline;
+	VkSampler sampler;
+	VkDescriptorPool pool;
+	/* a set for each frame's command buffer, written as it is recorded: the frame before may still be reading its own */
+	VkDescriptorSet sets[HOST_VK_FRAMES];
+} drawn;
+
+/* one triangle over the whole viewport (the picture's rectangle) */
+static const char drawn_vertex_source[] =
+	"#version 450\n"
+	"void main()\n"
+	"{\n"
+	"\tgl_Position = vec4(float((gl_VertexIndex & 1) << 2) - 1.0, float((gl_VertexIndex & 2) << 1) - 1.0, 0.0, 1.0);\n"
+	"}\n";
+
+/* the back buffer's texel under the pixel: its rows are the picture's from the top, as the swapchain image's are */
+static const char drawn_fragment_source[] =
+	"#version 450\n"
+	"layout(set = 0, binding = 0) uniform sampler2D picture;\n"
+	"layout(push_constant) uniform pass\n"
+	"{\n"
+	"\t/* the rectangle's top left in the image, and 1 / its width and height */\n"
+	"\tvec4 rectangle;\n"
+	"};\n"
+	"layout(location = 0) out vec4 result;\n"
+	"void main()\n"
+	"{\n"
+	"\tresult = vec4(texture(picture, (gl_FragCoord.xy - rectangle.xy) * rectangle.zw).rgb, 1.0);\n"
+	"}\n";
+
+static void drawn_destroy_pipeline(void)
+{
+	if (drawn.pipeline)
+		vkDestroyPipeline(B.device, drawn.pipeline, NULL);
+	drawn.pipeline = VK_NULL_HANDLE;
+	drawn.made = 0;
+}
+
+/* the pass's pipeline for the swapchain's format, made the first time (and again for another format), and what it
+binds; 0 if it cannot be made (said once) */
+static int drawn_make(void)
+{
+	VkDescriptorSetLayoutBinding binding;
+	VkDescriptorSetLayoutCreateInfo set_layout = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+	VkPushConstantRange range;
+	VkPipelineLayoutCreateInfo layout = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+	VkSamplerCreateInfo sampler = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+	VkDescriptorPoolSize size;
+	VkDescriptorPoolCreateInfo pool = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+	VkDescriptorSetLayout layouts[HOST_VK_FRAMES];
+	VkDescriptorSetAllocateInfo allocate = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+	VkPipelineShaderStageCreateInfo stages[2] = { { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO },
+		{ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO } };
+	VkPipelineVertexInputStateCreateInfo vertex_input = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+	VkPipelineInputAssemblyStateCreateInfo assembly = { VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+	VkPipelineViewportStateCreateInfo viewport = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+	VkPipelineRasterizationStateCreateInfo raster = { VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+	VkPipelineMultisampleStateCreateInfo multisample = { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+	VkPipelineDepthStencilStateCreateInfo depth_stencil = { VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+	VkPipelineColorBlendAttachmentState blend_attachment;
+	VkPipelineColorBlendStateCreateInfo blend = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+	VkDynamicState dynamic_states[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+	VkPipelineDynamicStateCreateInfo dynamic = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+	VkPipelineRenderingCreateInfo rendering = { VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+	VkGraphicsPipelineCreateInfo info = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+	uint32_t index;
+
+	if (drawn.made && drawn.format == B.chain.format)
+		return 1;
+	if (drawn.failed || !B.color_sampled)
+		return 0;
+	/* (another format: a new swapchain, made with the device idle) */
+	drawn_destroy_pipeline();
+	drawn.failed = 1;
+	if (!drawn.layout)
+	{
+		drawn.vertex = host_vk_shader_module(drawn_vertex_source, 0, "present pass's vertex shader");
+		drawn.fragment = host_vk_shader_module(drawn_fragment_source, 1, "present pass's fragment shader");
+		if (!drawn.vertex || !drawn.fragment)
+			goto failed;
+		memset(&binding, 0, sizeof(binding));
+		binding.binding = 0;
+		binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		binding.descriptorCount = 1;
+		binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+		set_layout.bindingCount = 1;
+		set_layout.pBindings = &binding;
+		if (!HOST_VK_CHECK(vkCreateDescriptorSetLayout(B.device, &set_layout, NULL, &drawn.set_layout)))
+			goto failed;
+		/* the blit's filter: linear where the format can be filtered so */
+		sampler.magFilter = B.blit_filter;
+		sampler.minFilter = B.blit_filter;
+		sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+		sampler.addressModeU = sampler.addressModeV = sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		sampler.maxLod = 0.25f;
+		if (!HOST_VK_CHECK(vkCreateSampler(B.device, &sampler, NULL, &drawn.sampler)))
+			goto failed;
+		size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		size.descriptorCount = HOST_VK_FRAMES;
+		pool.maxSets = HOST_VK_FRAMES;
+		pool.poolSizeCount = 1;
+		pool.pPoolSizes = &size;
+		if (!HOST_VK_CHECK(vkCreateDescriptorPool(B.device, &pool, NULL, &drawn.pool)))
+			goto failed;
+		for (index = 0; index < HOST_VK_FRAMES; index++)
+			layouts[index] = drawn.set_layout;
+		allocate.descriptorPool = drawn.pool;
+		allocate.descriptorSetCount = HOST_VK_FRAMES;
+		allocate.pSetLayouts = layouts;
+		if (!HOST_VK_CHECK(vkAllocateDescriptorSets(B.device, &allocate, drawn.sets)))
+			goto failed;
+		range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+		range.offset = 0;
+		range.size = 16;
+		layout.setLayoutCount = 1;
+		layout.pSetLayouts = &drawn.set_layout;
+		layout.pushConstantRangeCount = 1;
+		layout.pPushConstantRanges = &range;
+		if (!HOST_VK_CHECK(vkCreatePipelineLayout(B.device, &layout, NULL, &drawn.layout)))
+			goto failed;
+	}
+
+	stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+	stages[0].module = drawn.vertex;
+	stages[0].pName = "main";
+	stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+	stages[1].module = drawn.fragment;
+	stages[1].pName = "main";
+	assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	viewport.viewportCount = 1;
+	viewport.scissorCount = 1;
+	raster.polygonMode = VK_POLYGON_MODE_FILL;
+	raster.cullMode = VK_CULL_MODE_NONE;
+	raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+	raster.lineWidth = 1.0f;
+	multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+	memset(&blend_attachment, 0, sizeof(blend_attachment));
+	blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
+		VK_COLOR_COMPONENT_A_BIT;
+	blend.attachmentCount = 1;
+	blend.pAttachments = &blend_attachment;
+	dynamic.dynamicStateCount = 2;
+	dynamic.pDynamicStates = dynamic_states;
+	rendering.colorAttachmentCount = 1;
+	rendering.pColorAttachmentFormats = &B.chain.format;
+	info.pNext = &rendering;
+	info.stageCount = 2;
+	info.pStages = stages;
+	info.pVertexInputState = &vertex_input;
+	info.pInputAssemblyState = &assembly;
+	info.pViewportState = &viewport;
+	info.pRasterizationState = &raster;
+	info.pMultisampleState = &multisample;
+	info.pDepthStencilState = &depth_stencil;
+	info.pColorBlendState = &blend;
+	info.pDynamicState = &dynamic;
+	info.layout = drawn.layout;
+	info.basePipelineIndex = -1;
+	/* (a driver without dynamic rendering: a render pass of the rendering's format, host_vk_passes.c) */
+	info.renderPass = host_vk_pass_for_pipeline(&rendering, multisample.rasterizationSamples, 0);
+	if (info.renderPass)
+		info.pNext = rendering.pNext;
+	if (!HOST_VK_CHECK(vkCreateGraphicsPipelines(B.device, B.pipeline_cache, 1, &info, NULL, &drawn.pipeline)))
+		goto failed;
+	drawn.made = 1;
+	drawn.failed = 0;
+	drawn.format = B.chain.format;
+	host_logf(HOST_LOG_INFO, "vk: the picture is presented by a draw");
+	return 1;
+failed:
+	host_logf(HOST_LOG_WARN, "vk: the present pass cannot be made; the picture is presented by a blit");
+	return 0;
+}
+
+/* the back buffer drawn into the rectangle (x, y, width, height) of swapchain image `index`, the rest black, and the
+marker's squares with it; the image is left in COLOR_ATTACHMENT_OPTIMAL. 0 (nothing recorded) where the pass cannot be
+made: the clear and the blit present it then. */
+static int drawn_present(VkCommandBuffer command, struct host_vk_target *back_buffer, uint32_t index, int64_t x, int64_t y,
+	int64_t width, int64_t height)
+{
+	VkImageMemoryBarrier barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+	VkPipelineStageFlags source_stage, destination_stage;
+	VkDescriptorImageInfo image;
+	VkWriteDescriptorSet write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+	VkRenderingAttachmentInfo attachment = { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+	VkRenderingInfo rendering = { VK_STRUCTURE_TYPE_RENDERING_INFO };
+	VkDescriptorSet set;
+	VkViewport viewport;
+	VkRect2D rectangle;
+	float constants[4];
+
+	if (!B.chain.views[index] || !back_buffer->view || !drawn_make())
+		return 0;
+	set = drawn.sets[B.frame];
+	host_vk_target_transition(command, back_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	image.sampler = drawn.sampler;
+	image.imageView = back_buffer->view;
+	image.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	write.dstSet = set;
+	write.dstBinding = 0;
+	write.descriptorCount = 1;
+	write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	write.pImageInfo = &image;
+	vkUpdateDescriptorSets(B.device, 1, &write, 0, NULL);
+
+	/* (the layout change must follow the acquire semaphore's wait, which is at the transfer stage: frame_submit) */
+	host_vk_barrier_scope(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, &source_stage,
+		&barrier.srcAccessMask, &destination_stage, &barrier.dstAccessMask);
+	source_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+	barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.image = B.chain.images[index];
+	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barrier.subresourceRange.levelCount = 1;
+	barrier.subresourceRange.layerCount = 1;
+	vkCmdPipelineBarrier(command, source_stage, destination_stage, 0, 0, NULL, 0, NULL, 1, &barrier);
+
+	attachment.imageView = B.chain.views[index];
+	attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	attachment.clearValue.color.float32[3] = 1.0f;
+	rendering.renderArea.extent = B.chain.extent;
+	rendering.layerCount = 1;
+	rendering.colorAttachmentCount = 1;
+	rendering.pColorAttachments = &attachment;
+	host_vk_profile_rendering_begin(command, "present");
+	host_vk_cmd_begin_rendering(command, &rendering);
+	if (width > 0 && height > 0)
+	{
+		viewport.x = (float)x;
+		viewport.y = (float)y;
+		viewport.width = (float)width;
+		viewport.height = (float)height;
+		viewport.minDepth = 0.0f;
+		viewport.maxDepth = 1.0f;
+		rectangle.offset.x = (int32_t)x;
+		rectangle.offset.y = (int32_t)y;
+		rectangle.extent.width = (uint32_t)width;
+		rectangle.extent.height = (uint32_t)height;
+		vkCmdSetViewport(command, 0, 1, &viewport);
+		vkCmdSetScissor(command, 0, 1, &rectangle);
+		vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, drawn.pipeline);
+		vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, drawn.layout, 0, 1, &set, 0, NULL);
+		constants[0] = (float)x;
+		constants[1] = (float)y;
+		constants[2] = 1.0f / (float)width;
+		constants[3] = 1.0f / (float)height;
+		vkCmdPushConstants(command, drawn.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), constants);
+		vkCmdDraw(command, 3, 1, 0, 0);
+	}
+	if (host_vk_present_marker && width > 0 && height > 0)
+	{
+		/* a red square at the picture's top left and a green one at its top right, so that a screenshot shows which
+		way up the picture is and where its corners land */
+		VkClearAttachment clear;
+		VkClearRect rect;
+		uint32_t square_size = (uint32_t)(width / 16 > 16 ? width / 16 : 16);
+		int square;
+
+		if (square_size > (uint32_t)height)
+			square_size = (uint32_t)height;
+		memset(&clear, 0, sizeof(clear));
+		clear.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		memset(&rect, 0, sizeof(rect));
+		rect.layerCount = 1;
+		rect.rect.extent.width = square_size;
+		rect.rect.extent.height = square_size;
+		rect.rect.offset.y = (int32_t)y;
+		for (square = 0; square < 2; square++)
+		{
+			clear.clearValue.color.float32[0] = square == 0 ? 1.0f : 0.0f;
+			clear.clearValue.color.float32[1] = square == 0 ? 0.0f : 1.0f;
+			clear.clearValue.color.float32[3] = 1.0f;
+			rect.rect.offset.x = square == 0 ? (int32_t)x : (int32_t)(x + width - square_size);
+			vkCmdClearAttachments(command, 1, &clear, 1, &rect);
+		}
+	}
+	host_vk_cmd_end_rendering(command);
+	host_vk_profile_rendering_end(command);
+	return 1;
+}
+
 /* ---------- presenting */
 
 uint32_t host_vk_present_record(VkCommandBuffer command, struct host_vk_target *back_buffer)
@@ -510,7 +809,30 @@ uint32_t host_vk_present_record(VkCommandBuffer command, struct host_vk_target *
 		return UINT32_MAX;
 	image = B.chain.images[index];
 
-	/* the back buffer is read by the blit; the image is cleared black (the bars) and the picture blitted into it, the
+	/* the picture's rectangle: the letterbox as d3d8_gl.c's Present works it out, the window's width, or its height,
+	whichever the picture's shape fits */
+	width = B.chain.extent.width;
+	height = width * (int64_t)back_buffer->key.pixel_height / (int64_t)back_buffer->key.pixel_width;
+	if (height > (int64_t)B.chain.extent.height)
+	{
+		height = B.chain.extent.height;
+		width = height * (int64_t)back_buffer->key.pixel_width / (int64_t)back_buffer->key.pixel_height;
+	}
+	x = ((int64_t)B.chain.extent.width - width) / 2;
+	y = ((int64_t)B.chain.extent.height - height) / 2;
+	if (drawn_present(command, back_buffer, index, x, y, width, height))
+	{
+		barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		barrier.image = image;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.levelCount = 1;
+		barrier.subresourceRange.layerCount = 1;
+		goto presentable;
+	}
+
+	/* (no present pass) the back buffer is read by the blit; the image is cleared black (the bars) and the picture blitted into it, the
 	letterbox as d3d8_gl.c's Present works it out: the window's width, or its height, whichever the picture's shape fits */
 	host_vk_target_transition(command, back_buffer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 	host_vk_barrier_scope(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &source_stage,
@@ -541,15 +863,6 @@ uint32_t host_vk_present_record(VkCommandBuffer command, struct host_vk_target *
 		vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &memory, 0, NULL,
 			0, NULL);
 	}
-	width = B.chain.extent.width;
-	height = width * (int64_t)back_buffer->key.pixel_height / (int64_t)back_buffer->key.pixel_width;
-	if (height > (int64_t)B.chain.extent.height)
-	{
-		height = B.chain.extent.height;
-		width = height * (int64_t)back_buffer->key.pixel_width / (int64_t)back_buffer->key.pixel_height;
-	}
-	x = ((int64_t)B.chain.extent.width - width) / 2;
-	y = ((int64_t)B.chain.extent.height - height) / 2;
 	if (width > 0 && height > 0)
 	{
 		memset(&blit, 0, sizeof(blit));
@@ -618,6 +931,7 @@ uint32_t host_vk_present_record(VkCommandBuffer command, struct host_vk_target *
 	{
 		barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 	}
+presentable:
 #ifdef HALO_PS5
 	/* (the picture as it is presented, copied when a screenshot is due; the image is then in barrier.oldLayout) */
 	host_vk_screenshot_record(command, image, &barrier.oldLayout);
