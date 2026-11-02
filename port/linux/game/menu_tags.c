@@ -400,6 +400,8 @@ static char const *const port_function_names[] =
 	"port mods save", "port mods accept", "port mods delete", "port mods import",
 	/* (Video Setup's IMPORT DRIVER, Android's: menu_functions.c) */
 	"port vk driver import",
+	/* (the map lists' IMPORT, Android's: menu_functions.c) */
+	"port map import",
 	/* (the main menu's news: menu_functions.c) */
 	"port news init", "port news close", "port news up", "port news down", "port news page up",
 	"port news page down",

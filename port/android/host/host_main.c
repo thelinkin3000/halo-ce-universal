@@ -443,6 +443,14 @@ void host_android_import_vk_drivers(const char *folder)
 	host_android_folder_call("importVkDrivers", folder);
 }
 
+/* asks the activity to copy the maps the player chooses (.map files, and
+those in .zip files) into folder, custom_maps (HaloActivity.importMaps: the
+system's file picker, then the copy on a thread of its own) */
+void host_android_import_maps(const char *folder)
+{
+	host_android_folder_call("importMaps", folder);
+}
+
 /* the settings of [debug] that this file reads, from config.toml */
 struct host_settings
 {

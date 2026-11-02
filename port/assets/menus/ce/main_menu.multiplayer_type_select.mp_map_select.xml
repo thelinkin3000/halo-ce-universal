@@ -23,6 +23,7 @@
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/mp_map_select/mp_map_select_button_bar" type="column_list" width="640" height="28" flags="pass_unhandled_to_focused_child left_right_tabs_items">
 		<data input="common button bar update"/>
+		<child widget="main_menu/new_select/button_map_import" x="250" y="1" platform="android"/>
 		<child widget="main_menu/multiplayer_type_select/mp_map_select/mp_map_select_button_ok" x="380" y="1"/>
 		<child widget="common_button_back" x="510" y="1"/>
 	</widget>

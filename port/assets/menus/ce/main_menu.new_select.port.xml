@@ -13,4 +13,8 @@
 		<string text="CUSTOM SINGLEPLAYER"/>
 		<string text="CUSTOM MULTIPLAYER"/>
 	</strings>
+	<widget name="main_menu/new_select/button_map_import" type="text" width="128" height="24" bitmap="bitmaps/text_button_background" text="IMPORT" font="ui\small_ui" color="#FFFFFFFF" align="center" text_y="2">
+		<on event="a" run="port map import"/>
+		<on event="left_mouse" run="mouse emit accept event"/>
+	</widget>
 </menus>

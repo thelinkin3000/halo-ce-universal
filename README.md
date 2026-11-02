@@ -222,6 +222,11 @@ of folders is read, and `bitmaps.map`, `sounds.map` and `loc.map` stay in
 `custom_maps` itself. Joining a game on a map you don't have downloads it,
 with its progress at the top of the screen.
 
+On Android, IMPORT under the level lists (New Game's and the Map screen's)
+copies maps in from the system's file picker: `.map` files, or `.zip` files
+of them. A `.zip` with more than one map becomes a folder named like it;
+`bitmaps.map`, `sounds.map` and `loc.map` always go to `custom_maps` itself.
+
 <img width="640" alt="CUSTOM SINGLEPLAYER, listing folders of maps" src="docs/images/custom-singleplayer.jpg" />
 
 <img width="640" alt="A folder of CUSTOM MULTIPLAYER opened to its maps" src="docs/images/custom-multiplayer.jpg" />

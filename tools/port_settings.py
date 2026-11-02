@@ -1414,6 +1414,11 @@ OVERRIDE_ORIGINALS = {
 # the map lists' first row: SINGLEPLAYER, MULTIPLAYER, CUSTOM SINGLEPLAYER or
 # CUSTOM MULTIPLAYER maps (_map_kind)
 MAP_KIND_CHOOSER = "main_menu/new_select/list_item_0_map_kind"
+# the map lists' IMPORT (Android's: New Game's and the Map screen's button
+# bars, left of OK): the app's file picker, which copies .map files, and the
+# maps in .zip files, into custom_maps (menu_functions.c's map_import_start,
+# HaloActivity.importMaps)
+MAP_IMPORT = "main_menu/new_select/button_map_import"
 
 # the main menu's news: the latest release's notes (tools/embed_assets.py's
 # news_text) in a window the main menu's X opens (WIDGET_PATCHES), its lines
@@ -1563,6 +1568,12 @@ WIDGET_PATCHES = {
         '<on event="back" run="port map list back"/>',
     ]},
     "main_menu/solo_level_select/solo_level_select_list": {"swap": {"main_menu/new_select/list_item_0": MAP_KIND_CHOOSER}},
+    # (their IMPORT, Android's: MAP_IMPORT)
+    f"{MT}/mp_map_select/mp_map_select_button_bar": {"insert_before": {
+        f"{MT}/mp_map_select/mp_map_select_button_ok": [f'<child widget="{MAP_IMPORT}" x="250" y="1" platform="android"/>']}},
+    "main_menu/solo_level_select/solo_level_select_button_bar": {"insert_before": {
+        "main_menu/solo_level_select/solo_level_select_button_ok": [
+            f'<child widget="{MAP_IMPORT}" x="250" y="1" platform="android"/>']}},
     # (each description shows the other kind's maps too: a campaign level's
     # picture, name and words on the Map screen, a multiplayer map's on New
     # Game's)
@@ -2716,6 +2727,7 @@ def _map_kind() -> list:
                      ['<on event="left_mouse" run="mouse spinner 1wide click"/>'])
     lines += _strings("main_menu/new_select/var_map_kinds",
                       ["SINGLEPLAYER", "MULTIPLAYER", "CUSTOM SINGLEPLAYER", "CUSTOM MULTIPLAYER"])
+    lines += _text_button(MAP_IMPORT, "IMPORT", ['<on event="a" run="port map import"/>'])
     return lines
 
 

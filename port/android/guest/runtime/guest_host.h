@@ -160,6 +160,12 @@ HaloActivity.importVkDrivers); returns at once, the copy done on the app's
 own thread */
 void host_android_import_vk_drivers(const char *folder);
 
+/* the system's file picker, after which the app copies each Custom Edition
+map chosen, or each in a .zip file chosen, into folder (a path: custom_maps;
+HaloActivity.importMaps); returns at once, the copy done on the app's own
+thread */
+void host_android_import_maps(const char *folder);
+
 /* ---------- the on-screen touch controls (host_touch.c, android_imports.list) */
 
 /* the overlay's controller: the SDL axes (left x, y, right x, y, left

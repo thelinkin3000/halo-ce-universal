@@ -1500,13 +1500,19 @@ void host_android_import_replays(const char *folder)
 	(void)folder;
 }
 
-/* (and the Mods screen's IMPORT, and Video Setup's IMPORT DRIVER) */
+/* (and the Mods screen's IMPORT, Video Setup's IMPORT DRIVER, and the map
+lists' IMPORT) */
 void host_android_import_mods(const char *folder)
 {
 	(void)folder;
 }
 
 void host_android_import_vk_drivers(const char *folder)
+{
+	(void)folder;
+}
+
+void host_android_import_maps(const char *folder)
 {
 	(void)folder;
 }

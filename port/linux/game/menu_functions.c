@@ -1417,6 +1417,121 @@ static void map_description_show(struct widget_instance *description, short leve
 		widget->parameters.text_box.string_list_index = map;
 }
 
+/* the map lists' IMPORT (Android's alone: tools/port_settings.py's
+MAP_IMPORT): the app's file picker, then the maps chosen (.map files, and
+those in .zip files) copied into custom_maps on the app's own thread; the
+list open counts the folder's maps each second, and finds them again when
+the count changes (map_import_look), as each one comes */
+
+/* how often custom_maps is looked at while IMPORT's maps are awaited */
+#define MAP_IMPORT_LOOK_MILLISECONDS 1000
+
+void platform_translate_path(char const *xbox_path, char *host_path, unsigned long host_path_size);
+/* (the app's file picker: port/android/host/host_main.c, HaloActivity.importMaps) */
+void host_android_import_maps(const char *folder);
+
+static struct
+{
+	/* whether maps are awaited (until the list is opened again), the
+	folder's maps as last counted, and when they were */
+	boolean importing;
+	long maps;
+	unsigned long looked;
+} map_import;
+
+#if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
+/* the .map files of a folder, and with `inside`, those of its folders too
+(a map being copied is a .map.part until it is whole) */
+static long map_import_count_in(char const *folder, boolean inside)
+{
+	char name[256];
+	void *directory = posix_directory_open(folder);
+	long count = 0;
+
+	while (directory && posix_directory_next(directory, name, sizeof(name)))
+	{
+		size_t length = strlen(name);
+		char path[1024];
+		struct posix_file_information information;
+
+		if (length > 4 && !csstrcasecmp(name + length - 4, ".map"))
+		{
+			count++;
+			continue;
+		}
+		if (!inside || !strcmp(name, ".") || !strcmp(name, ".."))
+			continue;
+		snprintf(path, sizeof(path), "%s/%s", folder, name);
+		if (posix_stat(path, &information) == 0 && (information.flags & _posix_file_is_directory))
+			count += map_import_count_in(path, FALSE);
+	}
+	if (directory)
+		posix_directory_close(directory);
+	return count;
+}
+
+/* the maps of custom_maps, where IMPORT puts them: at its top, and in its
+folders (a set of maps' own: one level of them, as the lists read) */
+static long map_import_count(void)
+{
+	char folder[1024];
+
+	platform_translate_path(CUSTOM_EDITION_MAP_DIRECTORY, folder, sizeof(folder));
+	return map_import_count_in(folder, TRUE);
+}
+#else
+static long map_import_count(void)
+{
+	return 0;
+}
+#endif
+
+/* "port map import" (A on IMPORT) */
+static boolean map_import_start(void)
+{
+#if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
+	char folder[1024];
+
+	platform_translate_path(CUSTOM_EDITION_MAP_DIRECTORY, folder, sizeof(folder));
+	map_import.importing = TRUE;
+	map_import.maps = map_import_count();
+	map_import.looked = system_milliseconds();
+	host_android_import_maps(folder);
+	return TRUE;
+#else
+	return FALSE;
+#endif
+}
+
+/* TRUE when maps IMPORT awaits have come: the maps folders are then looked
+at again by the next level list (the list's caller's
+ui_widget_port_multiplayer_maps) */
+static boolean map_import_look(void)
+{
+	unsigned long now = system_milliseconds();
+	long maps;
+
+	if (!map_import.importing || now - map_import.looked < MAP_IMPORT_LOOK_MILLISECONDS)
+		return FALSE;
+	map_import.looked = now;
+	maps = map_import_count();
+	if (maps == map_import.maps)
+		return FALSE;
+	map_import.maps = maps;
+	custom_edition_maps_look_again();
+	map_browse_forget();
+	platform_log("maps: custom_maps has %ld maps now", maps);
+	return TRUE;
+}
+
+/* a list's first entry shown and the one chosen kept to count entries,
+after the maps were found again */
+static void map_import_clamp(short *first, short *chosen, short count)
+{
+	*chosen = (short)PIN(*chosen, 0, MAX(count - 1, 0));
+	*first = (short)PIN(*first, 0, MAX(count - MAP_KIND_ROWS, 0));
+}
+
 /* New Game's list: SINGLEPLAYER's levels, the profile's reached, or
 MULTIPLAYER's maps, played alone to walk around (no game engine: a campaign
 game on the map); CUSTOM SINGLEPLAYER's maps played as the campaign's levels
@@ -1491,6 +1606,7 @@ static boolean level_list_initialize(struct widget_instance *list, short control
 	campaign.shown_level = level;
 	level_list.map_count = ui_widget_port_multiplayer_maps(&level_list.map_names, &last_used);
 	map_browse_forget();
+	map_import.importing = FALSE;
 	level_list.kind = MAP_KIND_SINGLEPLAYER;
 	level_list.category[0] = 0;
 	level_list.category_entry = 0;
@@ -1559,6 +1675,15 @@ static void level_list_update(struct widget_instance *list)
 		level_list.kind = kind;
 		level_list.category[0] = 0;
 		level_list.first = level_list.chosen = 0;
+	}
+	if (map_import_look())
+	{
+		short last_used;
+
+		level_list.map_count = ui_widget_port_multiplayer_maps(&level_list.map_names, &last_used);
+		if (kind != MAP_KIND_SINGLEPLAYER)
+			map_import_clamp(&level_list.first, &level_list.chosen,
+				map_kind_count(kind, level_list.map_count, level_list.category));
 	}
 	count = map_kind_count(kind, level_list.map_count, level_list.category);
 	entry = map_kind_rows_update(list, &level_list.first, count,
@@ -4605,6 +4730,7 @@ static boolean map_list_initialize(struct widget_instance *list)
 	/* (the maps folders looked for again as the list opens) */
 	custom_edition_maps_look_again();
 	map_browse_forget();
+	map_import.importing = FALSE;
 	map_list.map_count = ui_widget_port_multiplayer_maps(&names, &last_used);
 	/* (a Custom Edition map's kind, when it was one) */
 	map_list.kind = MAP_KIND_MULTIPLAYER;
@@ -4653,6 +4779,16 @@ static void map_list_update(struct widget_instance *list)
 		map_list.step = MAP_STEP_MAPS;
 		map_list.category[0] = 0;
 		map_list.first = map_list.chosen = 0;
+	}
+	/* (not while a campaign map's difficulties are listed, whose map the
+	new list could move) */
+	if (map_list.step == MAP_STEP_MAPS && map_import_look())
+	{
+		char const *const *names;
+		short last_used;
+
+		map_list.map_count = ui_widget_port_multiplayer_maps(&names, &last_used);
+		map_import_clamp(&map_list.first, &map_list.chosen, map_step_count());
 	}
 	count = map_step_count();
 	entry = map_kind_rows_update(list, &map_list.first, count, map_list.step == MAP_STEP_DIFFICULTIES ?
@@ -10250,6 +10386,10 @@ boolean pc_menu_event_function_invoke(
 		else if (!strcmp(name, "port mods import"))
 		{
 			return mods_import();
+		}
+		else if (!strcmp(name, "port map import"))
+		{
+			return map_import_start();
 		}
 #if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
 		else if (!strcmp(name, "port vk driver import"))
