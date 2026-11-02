@@ -695,13 +695,20 @@ uint32_t host_vk_shader_make(uint32_t stage, uint64_t hash);
 
 #define STREAM_SIZE (4 * 1024 * 1024)
 
-static uint32_t stream[STREAM_SIZE / 4];
+/* the streams, written in turn: the host may still be running the one handed over last (VK_COMMAND_STREAMS) */
+static uint32_t streams[VK_COMMAND_STREAMS][STREAM_SIZE / 4];
+static unsigned stream_index;
+static uint32_t *stream = streams[0];
 static unsigned long stream_used;
 
 static void stream_flush(void)
 {
 	if (stream_used)
+	{
 		host_vk_submit((unsigned int)(uintptr_t)stream, (unsigned int)stream_used);
+		stream_index = (stream_index + 1) % VK_COMMAND_STREAMS;
+		stream = streams[stream_index];
+	}
 	stream_used = 0;
 }
 

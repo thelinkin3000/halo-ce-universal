@@ -24,6 +24,10 @@ header included; sizes are multiples of 4.
 
 #include "vk_shaders.h"
 
+/* the guest's command streams (d3d8_vk.c), written in turn: the host runs a stream on a thread of its own after
+host_vk_submit returns, which waits only until the stream the guest writes next is free (host_vk_render.c) */
+#define VK_COMMAND_STREAMS 3
+
 enum
 {
 	VK_COMMAND_TARGETS = 1,

@@ -1056,11 +1056,20 @@ record a header (`type`, `size` in bytes including the header, a multiple of
 
 The guest writes into a 1 MB buffer in its own memory over a frame and calls
 `host_vk_submit(commands, size)` at `Present`, and earlier if the buffer
-fills (as `d3d8_dk.c`). The host reads each record **during that call** and
-records what it says into the current frame's command buffer; nothing of the
-guest's memory is read later (the rule in "Where the renderer lives"). A
-record the host does not know, or a size that runs past the end, is logged
-once with its offset and type, and the rest of that hand-over is dropped.
+fills (as `d3d8_dk.c`). The host records what each record says into the
+current frame's command buffer. Since 2026-11-02 it does so on a render thread
+of its own (`debug.vk_render_thread`, on by default on Android), after the call
+has returned: the guest writes three 4 MB streams in turn
+(`VK_COMMAND_STREAMS`), and the call waits only until the stream it writes
+next has been run, so the game makes a frame while the one before is recorded,
+handed to the driver and presented. The only guest memory a record names
+outside its stream is the high-res HUD's PNGs and tag names, embedded in the
+guest's image and never written. With the setting off, the host reads each
+record during the call, as before. A record the host does not know, or a size
+that runs past the end, is logged once with its offset and type, and the rest
+of that hand-over is dropped. A frame goes to the GPU in two submissions: its
+own commands at `PRESENT`, before the swapchain image is acquired, then the
+picture's present into the image, which waits for them and for the image.
 
 ### The device
 
@@ -2879,7 +2888,8 @@ split-screen clear are not yet met in a run; the picture is tried at 768x480 and
    logged as the layer sent it, and errors are counted.
 6. **A hand-over that is not the frame's end submits nothing**: the commands are recorded into the frame's command buffer,
    which stays open until `PRESENT` (the guest's stream flushes when it is full, not at a frame's end), where `host_dk.c`
-   submitted. Everything a command names is read during the call all the same.
+   submitted. Everything a command names is read during the call all the same (until the render thread of 2026-11-02:
+   see "The command stream").
 7. **Every barrier is a full one** (all commands to all commands, memory read and write), and one is made even to the
    layout an image is already in, because a rendering's writes are not visible to the next without one. Correctness first;
    a later phase can narrow them.

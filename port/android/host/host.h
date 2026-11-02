@@ -297,8 +297,10 @@ destroying what it made. line is the text of the log line "renderer: ...", for
 either outcome. Not thread safe; called once, by the thread that starts the
 game, after the image's range is reserved and SDL's video is up */
 int host_vk_startup(const char *vk_driver, int validation, char *line, size_t size);
-/* the Vulkan renderer's commands from the guest (port/android/guest/vk_commands.h), run during the call;
-commands is a guest address. host_vk_retired is the highest submission number the GPU has finished */
+/* the Vulkan renderer's commands from the guest (port/android/guest/vk_commands.h): run on the render thread
+(debug.vk_render_thread) once the call has returned, or else during it; commands is a guest address, a stream the guest
+writes again only VK_COMMAND_STREAMS - 1 hand-overs later. host_vk_retired is the highest submission number the GPU has
+finished */
 void host_vk_submit(uint32_t commands, uint32_t size);
 uint32_t host_vk_retired(void);
 /* the shader service (host_vk_shaders.c): see port/android/VULKAN.md, phase 5. find returns a handle (1 or more) of the
@@ -331,6 +333,8 @@ not the stand-in window's swap (phase 2) */
 extern int host_vk_presenting;
 /* config.toml's debug.vk_present_marker (host_vk_present.c) */
 extern int host_vk_present_marker;
+/* debug.vk_render_thread: the guest's commands are recorded and presented on a thread of their own (host_vk_render.c) */
+extern int host_vk_render_thread;
 /* debug.vk_self_test: the backend's self-tests, run once at the device's creation (host_vk_render.c) */
 extern int host_vk_self_test;
 /* the game's window, the last made under Vulkan: an SDL_Window (host_sdl.c) */

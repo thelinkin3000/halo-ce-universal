@@ -465,6 +465,7 @@ struct host_settings
 	int vk_validation; /* debug.vk_validation */
 	int gpu_stats; /* debug.gpu_stats */
 	int vk_present_marker; /* debug.vk_present_marker */
+	int vk_render_thread; /* debug.vk_render_thread */
 	int vk_self_test; /* debug.vk_self_test */
 	/* debug.window_base: the window's address, where it will go there (for
 	trying saved games across windows); 0 for the usual placement */
@@ -482,6 +483,7 @@ static void config_read(const char *path, struct host_settings *settings)
 	/* the defaults of port_config.c's rows, for a file not written yet (the first start) or without them */
 	snprintf(settings->renderer, sizeof(settings->renderer), "vulkan");
 	settings->halo_log = 1;
+	settings->vk_render_thread = 1;
 	if (!result.ok)
 	{
 		host_logf(HOST_LOG_WARN, "cannot read %s: %s; the host's settings are the defaults", path, result.errmsg);
@@ -495,6 +497,7 @@ static void config_read(const char *path, struct host_settings *settings)
 		toml_datum_t validation = toml_seek(result.toptab, "debug.vk_validation");
 		toml_datum_t statistics = toml_seek(result.toptab, "debug.gpu_stats");
 		toml_datum_t marker = toml_seek(result.toptab, "debug.vk_present_marker");
+		toml_datum_t render_thread = toml_seek(result.toptab, "debug.vk_render_thread");
 		toml_datum_t self_test = toml_seek(result.toptab, "debug.vk_self_test");
 		toml_datum_t profile_run = toml_seek(result.toptab, "debug.profile_run");
 		toml_datum_t halo_log = toml_seek(result.toptab, "debug.halo_log");
@@ -515,6 +518,8 @@ static void config_read(const char *path, struct host_settings *settings)
 		settings->vk_validation = validation.type == TOML_BOOLEAN && validation.u.boolean;
 		settings->gpu_stats = statistics.type == TOML_BOOLEAN && statistics.u.boolean;
 		settings->vk_present_marker = marker.type == TOML_BOOLEAN && marker.u.boolean;
+		/* (true unless false) */
+		settings->vk_render_thread = !(render_thread.type == TOML_BOOLEAN && !render_thread.u.boolean);
 		settings->vk_self_test = self_test.type == TOML_BOOLEAN && self_test.u.boolean;
 		settings->profile_run = profile_run.type == TOML_BOOLEAN && profile_run.u.boolean;
 		/* (true unless false; a file from before it, which the game has not
@@ -773,6 +778,7 @@ static void *game_main(void *unused)
 	host_apply_debug_settings(path, native_bridge_active() ? "ARM translation" : NULL);
 	host_debug_start_profiler(settings.profile_hz, profile_folder[0] ? profile_folder : data_root);
 	host_vk_present_marker = settings.vk_present_marker;
+	host_vk_render_thread = settings.vk_render_thread;
 	host_vk_self_test = settings.vk_self_test;
 	boot = host_make_boot(&environment, "halo");
 	host_logf(HOST_LOG_INFO, "data %s, saves %s", data_root, save_root);

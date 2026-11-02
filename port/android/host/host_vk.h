@@ -154,6 +154,10 @@ struct host_vk_frame
 {
 	VkCommandPool pool;
 	VkCommandBuffer command;
+	/* the picture's present (host_vk_present_record), recorded after the frame's own commands went to the GPU: they
+	signal drawn, which it waits for, so that its fence is theirs too */
+	VkCommandBuffer present_command;
+	VkSemaphore drawn;
 	VkFence fence;
 	VkSemaphore acquired;
 	int recording; /* the command buffer is open */
@@ -407,6 +411,8 @@ void host_vk_pipeline_cache_save(const char *why);
 void host_vk_device_ensure_locked(void);
 /* the backend's device is made, if it can be: the services' imports need it. 1 if it is ready */
 int host_vk_backend_ensure(void);
+/* waits until the render thread has run every stream handed over (host_vk_render.c) */
+void host_vk_render_thread_drain(void);
 
 /* host_vk_present.c */
 /* the surface and swapchain for the window as it is now; 0 if there is no window to make one on */

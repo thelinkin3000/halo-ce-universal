@@ -218,7 +218,7 @@ void host_vk_visibility_retired(unsigned slot)
 		/* a count in the target's pixels, to the game's (a screen drawn larger than the game's 480 lines) */
 		if (test->area > 1.0f)
 			samples = (uint64_t)((float)samples / test->area + 0.5f);
-		V.latest[test->index] = samples > 0xffffffffu ? 0xffffffffu : (uint32_t)samples;
+		__atomic_store_n(&V.latest[test->index], samples > 0xffffffffu ? 0xffffffffu : (uint32_t)samples, __ATOMIC_RELAXED);
 	}
 	V.count[slot] = 0;
 }
@@ -226,10 +226,6 @@ void host_vk_visibility_retired(unsigned slot)
 /* the guest asks (D3DDevice_GetVisibilityTestResult): never waits */
 uint32_t host_vk_visibility(uint32_t index)
 {
-	uint32_t result;
-
-	pthread_mutex_lock(&B.lock);
-	result = V.latest[index % SLOTS];
-	pthread_mutex_unlock(&B.lock);
-	return result;
+	/* (without the lock, which the render thread holds while it runs a stream: the latest count, a word) */
+	return __atomic_load_n(&V.latest[index % SLOTS], __ATOMIC_RELAXED);
 }

@@ -7,9 +7,15 @@ the guest hands over (port/android/guest/vk_commands.h): targets, clears and
 present. host_vk_present.c has the surface and the swapchain.
 
 The guest writes a frame's commands into its own memory and calls
-host_vk_submit(); everything a command names is read during that call, and a
-frame is one command buffer, recorded as the commands come and submitted at
-PRESENT. At most one rendering (dynamic rendering, or a render pass where the
+host_vk_submit(); a frame is one command buffer, recorded as the commands come
+and submitted at PRESENT. The commands are run on a thread of their own, the
+render thread (debug.vk_render_thread), after the call has returned: the guest
+writes its streams in turn (VK_COMMAND_STREAMS), and the call waits only until
+the stream it will write next has been run, so the game makes a frame while
+the one before is recorded, handed to the driver and presented. Nothing a
+command names outside its stream is written again by the guest (the high-res
+HUD's PNGs, embedded in its image). Without the thread, a stream is run during
+the call. At most one rendering (dynamic rendering, or a render pass where the
 driver has none: host_vk_passes.c) is open at a time. Every image is
 transitioned from the layout it is tracked in, with a barrier that waits for
 what that layout was used for and holds back what the next is used for
@@ -20,6 +26,7 @@ what that layout was used for and holds back what the next is used for
 #include "host_vk.h"
 
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +36,12 @@ struct host_vk_backend host_vkb;
 void *host_vk_window;
 int host_vk_present_marker;
 int host_vk_self_test;
+#ifdef HALO_PS5
+/* (not tried on the console yet) */
+int host_vk_render_thread;
+#else
+int host_vk_render_thread = 1;
+#endif
 
 #define B host_vkb
 
@@ -187,6 +200,65 @@ static void frame_submit(uint32_t wait_image)
 		return;
 	B.submission = frame->number;
 	frame->submitted = 1;
+}
+
+/* The frame in two submissions: its own commands now, before the swapchain's image is asked for (which waits while the
+display holds them all), so that the GPU starts on them at once; then the picture's present into the image, which waits
+for them and for the image. Android's queue takes the next picture only once the GPU has finished this one, so the
+sooner it starts, the less the next present waits. 0 if the frame's commands could not be submitted (nothing is then
+presented). */
+static int frame_submit_split(struct host_vk_target *back_buffer, uint32_t *image_out)
+{
+	struct host_vk_frame *frame = &B.frames[B.frame];
+	VkSubmitInfo submit = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+	VkCommandBufferBeginInfo begin = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+	VkSemaphore waits[2];
+	VkPipelineStageFlags stages[2];
+	uint32_t image;
+
+	*image_out = UINT32_MAX;
+	if (!frame->recording)
+		return 0;
+	frame->recording = 0;
+	if (!HOST_VK_CHECK(vkEndCommandBuffer(frame->command)))
+		return 0;
+	submit.commandBufferCount = 1;
+	submit.pCommandBuffers = &frame->command;
+	submit.signalSemaphoreCount = 1;
+	submit.pSignalSemaphores = &frame->drawn;
+	if (!HOST_VK_CHECK(vkQueueSubmit(B.queue, 1, &submit, VK_NULL_HANDLE)))
+		return 0;
+
+	if (!HOST_VK_CHECK(vkBeginCommandBuffer(frame->present_command, &begin)))
+		return 0;
+	image = host_vk_present_record(frame->present_command, back_buffer);
+	host_vk_profile_frame_end((unsigned)(frame - B.frames), frame->present_command, image != UINT32_MAX);
+	if (!HOST_VK_CHECK(vkEndCommandBuffer(frame->present_command)))
+		return 0;
+	/* (the frame's commands whatever the stage; the image at the transfer stage, as frame_submit waits for it) */
+	waits[0] = frame->drawn;
+	stages[0] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+	waits[1] = frame->acquired;
+	stages[1] = VK_PIPELINE_STAGE_TRANSFER_BIT;
+	memset(&submit, 0, sizeof(submit));
+	submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	submit.waitSemaphoreCount = image != UINT32_MAX ? 2 : 1;
+	submit.pWaitSemaphores = waits;
+	submit.pWaitDstStageMask = stages;
+	submit.commandBufferCount = 1;
+	submit.pCommandBuffers = &frame->present_command;
+	if (image != UINT32_MAX)
+	{
+		submit.signalSemaphoreCount = 1;
+		submit.pSignalSemaphores = &B.chain.render_done[image];
+	}
+	frame->number = B.submission + 1;
+	*image_out = image;
+	if (!HOST_VK_CHECK(vkQueueSubmit(B.queue, 1, &submit, frame->fence)))
+		return 1;
+	B.submission = frame->number;
+	frame->submitted = 1;
+	return 1;
 }
 
 /* submits the frame as it is and waits for it: for the self-tests, which read what the GPU wrote back; 0 if it
@@ -1654,11 +1726,17 @@ static void command_present(const struct vk_command_present *command)
 	/* the next frame starts with nothing bound (the guest tells the host its targets again) */
 	B.color = B.depth = NULL;
 	B.samples = 0;
-	if (back_buffer && !B.dead)
-		image = host_vk_present_record(cmd, back_buffer);
-	else
+	if (!back_buffer || B.dead)
+	{
 		host_vk_presenting = 0;
-	frame_submit(image);
+		frame_submit(UINT32_MAX);
+	}
+	else if (!frame_submit_split(back_buffer, &image) && !B.dead && B.frames[B.frame].recording)
+	{
+		/* (not split: presented as one submission) */
+		image = host_vk_present_record(cmd, back_buffer);
+		frame_submit(image);
+	}
 	if (image != UINT32_MAX && !B.dead && !B.frames[B.frame].submitted)
 		present_unsubmitted(image);
 	else if (image != UINT32_MAX && !B.dead)
@@ -1962,6 +2040,8 @@ static int device_create(void)
 			goto failed;
 		allocate.commandPool = frame->pool;
 		if (!HOST_VK_CHECK(vkAllocateCommandBuffers(B.device, &allocate, &frame->command)) ||
+			!HOST_VK_CHECK(vkAllocateCommandBuffers(B.device, &allocate, &frame->present_command)) ||
+			!HOST_VK_CHECK(vkCreateSemaphore(B.device, &semaphore, NULL, &frame->drawn)) ||
 			!HOST_VK_CHECK(vkCreateFence(B.device, &fence, NULL, &frame->fence)) ||
 			!HOST_VK_CHECK(vkCreateSemaphore(B.device, &semaphore, NULL, &frame->acquired)))
 			goto failed;
@@ -2040,8 +2120,8 @@ uint32_t host_vk_bc_supported(void)
 	return 1;
 }
 
-/* runs size bytes of commands at commands (a guest address), during the call */
-void host_vk_submit(uint32_t commands, uint32_t size)
+/* runs size bytes of commands at commands (a guest address), now */
+static void submit_run(uint32_t commands, uint32_t size)
 {
 	const unsigned char *at = (const unsigned char *)(uintptr_t)commands;
 	const unsigned char *end = at + size;
@@ -2163,4 +2243,102 @@ void host_vk_submit(uint32_t commands, uint32_t size)
 static void __attribute__((constructor)) backend_lock_init(void)
 {
 	pthread_mutex_init(&B.lock, NULL);
+}
+
+/* ---------- the render thread
+
+The streams handed over and not yet run, the one being run among them, oldest first. host_vk_submit returns once no more
+than VK_COMMAND_STREAMS - 2 are left: the stream the guest writes next is never among them. */
+
+static struct
+{
+	/* started: the thread runs; failed: it could not be made (said once), and the streams are run during the call */
+	int started, failed;
+	pthread_t thread;
+	pthread_mutex_t lock;
+	pthread_cond_t handed, ran;
+	struct
+	{
+		uint32_t commands, size;
+	} queue[VK_COMMAND_STREAMS];
+	unsigned first, count;
+} R = { 0, 0, 0, PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, PTHREAD_COND_INITIALIZER };
+
+static void *render_thread(void *unused)
+{
+	(void)unused;
+	/* (sampled with the guest's threads, debug.profile_hz) */
+	host_debug_thread_started();
+	pthread_mutex_lock(&R.lock);
+	for (;;)
+	{
+		uint32_t commands, size;
+
+		while (!R.count)
+			pthread_cond_wait(&R.handed, &R.lock);
+		commands = R.queue[R.first].commands;
+		size = R.queue[R.first].size;
+		pthread_mutex_unlock(&R.lock);
+		submit_run(commands, size);
+		pthread_mutex_lock(&R.lock);
+		R.first = (R.first + 1) % VK_COMMAND_STREAMS;
+		R.count--;
+		pthread_cond_broadcast(&R.ran);
+	}
+	return NULL;
+}
+
+/* the render thread, made the first time; 0 if there is none (debug.vk_render_thread off, or it could not be made) */
+static int render_thread_ensure(void)
+{
+	pthread_attr_t attributes;
+	int result;
+
+	if (R.started)
+		return 1;
+	if (R.failed || !host_vk_render_thread)
+		return 0;
+	pthread_attr_init(&attributes);
+	pthread_attr_setstacksize(&attributes, 2 * 1024 * 1024);
+	result = pthread_create(&R.thread, &attributes, render_thread, NULL);
+	pthread_attr_destroy(&attributes);
+	if (result)
+	{
+		R.failed = 1;
+		host_logf(HOST_LOG_WARN, "vk: the render thread cannot be made (%d); the commands are run on the game's thread",
+			result);
+		return 0;
+	}
+	R.started = 1;
+	host_logf(HOST_LOG_INFO, "vk: the commands are recorded and presented on a render thread");
+	return 1;
+}
+
+void host_vk_submit(uint32_t commands, uint32_t size)
+{
+	if (!host_vk.instance)
+		return;
+	if (!render_thread_ensure())
+	{
+		submit_run(commands, size);
+		return;
+	}
+	pthread_mutex_lock(&R.lock);
+	R.queue[(R.first + R.count) % VK_COMMAND_STREAMS].commands = commands;
+	R.queue[(R.first + R.count) % VK_COMMAND_STREAMS].size = size;
+	R.count++;
+	pthread_cond_signal(&R.handed);
+	while (R.count > VK_COMMAND_STREAMS - 2)
+		pthread_cond_wait(&R.ran, &R.lock);
+	pthread_mutex_unlock(&R.lock);
+}
+
+void host_vk_render_thread_drain(void)
+{
+	if (!R.started)
+		return;
+	pthread_mutex_lock(&R.lock);
+	while (R.count)
+		pthread_cond_wait(&R.ran, &R.lock);
+	pthread_mutex_unlock(&R.lock);
 }

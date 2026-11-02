@@ -1667,6 +1667,10 @@ static const struct config_setting config_settings[] =
 	{ "debug.vk_present_marker", _config_boolean, "false", "HALO_VK_PRESENT_MARKER", _environment_set_is_true, PLATFORM_VULKAN,
 		"Under the Vulkan renderer, draw a red square at the top left and a green one\n"
 		"at the top right of the picture, so that a screenshot shows which way up it is." },
+	{ "debug.vk_render_thread", _config_boolean, "true", "HALO_VK_RENDER_THREAD", _environment_set_is_true, _platform_android,
+		"Under the Vulkan renderer, record the game's commands, hand them to the\n"
+		"driver and present on a thread of their own, while the game makes the next\n"
+		"frame. false runs them on the game's thread, as before." },
 	{ "debug.vk_self_test", _config_boolean, "false", "HALO_VK_SELF_TEST", _environment_set_is_true, PLATFORM_VULKAN,
 		"Under the Vulkan renderer, try the renderer's clears and the copying of a\n"
 		"draw's data on small targets of its own at start-up; the log says ok or FAILED." },
