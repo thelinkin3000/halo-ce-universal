@@ -670,17 +670,55 @@ static unsigned long long cpu_timer_count(void)
 	return count;
 }
 
-/* the timer's ticks a second, 0 if it does not say */
+/* how long the timer's rate is measured, and how far the rate it says may be
+from that */
+#define CPU_TIMER_MEASURED_NANOSECONDS 5000000ULL
+#define CPU_TIMER_TOLERANCE_PERCENT 2ULL
+
+static unsigned long long monotonic_nanoseconds(void)
+{
+	struct timespec now;
+
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return (unsigned long long)now.tv_sec * 1000000000ULL + (unsigned long long)now.tv_nsec;
+}
+
+/* the timer's ticks a second, 0 if it does not say, or says what it does
+not run at. The rate is the firmware's to set (cntfrq_el0), and some set it
+wrong, which Linux mends from the device tree for its own clocks but not in
+the register: a Galaxy S21 FE's (Exynos 2100) timer says 2293044683 Hz and
+runs at 26 MHz, so the game's time all but stopped (the menus' scene still,
+a level never loaded after Choose Difficulty). So the rate is measured
+against clock_gettime once, over CPU_TIMER_MEASURED_NANOSECONDS, and a rate
+that is not what it says leaves the clocks clock_gettime's. Decided before
+either clock's first value, so that the values the game compares are all of
+one clock. */
 static unsigned long long cpu_timer_frequency(void)
 {
 	static unsigned long long frequency;
+	static int checked;
 
-	if (!frequency)
+	if (!__atomic_load_n(&checked, __ATOMIC_ACQUIRE))
 	{
-		unsigned long long value;
+		unsigned long long said, first_time, first_count, last_time, last_count, measured;
 
-		__asm__ volatile("mrs %0, cntfrq_el0" : "=r"(value));
-		frequency = value & 0xffffffffULL;
+		__asm__ volatile("mrs %0, cntfrq_el0" : "=r"(said));
+		said &= 0xffffffffULL;
+		first_time = monotonic_nanoseconds();
+		first_count = cpu_timer_count();
+		do
+		{
+			last_time = monotonic_nanoseconds();
+			last_count = cpu_timer_count();
+		}
+		while (last_time - first_time < CPU_TIMER_MEASURED_NANOSECONDS);
+		measured = (last_count - first_count) * 1000000000ULL / (last_time - first_time);
+		frequency = said && measured * 100ULL >= said * (100ULL - CPU_TIMER_TOLERANCE_PERCENT) &&
+			measured * 100ULL <= said * (100ULL + CPU_TIMER_TOLERANCE_PERCENT) ? said : 0;
+		__atomic_store_n(&checked, 1, __ATOMIC_RELEASE);
+		if (!frequency)
+			platform_log("clock: the CPU's timer says %llu Hz and runs at about %llu Hz: the clocks are "
+				"clock_gettime's", said, measured);
 	}
 	return frequency;
 }
