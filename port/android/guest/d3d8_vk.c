@@ -526,9 +526,15 @@ struct vk_device
 	float attributes[XGPU_VERTEX_ATTRIBUTE_COUNT][4];
 	BOOL immediate_active;
 	D3DPRIMITIVETYPE immediate_type;
+	/* Begin's vertices: only the registers set since Begin, a column each (immediate_registers, in the order they were
+	first set); the others keep their value through the batch and are read from a binding of stride 0 */
 	float *immediate_vertices;
 	unsigned long immediate_count;
+	/* (in floats) */
 	unsigned long immediate_capacity;
+	unsigned long immediate_mask;
+	unsigned immediate_columns;
+	unsigned char immediate_registers[XGPU_VERTEX_ATTRIBUTE_COUNT];
 
 	BOOL visibility_test_active;
 	/* the platform layer made a window (not debug.null_renderer): there is something to draw into */
@@ -2852,6 +2858,9 @@ static struct
 {
 	unsigned long draws, immediate_draws, presents;
 	unsigned long skipped_no_program, skipped_no_target, skipped_shader, skipped_texture, skipped_other;
+	/* the bytes put for draws, by kind, and how many puts of the vertex data, constants and indices */
+	unsigned long long put_vertex, put_expanded, put_index, put_constants, put_parameters, put_pixel, put_immediate, put_other;
+	unsigned long n_vertex, n_constants, n_index;
 } stats;
 static BOOL statistics_on, statistics_read;
 
@@ -3102,6 +3111,7 @@ static void uniforms_make(struct vk_command_draw *draw, const float texture_scal
 	if (!puts_this_frame.constants_valid || puts_this_frame.constants_serial != constants_serial)
 	{
 		puts_this_frame.constants_ref = data_ref(vk_data_put(device.constants, sizeof(device.constants)));
+		stats.put_constants += sizeof(device.constants); stats.n_constants++;
 		puts_this_frame.constants_serial = constants_serial;
 		puts_this_frame.constants_valid = TRUE;
 	}
@@ -3116,6 +3126,7 @@ static void uniforms_make(struct vk_command_draw *draw, const float texture_scal
 	{
 		puts_this_frame.parameters = parameters;
 		puts_this_frame.parameters_ref = data_ref(vk_data_put(&parameters, sizeof(parameters)));
+		stats.put_parameters += sizeof(parameters);
 		puts_this_frame.parameters_valid = TRUE;
 	}
 	draw->vertex_parameters = puts_this_frame.parameters_ref;
@@ -3125,6 +3136,7 @@ static void uniforms_make(struct vk_command_draw *draw, const float texture_scal
 	{
 		puts_this_frame.pixel = pixel;
 		puts_this_frame.pixel_ref = data_ref(vk_data_put(&pixel, sizeof(pixel)));
+		stats.put_pixel += sizeof(pixel);
 		puts_this_frame.pixel_valid = TRUE;
 	}
 	draw->pixel_parameters = puts_this_frame.pixel_ref;
@@ -3284,8 +3296,22 @@ static uint32_t stream_expanded_put(const struct vertex_shader_object *declarati
 	}
 	state->bindings[binding].stride = stride ? (uint32_t)out_stride : 0;
 	id = vk_data_put(buffer, rows * out_stride);
+	stats.put_expanded += rows * out_stride;
 	free(buffer);
 	return id;
+}
+
+/* the current values of the sixteen registers, put unless the frame's last put has them */
+static struct vk_data_ref attributes_put(float values[XGPU_VERTEX_ATTRIBUTE_COUNT][4])
+{
+	if (!puts_this_frame.attributes_valid || !words_equal(puts_this_frame.attributes, values,
+		sizeof(puts_this_frame.attributes)))
+	{
+		memcpy(puts_this_frame.attributes, values, sizeof(puts_this_frame.attributes));
+		puts_this_frame.attributes_ref = data_ref(vk_data_put(values, sizeof(puts_this_frame.attributes)));
+		puts_this_frame.attributes_valid = TRUE;
+	}
+	return puts_this_frame.attributes_ref;
 }
 
 /* the vertices [first, first + count) of every stream the declaration reads, put, and the pipeline's bindings and attributes
@@ -3342,6 +3368,7 @@ static BOOL vertex_input_make(struct vk_command_draw *draw, unsigned long first,
 		else
 		{
 			draw->vertex_buffers[binding] = data_ref(vk_data_put(base, bytes));
+			stats.put_vertex += bytes; stats.n_vertex++;
 			state->bindings[binding].stride = (uint32_t)stride;
 			for (index = 0; index < declaration->element_count; index++)
 			{
@@ -3372,13 +3399,7 @@ static BOOL vertex_input_make(struct vk_command_draw *draw, unsigned long first,
 			if (declaration->packed_mask & (1UL << index))
 				memset(values[index], 0, sizeof(values[index]));
 		}
-		if (!puts_this_frame.attributes_valid || !words_equal(puts_this_frame.attributes, values, sizeof(values)))
-		{
-			memcpy(puts_this_frame.attributes, values, sizeof(values));
-			puts_this_frame.attributes_ref = data_ref(vk_data_put(values, sizeof(values)));
-			puts_this_frame.attributes_valid = TRUE;
-		}
-		draw->vertex_buffers[bindings] = puts_this_frame.attributes_ref;
+		draw->vertex_buffers[bindings] = attributes_put(values);
 		state->bindings[bindings].stride = 0;
 		for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
 		{
@@ -3661,24 +3682,43 @@ static void draw_make(D3DPRIMITIVETYPE type, unsigned long count, BOOL immediate
 	}
 	if (immediate)
 	{
+		unsigned long floats = device.immediate_columns * 4;
+		float values[XGPU_VERTEX_ATTRIBUTE_COUNT][4];
+		unsigned column;
+
 		/* (the fixed-function pipeline's: positions into clip space) */
-		if (device.fixed_function)
+		if (device.fixed_function && (device.immediate_mask & 1))
 		{
 			unsigned long vertex;
 
+			for (column = 0; device.immediate_registers[column] != 0; column++)
+				;
 			for (vertex = 0; vertex < count; vertex++)
-				fixed_function_transform(device.immediate_vertices + vertex * XGPU_VERTEX_ATTRIBUTE_COUNT * 4);
+				fixed_function_transform(device.immediate_vertices + vertex * floats + column * 4);
 		}
-		record.vertex_buffers[0] = data_ref(vk_data_put(device.immediate_vertices,
-			count * XGPU_VERTEX_ATTRIBUTE_COUNT * 4 * sizeof(float)));
-		record.state.binding_count = 1;
-		record.state.bindings[0].stride = XGPU_VERTEX_ATTRIBUTE_COUNT * 4 * sizeof(float);
+		/* the registers set since Begin, a vertex's columns; the others from their values, which the batch left as
+		they were */
+		record.vertex_buffers[0] = data_ref(vk_data_put(device.immediate_vertices, count * floats * sizeof(float)));
+		stats.put_immediate += count * floats * sizeof(float);
+		record.state.bindings[0].stride = (uint32_t)(floats * sizeof(float));
+		memcpy(values, device.attributes, sizeof(values));
 		for (stage = 0; stage < XGPU_VERTEX_ATTRIBUTE_COUNT; stage++)
 		{
+			/* (a column's register: its value here is never read, so it is left out of the comparison) */
+			if (device.immediate_mask & (1UL << stage))
+				memset(values[stage], 0, sizeof(values[stage]));
 			record.state.attributes[stage].format = VK_VERTEX_FORMAT_R32G32B32A32_SFLOAT;
-			record.state.attributes[stage].binding = 0;
+			record.state.attributes[stage].binding = 1;
 			record.state.attributes[stage].offset = (uint32_t)stage * 16;
 		}
+		for (column = 0; column < device.immediate_columns; column++)
+		{
+			record.state.attributes[device.immediate_registers[column]].binding = 0;
+			record.state.attributes[device.immediate_registers[column]].offset = (uint32_t)column * 16;
+		}
+		record.vertex_buffers[1] = attributes_put(values);
+		record.state.bindings[1].stride = 0;
+		record.state.binding_count = 2;
 	}
 	else if (!vertex_input_make(&record, first, vertices))
 	{
@@ -3695,6 +3735,7 @@ static void draw_make(D3DPRIMITIVETYPE type, unsigned long count, BOOL immediate
 		}
 		record.indexed = 1;
 		record.index_data = data_ref(vk_data_put(indices, index_count * sizeof(WORD)));
+		stats.put_index += index_count * sizeof(WORD); stats.n_index++;
 		record.vertex_offset = index_data ? -(int32_t)minimum : 0;
 		record.count = (uint32_t)index_count;
 	}
@@ -3735,19 +3776,58 @@ void WINAPI D3DDevice_Begin(D3DPRIMITIVETYPE primitive_type)
 	device.immediate_active = TRUE;
 	device.immediate_type = primitive_type;
 	device.immediate_count = 0;
+	device.immediate_mask = 0;
+	device.immediate_columns = 0;
+}
+
+/* room for floats more floats of vertices; FALSE if there is none */
+static BOOL immediate_room(unsigned long floats)
+{
+	unsigned long needed = device.immediate_count * device.immediate_columns * 4 + floats;
+
+	if (needed > device.immediate_capacity)
+	{
+		unsigned long capacity = device.immediate_capacity ? device.immediate_capacity : 4096;
+		float *more;
+
+		while (capacity < needed)
+			capacity *= 2;
+		more = realloc(device.immediate_vertices, capacity * sizeof(float));
+		if (!more)
+			return FALSE;
+		device.immediate_vertices = more;
+		device.immediate_capacity = capacity;
+	}
+	return TRUE;
+}
+
+/* a register set for the first time since Begin becomes a column; the vertices made already get its value as it was
+before (it had not changed since Begin), each moved to the wider stride, the last first */
+static void immediate_column_add(int reg)
+{
+	unsigned long old = device.immediate_columns * 4, wide = old + 4, vertex;
+
+	if (!immediate_room(device.immediate_count * 4))
+		return;
+	for (vertex = device.immediate_count; vertex-- > 0;)
+	{
+		memmove(device.immediate_vertices + vertex * wide, device.immediate_vertices + vertex * old, old * sizeof(float));
+		memcpy(device.immediate_vertices + vertex * wide + old, device.attributes[reg], 4 * sizeof(float));
+	}
+	device.immediate_registers[device.immediate_columns++] = (unsigned char)reg;
+	device.immediate_mask |= 1UL << reg;
 }
 
 static void immediate_emit(void)
 {
-	unsigned long floats = XGPU_VERTEX_ATTRIBUTE_COUNT * 4;
+	float *at;
+	unsigned column;
 
-	if (device.immediate_count == device.immediate_capacity)
-	{
-		device.immediate_capacity = device.immediate_capacity ? device.immediate_capacity * 2 : 256;
-		device.immediate_vertices = realloc(device.immediate_vertices,
-			device.immediate_capacity * floats * sizeof(float));
-	}
-	memcpy(device.immediate_vertices + device.immediate_count * floats, device.attributes, floats * sizeof(float));
+	if (!immediate_room(device.immediate_columns * 4))
+		return;
+	at = device.immediate_vertices + device.immediate_count * device.immediate_columns * 4;
+	for (column = 0; column < device.immediate_columns; column++)
+		memcpy(at + column * 4, device.attributes[device.immediate_registers[column]], 4 * sizeof(float));
 	device.immediate_count++;
 }
 void WINAPI D3DDevice_End(void)
@@ -3771,6 +3851,8 @@ static void set_attribute(INT reg, float a, float b, float c, float d)
 	}
 	if (reg < 0 || reg >= XGPU_VERTEX_ATTRIBUTE_COUNT)
 		return;
+	if (device.immediate_active && !(device.immediate_mask & (1UL << reg)))
+		immediate_column_add(reg);
 	device.attributes[reg][0] = a;
 	device.attributes[reg][1] = b;
 	device.attributes[reg][2] = c;
@@ -3906,6 +3988,11 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 				"%lu textured, %lu other", device.frame, stats.draws / stats.presents, stats.immediate_draws / stats.presents,
 				stats.skipped_no_program, stats.skipped_no_target, stats.skipped_shader, stats.skipped_texture,
 				stats.skipped_other);
+			platform_log("vk: puts a frame: vertex %llu KB (%lu), expanded %llu KB, index %llu KB (%lu), constants %llu KB (%lu), "
+				"parameters %llu KB, pixel %llu KB, immediate %llu KB", stats.put_vertex / 1024 / stats.presents, stats.n_vertex / stats.presents,
+				stats.put_expanded / 1024 / stats.presents, stats.put_index / 1024 / stats.presents, stats.n_index / stats.presents,
+				stats.put_constants / 1024 / stats.presents, stats.n_constants / stats.presents, stats.put_parameters / 1024 / stats.presents,
+				stats.put_pixel / 1024 / stats.presents, stats.put_immediate / 1024 / stats.presents);
 			memset(&stats, 0, sizeof(stats));
 		}
 	}

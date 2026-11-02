@@ -5,7 +5,7 @@ The Vulkan renderer's surface and swapchain (port/android/VULKAN.md, phase 2),
 on the game's window: the surface is made with vkCreateAndroidSurfaceKHR on the
 window's ANativeWindow (no SDL_Vulkan_* call: SDL would load the phone's driver
 beside the chosen one), the swapchain is FIFO with the surface's own images'
-count plus one, and a frame is shown by drawing the game's back buffer,
+count plus two, and a frame is shown by drawing the game's back buffer,
 letterboxed, into the acquired image: one rendering, cleared black as it begins
 (the bars), with one triangle over the picture's rectangle that samples the
 back buffer. On a tiler that is one write of the image, where clearing it and
@@ -253,7 +253,9 @@ static int swapchain_create(struct host_vk_swapchain *chain, VkSwapchainKHR old,
 			host_logf(HOST_LOG_ERROR, "vk: the swapchain format %d is not a blit destination here", (int)formats[chosen].format);
 		return 0;
 	}
-	count = caps.minImageCount + 1;
+	/* two more than the surface needs: with only one, a phone whose surface asks for two (a Nokia 8: 3 images, one on
+	the screen and one queued) had its render thread wait for an image to come back a third of the time */
+	count = caps.minImageCount + 2;
 	if (caps.maxImageCount && count > caps.maxImageCount)
 		count = caps.maxImageCount;
 	/* opaque if the surface offers it, else the first of the others (this device's surface offers only inherit) */
