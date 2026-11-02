@@ -172,11 +172,10 @@ static const struct config_setting config_settings[] =
 	/* read by the Android host (port/android/host/host_vk_driver.c) */
 	{ "display.vk_driver", _config_string, "\"\"", "HALO_VK_DRIVER", _environment_value, _platform_android,
 		"The Vulkan driver the Vulkan renderer runs on: empty for the phone's own;\n"
-		"\"auto\" for Turnip, the open-source driver, on an Adreno GPU (the app\n"
-		"downloads the build for its series; the phone's own on any other GPU); or the\n"
-		"name of a driver archive (an adrenotools zip) in freedreno_drivers in the\n"
-		"game's folder, which Video Setup lists. One that does not load is logged and\n"
-		"the phone's own is used." },
+		"or the name of a driver archive (an adrenotools zip) in freedreno_drivers\n"
+		"in the game's folder, which Video Setup lists: the Turnip build the app\n"
+		"downloads on an Adreno GPU, and any other put or imported there. One that\n"
+		"does not load is logged and the phone's own is used." },
 	/* read by the Android host before the game starts, to choose the game
 	image built with that renderer (port/android/VULKAN.md) */
 	{ "display.renderer", _config_string, "\"vulkan\"", "HALO_RENDERER", _environment_value, _platform_android,
@@ -2936,16 +2935,39 @@ static void config_load(void)
 	config_check_words();
 }
 
+/* values a setting no longer takes, written over as the file is first read:
+display.vk_driver's "auto" (Turnip, which the launcher downloads, chosen by
+the GPU) is the phone's own driver now, and the downloaded archive a driver
+of the list like any other (Video Setup) */
+static void config_retire_values(void)
+{
+#if defined(HALO_ANDROID) && !defined(HALO_SWITCH) && !defined(HALO_PS5)
+	long index = config_setting_index("display.vk_driver");
+
+	if (index >= 0 && config_values[index].string && !strcmp(config_values[index].string, "auto"))
+	{
+		platform_log("settings: display.vk_driver \"auto\" is no more; \"\" (the phone's own driver)");
+		config_write("display.vk_driver", "");
+	}
+#endif
+}
+
 /* the file read, the first time a setting is asked for */
 static void config_ensure_loaded(void)
 {
+	int first = 0;
+
 	pthread_mutex_lock(&config_lock);
 	if (!config_loaded)
 	{
 		config_load();
 		config_loaded = 1;
+		first = 1;
 	}
 	pthread_mutex_unlock(&config_lock);
+	/* (config_write takes the lock itself) */
+	if (first)
+		config_retire_values();
 }
 
 static const struct config_value *config_profile_value(int player, long index);

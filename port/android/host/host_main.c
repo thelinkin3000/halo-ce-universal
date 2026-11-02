@@ -452,7 +452,7 @@ struct host_settings
 	int gpu_split_parts; /* debug.gpu_split_parts */
 	int original_multisample; /* debug.original_multisample */
 	char vk_probe[128]; /* empty: the game runs */
-	char vk_driver[256]; /* display.vk_driver: empty (the default) for the phone's own driver, "auto", or an archive */
+	char vk_driver[256]; /* display.vk_driver: empty (the default) for the phone's own driver, or an archive */
 	char renderer[32]; /* display.renderer: "vulkan" (the default, also when empty) or "gl" */
 	int vk_validation; /* debug.vk_validation */
 	int gpu_stats; /* debug.gpu_stats */

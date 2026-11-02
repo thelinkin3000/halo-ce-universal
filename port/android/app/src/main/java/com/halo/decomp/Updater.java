@@ -93,9 +93,10 @@ final class Updater {
     screen, so that the game finds the driver on its first start.
 
     Which archive is this phone's is decided once, from the GPU's name, and written to vk_driver_auto.txt in the data folder
-    (the archive's name, or an empty line for a GPU that has none): display.vk_driver = "auto" is that archive
-    (port/android/host/host_vk_driver.c), so that a player turns Turnip on with one setting. The default driver is the
-    phone's own (display.vk_driver = ""): the archive is downloaded, not used, until the player sets "auto". */
+    (the archive's name, or an empty line for a GPU that has none), so that it is not decided again. The default driver
+    is the phone's own (display.vk_driver = ""): the archive is downloaded, not used, until the player chooses it by its
+    name in Video Setup, as any other archive in freedreno_drivers. (display.vk_driver = "auto", which was this archive,
+    is the phone's own driver now: port_config.c writes "" over it.) */
 
     static final class Driver {
         final String name, url, sha256, series;

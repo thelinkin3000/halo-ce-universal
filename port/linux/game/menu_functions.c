@@ -1933,8 +1933,8 @@ static void video_rows_show(struct widget_instance *list)
 
 #if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
 /* Video Setup's VULKAN DRIVER's archives: the zips in the data folder's
-freedreno_drivers (where the launcher downloads Turnip: Updater.java),
-after the spinner's own STOCK and TURNIP, by name. ui_widget.c shows them
+freedreno_drivers (where the launcher downloads Turnip, Updater.java, and
+IMPORT DRIVER copies others), after the spinner's own STOCK, by name. ui_widget.c shows them
 as the spinner's extra items, read again as it is made; the host opens the
 one chosen at the next start (port/android/host/host_vk_driver.c) */
 #define VK_DRIVER_FOLDER "freedreno_drivers"

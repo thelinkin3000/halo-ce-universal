@@ -147,11 +147,12 @@ SCREENS = {
              "The window's size: 4:3, then 16:10, 16:9 and 21:9\n(its edges can also be dragged).", "desktop"),
             # (port/linux/game/menu_functions.c shows it while the backend
             # shown is Vulkan, and lists the archives in freedreno_drivers
-            # after these, as source/interface/ui_widget.c's extra items; an
-            # archive's name left there by hand is kept unless another is
-            # chosen: port/android/host/host_vk_driver.c)
-            ("VULKAN DRIVER:", "display.vk_driver", [("STOCK", ""), ("TURNIP", "auto")],
-             "The phone's own driver, Turnip, or a zip that\nIMPORT DRIVER adds. Takes effect at the next start.",
+            # after STOCK, as source/interface/ui_widget.c's extra items: the
+            # Turnip build the launcher downloads among them; an archive's
+            # name left there by hand is kept unless another is chosen:
+            # port/android/host/host_vk_driver.c)
+            ("VULKAN DRIVER:", "display.vk_driver", [("STOCK", "")],
+             "The phone's own driver, or a zip from the drivers\nfolder (Turnip's, or one IMPORT DRIVER adds).",
              "android"),
             ("RESOLUTION SCALING:", "display.resolution_scaling", [("NATIVE", "native"), ("ORIGINAL", "original")],
              "Native draws at the resolution; Original draws\nthe Xbox's 640x480 and scales it up.", "desktop web"),

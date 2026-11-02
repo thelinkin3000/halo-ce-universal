@@ -43,7 +43,7 @@ import java.util.Locale;
  * Before the game starts, on an Adreno whose data folder lacks it, the
  * open-source Vulkan driver for its series is downloaded
  * (Updater.driverDownload), its progress on screen, so that the game finds
- * it when the player turns it on (display.vk_driver = "auto"). A failed download does not stop the game,
+ * it when the player chooses it (Video Setup's VULKAN DRIVER lists it by its name). A failed download does not stop the game,
  * and "Skip" starts it at once.
  *
  * With debug.profile_run in config.toml, each start makes the run's profile
@@ -272,8 +272,9 @@ public class LauncherActivity extends Activity {
         message.setText("This phone's GPU (" + choice.gpu + ") can run the game's Vulkan renderer on Turnip, the "
             + "open-source Vulkan driver for Adreno GPUs. It is downloaded once into the freedreno_drivers folder of "
             + "the game's data folder (about " + ((choice.driver.size + (1 << 19)) >> 20) + " MB), and is not used "
-            + "until you turn it on: choose TURNIP for VULKAN DRIVER in the game's Video Setup. Other driver archives "
-            + "put in that folder are listed there too.");
+            + "until you choose it: in the game's Video Setup, VULKAN DRIVER lists it as "
+            + choice.driver.name.replaceFirst("\\.zip$", "") + ". Other driver archives put in that folder, or "
+            + "added with IMPORT DRIVER, are listed there too.");
         message.setTextColor(Color.rgb(200, 205, 210));
         message.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
         message.setGravity(Gravity.CENTER);
