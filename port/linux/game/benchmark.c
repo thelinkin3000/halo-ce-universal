@@ -16,6 +16,9 @@ multiplayer map, by name), separated by commas. The standard list:
 - bloodgulch, damnation, sidewinder and chillout, 15 seconds each, a local Slayer game with debug.benchmark_bots
   computer players, who fight with what they find: an open canyon, an enclosed hall of lights and effects, a wide
   snowfield, and a small arena where the fighting fills the screen.
+A stage may also be a replay, "replay:<its file in the replays folder>:seconds": played as the Theater plays one
+(network_replay_watch), the same game every run, measured once it plays; one that cannot be played, or whose game
+ends first, says why in its line (what it played is measured).
 
 A campaign level starts as the Solo menu starts one (normal difficulty, no saved game), each cinematic skipped as a
 button press would while it plays and can be, once each SKIP_SECONDS (a scripted stretch that cannot be skipped, as
@@ -52,6 +55,7 @@ Called from the main loop every frame (main.c), as network_test.c is.
 #include "hs/hs.h"
 #include "bots.h"
 #include "custom_edition_maps.h"
+#include "network_replay.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -101,14 +105,18 @@ struct benchmark_stage
 	/* started as a campaign level (the Solo menu's way, its cinematics skipped): the game's, or a Custom Edition
 	singleplayer map */
 	boolean campaign;
+	/* a replay's (replay:<file>): its file in the replays folder */
+	boolean replay;
+	char replay_name[NETWORK_REPLAY_NAME_SIZE];
 	double seconds;
 	/* what was measured */
 	long frames;
 	double average_fps, low_fps, median_ms, p99_ms, longest_ms;
 	long over_33;
 	boolean timed_out;
-	/* why it was not measured (its game ended before it was, or never began), or empty */
-	char failed[64];
+	/* why it was not measured (its game ended before it was, or never began; a replay that cannot be played), or
+	empty */
+	char failed[160];
 };
 
 static struct
@@ -194,14 +202,26 @@ static void benchmark_read_settings(void)
 			*next++ = 0;
 		while (*item == ' ')
 			item++;
-		colon = strchr(item, ':');
 		csmemset(stage, 0, sizeof(*stage));
+		/* (a replay: replay:<file>[:seconds]) */
+		if (!strncmp(item, "replay:", 7))
+		{
+			stage->replay = TRUE;
+			item += 7;
+		}
+		colon = strchr(item, ':');
 		stage->seconds = colon ? atof(colon + 1) : 30.0;
 		if (colon)
 			*colon = 0;
 		if (!*item || stage->seconds <= 0.0)
 			continue;
 		snprintf(stage->map, sizeof(stage->map), "%s", item);
+		if (stage->replay)
+		{
+			snprintf(stage->replay_name, sizeof(stage->replay_name), "%s", item);
+			benchmark.stage_count++;
+			continue;
+		}
 		stage->campaign = campaign_name(stage->map);
 		if (stage->campaign)
 			snprintf(stage->level, sizeof(stage->level), "levels\\%s\\%s", stage->map, stage->map);
@@ -353,6 +373,24 @@ static void benchmark_start_stage(struct benchmark_stage const *stage)
 	benchmark.map_set = benchmark.player_added = benchmark.started = FALSE;
 	benchmark.control_seconds = 0.0;
 	benchmark.skipped_at = -SKIP_SECONDS;
+	if (stage->replay)
+	{
+		char path[512];
+
+		/* as the Theater plays one (menu_functions.c's theater_watch): its game loads at the next frame */
+		bots_set_count_override(-1);
+		network_replay_folder(path, sizeof(path) - NETWORK_REPLAY_NAME_SIZE - 1);
+		snprintf(path + strlen(path), sizeof(path) - strlen(path), "/%s", stage->replay_name);
+		if (!network_replay_watch(path, stage->failed, sizeof(stage->failed)))
+		{
+			if (!stage->failed[0])
+				snprintf(stage->failed, sizeof(stage->failed), "it cannot be played");
+			platform_log("benchmark: the replay %s cannot be played: %s", path, stage->failed);
+			return;
+		}
+		platform_log("benchmark: the replay %s", path);
+		return;
+	}
 	if (stage->campaign)
 	{
 		/* as the Solo menu starts a level (menu_functions.c's campaign_start) */
@@ -413,6 +451,9 @@ static void benchmark_multiplayer_setup(struct benchmark_stage const *stage)
 /* whether the player has control: a unit, the game running, nothing to skip */
 static boolean benchmark_in_control(struct benchmark_stage const *stage)
 {
+	/* (a replay's game: once it plays, whoever's view it shows) */
+	if (stage->replay)
+		return game_in_progress() && network_replay_playing() && !network_replay_playback_starting();
 	if (!game_in_progress() || benchmark_unit() == NONE)
 		return FALSE;
 	/* (a cinematic that is playing and can be skipped is waited for, skipped; a skippable stretch with none playing, as
@@ -474,17 +515,25 @@ void benchmark_update(
 			break;
 		}
 		benchmark_start_stage(stage);
-		benchmark.state = _benchmark_loading;
 		benchmark.state_seconds = 0.0;
+		/* (a replay that cannot be played: the next stage, its line saying why) */
+		if (stage->failed[0])
+		{
+			benchmark.stage++;
+			break;
+		}
+		benchmark.state = _benchmark_loading;
 		break;
 	case _benchmark_loading:
 		/* (a game that ended before it was measured, as a local game whose host went down, or one that never began:
 		the next map, this one's line saying so) */
 		if (main_menu_loaded && ((!stage->campaign && benchmark.started &&
 			benchmark.state_seconds - benchmark.started_seconds >= 10.0) ||
+			(stage->replay && benchmark.state_seconds >= 10.0 && !network_replay_playing()) ||
 			benchmark.state_seconds >= CONTROL_TIMEOUT_SECONDS))
 		{
-			snprintf(stage->failed, sizeof(stage->failed), "%s", benchmark.started ?
+			snprintf(stage->failed, sizeof(stage->failed), "%s", stage->replay ?
+				"the replay's game ended at the main menu before it was measured" : benchmark.started ?
 				"its game ended at the main menu before it was measured" : "it did not begin");
 			platform_log("benchmark: %s: %s", stage->map, stage->failed);
 			/* (at the main menu already: nothing to leave; the next map's start sets its own game up) */
@@ -494,7 +543,7 @@ void benchmark_update(
 			benchmark.state_seconds = 0.0;
 			break;
 		}
-		if (!stage->campaign && main_menu_loaded)
+		if (!stage->campaign && !stage->replay && main_menu_loaded)
 			benchmark_multiplayer_setup(stage);
 		/* (each cinematic skipped while it plays and can be, as a button press would; once each SKIP_SECONDS: a skip
 		reverts the game to where the skippable stretch began, each a fade through black, and skipped every frame, The
@@ -526,7 +575,9 @@ void benchmark_update(
 			if (stage->timed_out)
 				platform_log("benchmark: %s: the player has no control after %.0f s; measured anyway", stage->map,
 					benchmark.state_seconds);
-			hs_compile_and_evaluate("cheat_deathless_player 1");
+			/* (a replay's players are as they were) */
+			if (!stage->replay)
+				hs_compile_and_evaluate("cheat_deathless_player 1");
 			benchmark.state = _benchmark_warming;
 			benchmark.state_seconds = 0.0;
 		}
@@ -537,8 +588,12 @@ void benchmark_update(
 			char marker[64];
 			real_vector3d facing;
 
-			player_control_get_facing_direction(0, &facing);
-			benchmark.yaw = atan2((double)facing.j, (double)facing.i);
+			/* (a replay has no player of this machine's to turn: its view is its own) */
+			if (!stage->replay)
+			{
+				player_control_get_facing_direction(0, &facing);
+				benchmark.yaw = atan2((double)facing.j, (double)facing.i);
+			}
 			benchmark.frame_count = 0;
 			benchmark.measured_seconds = 0.0;
 			snprintf(marker, sizeof(marker), "benchmark %s", stage->map);
@@ -552,9 +607,31 @@ void benchmark_update(
 		if (benchmark.frame_count < MAXIMUM_FRAMES && seconds > 0.0)
 			benchmark.frame_ms[benchmark.frame_count++] = (float)(seconds * 1000.0);
 		benchmark.measured_seconds += seconds;
-		/* (debug.benchmark_manual: the player's own, to measure play with the touch controls or a pad) */
-		if (benchmark_unit() != NONE && !config_boolean("debug.benchmark_manual"))
+		/* (debug.benchmark_manual: the player's own, to measure play with the touch controls or a pad; a replay's
+		view, its own) */
+		if (!stage->replay && benchmark_unit() != NONE && !config_boolean("debug.benchmark_manual"))
 			benchmark_turn(seconds);
+		/* (a replay's game that ended first: what it played is measured, and its line says so) */
+		if (stage->replay && (main_menu_loaded || !network_replay_playing()))
+		{
+			halo_render_marker("benchmark end");
+			platform_log("benchmark: %s: the replay's game ended %.0f s into its measure", stage->map,
+				benchmark.measured_seconds);
+			stage->seconds = benchmark.measured_seconds;
+			benchmark_stage_results(stage);
+			if (main_menu_loaded)
+			{
+				benchmark.stage++;
+				benchmark.state = _benchmark_menu;
+			}
+			else
+			{
+				network_game_abort();
+				benchmark.state = _benchmark_leaving;
+			}
+			benchmark.state_seconds = 0.0;
+			break;
+		}
 		if (benchmark.measured_seconds >= stage->seconds)
 		{
 			halo_render_marker("benchmark end");
