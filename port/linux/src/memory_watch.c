@@ -71,6 +71,7 @@ static void mark_written(unsigned long page)
 /* errors.c's: debug.txt (a player sends it; the terminal's lines may be
 gone) */
 void write_to_error_file(char *string, unsigned char date);
+void errors_debug_file_urgent(void);
 
 /* a line of a crash report (ending in a newline) to debug.txt too, best
 effort: the crash may be in the middle of writing it */
@@ -138,6 +139,8 @@ static void crash_report(int signal_number, siginfo_t *information, void *contex
 	pc = frame = stack = 0;
 	(void)ucontext;
 #endif
+	/* (debug.txt's lines written as they come, not queued for its writer) */
+	errors_debug_file_urgent();
 	length = snprintf(line, sizeof(line), "halo-linux: %s (signal %d, code %d) at %p, eip %08lx ebp %08lx esp %08lx\n",
 		crash_signal_name(signal_number), signal_number, information ? information->si_code : 0,
 		information ? information->si_addr : NULL, pc, frame, stack);

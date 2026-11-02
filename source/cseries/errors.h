@@ -61,6 +61,11 @@ void write_to_error_file(
 	char *string,
 	boolean date);
 
+/* port: debug.txt's lines written where they are logged from now on, not
+queued: a crash is being reported */
+void errors_debug_file_urgent(
+	void);
+
 /* ---------- globals */
 
 extern struct error_global_data error_globals;
