@@ -1822,6 +1822,15 @@ static void present(const struct dk_command_present *command)
 	}
 	if (output_height != dk.screen_height)
 		swapchain_remake();
+	/* the frame's own commands go to the GPU before a screen image is asked
+	for, which waits while the display holds them all: the GPU starts on the
+	frame meanwhile, rather than after the wait (Android's Vulkan renderer
+	gained this way, port/android/host/host_vk_render.c's
+	frame_submit_split). A submission mid-stream, as a lock's wait makes one:
+	its fence does not yet say the stream is finished, and the present
+	submits the rest */
+	if (dk.recorded)
+		commands_submit_partial();
 	{
 		uint64_t waited = slow_now_ns();
 
