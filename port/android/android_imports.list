@@ -20,6 +20,8 @@ host_android_chip_family
 # the Theater's EXPORT and IMPORT (port/android/host/host_main.c; port/linux/game/menu_functions.c)
 host_android_export_replays
 host_android_import_replays
+# the Mods screen's IMPORT (port/android/host/host_main.c; port/linux/game/menu_functions.c)
+host_android_import_mods
 # the server browser's requests to the master servers (port/android/host/host_https.c;
 # port/linux/src/master_list.c)
 host_https_get

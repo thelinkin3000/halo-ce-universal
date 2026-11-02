@@ -3103,9 +3103,15 @@ resource pack list is, the one that plays over the others at the top (the
 load order upside down: the mod loaded last first), turned on or off and
 moved up or down there, and in the frame beside them the mod chosen's
 details; OK keeps it (port/linux/src/port_mods.c's load_order.toml) and
-plays them on the map now (mods.c), Cancel forgets it */
+plays them on the map now (mods.c), Cancel forgets it. On Android, IMPORT
+takes a mod from a .zip file (the app's file picker) and DELETE deletes the
+mod chosen at a second press: both keep what was chosen as OK does, and
+find the mods again */
 
+/* the most rows (Android's ten, its IMPORT and DELETE below them) */
 #define MOD_ROWS 11
+/* how often the mods folder is looked at while IMPORT's mod is awaited */
+#define MOD_IMPORT_LOOK_MILLISECONDS 1000
 #define MOD_DETAILS_LENGTH 1024
 /* the details' lines: as many as fit down the frame */
 #define MOD_DETAILS_LINES 13
@@ -3147,8 +3153,14 @@ long port_mods_move(long position, long places);
 void port_mods_turn(long index, int on);
 int port_mods_save(void);
 void port_mods_revert(void);
+char const *port_mods_folder(long index);
+long port_mods_folders(void);
+int port_mods_delete(long index);
 /* (mods.c) */
 void mods_apply(void);
+/* (the app's file picker, which takes the mods chosen from their .zip files
+into the folder: port/android/host/host_main.c, HaloActivity.importMods) */
+void host_android_import_mods(const char *folder);
 
 static struct
 {
@@ -3157,6 +3169,17 @@ static struct
 	focus from the rows) */
 	short first;
 	short chosen;
+	/* the rows the screen has (fewer on Android) */
+	short rows;
+	/* the mod DELETE asks about (its folder: a second press deletes it),
+	and what the last DELETE did, in the details until another is chosen */
+	char deleting[64];
+	char why[96];
+	/* (IMPORT) whether a mod is awaited, the mods folder's folders as it
+	was asked for, and when they were last counted */
+	boolean importing;
+	long import_folders;
+	unsigned long import_looked;
 	/* the text boxes' fonts and widths as they were last drawn
 	(menu_functions_text_box_drawn), which their lines are measured in;
 	NONE before then */
@@ -3164,7 +3187,7 @@ static struct
 	short widths[NUMBER_OF_MOD_TEXT_BOXES];
 	/* what the details show (they are wrapped again when it changes), and
 	the mod each row's name is of, in which font (NONE: none yet) */
-	char shown[128];
+	char shown[256];
 	long row_mods[MOD_ROWS];
 	long row_fonts[MOD_ROWS];
 } mods_screen;
@@ -3348,6 +3371,9 @@ static boolean mods_screen_reset(void)
 	port_mods_revert();
 	mods_screen.first = 0;
 	mods_screen.chosen = 0;
+	mods_screen.rows = MOD_ROWS;
+	mods_screen.deleting[0] = 0;
+	mods_screen.why[0] = 0;
 	mods_screen.shown[0] = 0;
 	for (index = 0; index < NUMBER_OF_MOD_TEXT_BOXES; index++)
 	{
@@ -3384,6 +3410,7 @@ static boolean mods_move(struct widget_instance *widget, short places)
 	struct widget_instance *row = mod_row(widget);
 	short count = (short)port_mods_count();
 	short place = row ? mod_row_place(row) : mods_screen.chosen;
+	short rows = mods_screen.rows ? mods_screen.rows : MOD_ROWS;
 	short moved;
 
 	/* (no mods: nothing to move) */
@@ -3395,8 +3422,8 @@ static boolean mods_move(struct widget_instance *widget, short places)
 	mods_screen.chosen = moved;
 	if (moved < mods_screen.first)
 		mods_screen.first = moved;
-	else if (moved >= mods_screen.first + MOD_ROWS)
-		mods_screen.first = (short)(moved - MOD_ROWS + 1);
+	else if (moved >= mods_screen.first + rows)
+		mods_screen.first = (short)(moved - rows + 1);
 	if (row && row->parent)
 		focus_row(row->parent, (short)(moved - mods_screen.first));
 	/* (the list's shoulders: its focus follows the mod too) */
@@ -3422,10 +3449,10 @@ static void mods_details_show(struct widget_instance *details, short place, shor
 	char shown[sizeof(mods_screen.shown)];
 
 	/* (wrapped again only when what they show, or its fonts, change) */
-	snprintf(shown, sizeof(shown), "%ld %d %d %d %d %ld %d %ld %d", mod, port_mods_status(mod, NULL, 0),
+	snprintf(shown, sizeof(shown), "%ld %d %d %d %d %ld %d %ld %d %s", mod, port_mods_status(mod, NULL, 0),
 		port_mods_on(mod), place, count, mods_screen.fonts[_mod_details_name],
 		mods_screen.widths[_mod_details_name], mods_screen.fonts[_mod_details_text],
-		mods_screen.widths[_mod_details_text]);
+		mods_screen.widths[_mod_details_text], mods_screen.why);
 	if (!strcmp(shown, mods_screen.shown))
 		return;
 	strcpy(mods_screen.shown, shown);
@@ -3435,10 +3462,21 @@ static void mods_details_show(struct widget_instance *details, short place, shor
 		mods_wide_text(count ? "" : "No mods", wide, NUMBEROF(wide));
 		text_set_length(named(details, "mod_details_name", 0), wide, NUMBEROF(wide));
 		text[0] = 0;
+		line = 0;
+		if (mods_screen.why[0])
+		{
+			line = mods_wrap(mods_screen.why, text, sizeof(text), _mod_details_text, MOD_DETAILS_LINES, line);
+			line = mods_wrap(" ", text, sizeof(text), _mod_details_text, MOD_DETAILS_LINES, line);
+		}
 		if (!count)
 		{
-			mods_wrap("Each mod is a folder of its own in the mods folder, beside the maps folder.", text,
-				sizeof(text), _mod_details_text, MOD_DETAILS_LINES, 0);
+			line = mods_wrap("Each mod is a folder of its own in the mods folder, beside the maps folder.", text,
+				sizeof(text), _mod_details_text, MOD_DETAILS_LINES, line);
+#if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
+			line = mods_wrap(" ", text, sizeof(text), _mod_details_text, MOD_DETAILS_LINES, line);
+			mods_wrap("IMPORT takes one from a .zip file of its folder's files.", text, sizeof(text),
+				_mod_details_text, MOD_DETAILS_LINES, line);
+#endif
 		}
 		mods_wide_text(text, wide, NUMBEROF(wide));
 		text_set_length(named(details, "mod_details_text", 0), wide, NUMBEROF(wide));
@@ -3455,6 +3493,11 @@ static void mods_details_show(struct widget_instance *details, short place, shor
 		icon->animation.current_frame_index = status == _port_mod_out_of_order ? 1 : 2;
 	text[0] = 0;
 	line = 0;
+	if (mods_screen.why[0])
+	{
+		line = mods_wrap(mods_screen.why, text, sizeof(text), _mod_details_text, MOD_DETAILS_LINES, line);
+		line = mods_wrap(" ", text, sizeof(text), _mod_details_text, MOD_DETAILS_LINES, line);
+	}
 	if (status != _port_mod_fine)
 	{
 		/* (its first line indented, for the icon) */
@@ -3479,14 +3522,61 @@ are more mods past them), each mod's name (cut short where it is too long),
 ON or OFF and its icon (out of the order it asks for; another says it cannot
 be played with it, or it cannot be played), and the details of the mod
 chosen */
+/* the mods found again (after DELETE, or once IMPORT's has come): what the
+menu has chosen kept first, as OK keeps it, then played, and the rows and
+the details written again */
+static void mods_found_again(void)
+{
+	short index;
+	short count;
+
+	mods_apply();
+	count = (short)port_mods_count();
+	if (mods_screen.chosen >= count)
+		mods_screen.chosen = (short)MAX(0, count - 1);
+	if (mods_screen.first > 0 && mods_screen.first >= count)
+		mods_screen.first = (short)MAX(0, count - 1);
+	mods_screen.shown[0] = 0;
+	for (index = 0; index < MOD_ROWS; index++)
+		mods_screen.row_mods[index] = NONE;
+}
+
+/* (IMPORT) the mods folder looked at again, while a mod is awaited: a
+folder more (or fewer) is the app's copy done */
+static void mods_import_look(void)
+{
+	unsigned long now = system_milliseconds();
+
+	if (!mods_screen.importing || now - mods_screen.import_looked < MOD_IMPORT_LOOK_MILLISECONDS)
+		return;
+	mods_screen.import_looked = now;
+	if (port_mods_folders() == mods_screen.import_folders)
+		return;
+	mods_screen.importing = FALSE;
+	port_mods_save();
+	mods_found_again();
+	platform_log("mods: a mod was imported: %ld found", port_mods_count());
+}
+
 static void mods_update(struct widget_instance *list)
 {
 	struct widget_instance *row;
-	struct widget_instance *focused = mod_row(list->focused_child);
-	short count = (short)port_mods_count();
-	short focused_index = focused ? (short)(atoi(focused->name + 7) - 1) : NONE;
+	struct widget_instance *focused;
+	short count;
+	short focused_index;
+	short rows = 0;
 
-	if (focused_index == MOD_ROWS - 1 && mods_screen.first + MOD_ROWS < count && list_scrolls_at_end())
+	mods_import_look();
+	focused = mod_row(list->focused_child);
+	count = (short)port_mods_count();
+	focused_index = focused ? (short)(atoi(focused->name + 7) - 1) : NONE;
+	for (row = list->child; row; row = row->next)
+	{
+		if (!strncmp(row->name, "op_mod_", 7))
+			rows++;
+	}
+	mods_screen.rows = rows = (short)PIN(rows, 1, MOD_ROWS);
+	if (focused_index == rows - 1 && mods_screen.first + rows < count && list_scrolls_at_end())
 	{
 		mods_screen.first++;
 		focus_row(list, --focused_index);
@@ -3496,10 +3586,15 @@ static void mods_update(struct widget_instance *list)
 		mods_screen.first--;
 		focus_row(list, ++focused_index);
 	}
-	if (mods_screen.first > 0 && mods_screen.first + MOD_ROWS > count)
-		mods_screen.first = (short)MAX(0, count - MOD_ROWS);
-	if (focused_index != NONE && mods_screen.first + focused_index < count)
+	if (mods_screen.first > 0 && mods_screen.first + rows > count)
+		mods_screen.first = (short)MAX(0, count - rows);
+	if (focused_index != NONE && mods_screen.first + focused_index < count &&
+		mods_screen.chosen != mods_screen.first + focused_index)
+	{
 		mods_screen.chosen = (short)(mods_screen.first + focused_index);
+		mods_screen.deleting[0] = 0;
+		mods_screen.why[0] = 0;
+	}
 	for (row = list->child; row; row = row->next)
 	{
 		short place;
@@ -3572,6 +3667,56 @@ static boolean mods_accept(struct widget_instance *widget, boolean *widget_delet
 #else
 	(void)widget_deleted;
 	return mods_toggle(widget);
+#endif
+}
+
+/* "port mods delete" (A on DELETE, Android's alone): the first press asks,
+the second deletes the mod chosen (the one asked about, unless another was
+chosen since), what the menu has chosen kept first */
+static boolean mods_delete(void)
+{
+	short count = (short)port_mods_count();
+	long mod = mod_at_place(count ? mods_screen.chosen : NONE);
+	char folder[sizeof(mods_screen.deleting)];
+
+	if (mod < 0)
+		return TRUE;
+	snprintf(folder, sizeof(folder), "%s", port_mods_folder(mod));
+	if (strcmp(mods_screen.deleting, folder))
+	{
+		strcpy(mods_screen.deleting, folder);
+		snprintf(mods_screen.why, sizeof(mods_screen.why), "Press DELETE again to delete it.");
+		return TRUE;
+	}
+	mods_screen.deleting[0] = 0;
+	port_mods_save();
+	if (port_mods_delete(mod))
+	{
+		snprintf(mods_screen.why, sizeof(mods_screen.why), "%s deleted.", folder);
+		platform_log("mods: %s deleted", folder);
+	}
+	else
+		snprintf(mods_screen.why, sizeof(mods_screen.why), "%s could not be deleted whole.", folder);
+	mods_found_again();
+	return TRUE;
+}
+
+/* "port mods import" (A on IMPORT, Android's alone): the app's file picker,
+then each .zip chosen taken into a folder of its name on the app's own
+thread; the screen finds it there (mods_import_look) */
+static boolean mods_import(void)
+{
+#if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
+	char folder[1024];
+
+	snprintf(folder, sizeof(folder), "%s/mods", platform_data_root());
+	mods_screen.importing = TRUE;
+	mods_screen.import_folders = port_mods_folders();
+	mods_screen.import_looked = system_milliseconds();
+	host_android_import_mods(folder);
+	return TRUE;
+#else
+	return FALSE;
 #endif
 }
 
@@ -10068,6 +10213,14 @@ boolean pc_menu_event_function_invoke(
 		else if (!strcmp(name, "port theater import"))
 		{
 			return theater_import();
+		}
+		else if (!strcmp(name, "port mods delete"))
+		{
+			return mods_delete();
+		}
+		else if (!strcmp(name, "port mods import"))
+		{
+			return mods_import();
 		}
 		else if (!strcmp(name, "controls screen init") || !strcmp(name, "controls screen defaults"))
 		{

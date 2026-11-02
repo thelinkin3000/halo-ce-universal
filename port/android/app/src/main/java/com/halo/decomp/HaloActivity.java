@@ -33,6 +33,8 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 import org.libsdl.app.SDLActivity;
 
@@ -51,12 +53,19 @@ public class HaloActivity extends SDLActivity {
     private volatile int[] gestureInsets = new int[] { 0, 0, 0, 0 };
     /** the on-screen touch controls, over SDL's surface */
     private TouchControls touchControls;
-    private static final int EXPORT_LAYOUT = 401, IMPORT_LAYOUT = 402, EXPORT_REPLAYS = 403, IMPORT_REPLAYS = 404;
+    private static final int EXPORT_LAYOUT = 401, IMPORT_LAYOUT = 402, EXPORT_REPLAYS = 403, IMPORT_REPLAYS = 404,
+        IMPORT_MODS = 405;
     private String pendingLayoutExport;
     /** the folder of the replays the Theater's EXPORT REPLAYS copies, while the folder picker is open */
     private String pendingReplaysFolder;
     /** the folder the Theater's IMPORT copies replays into, while the file picker is open */
     private String pendingImportFolder;
+    /** the mods folder the Mods screen's IMPORT takes .zip files into, while the file picker is open */
+    private String pendingModsFolder;
+    /** the longest mod folder name the game takes (port/linux/src/port_mods.c's MAXIMUM_MOD_FOLDER_LENGTH less its
+     * terminator), in UTF-8's bytes, and the most files a mod's .zip may hold (its MAXIMUM_MOD_FILES) */
+    private static final int MOD_FOLDER_LENGTH = 63;
+    private static final int MOD_MAXIMUM_FILES = 262144;
     /** a replay's file name ends so, and the file begins so (port/linux/game/network_replay.c) */
     private static final String REPLAY_EXTENSION = ".ocreplay";
     private static final byte[] REPLAY_MAGIC = "OCREPLAY".getBytes(StandardCharsets.US_ASCII);
@@ -77,6 +86,7 @@ public class HaloActivity extends SDLActivity {
             pendingLayoutExport = savedInstanceState.getString("pending-layout-export");
             pendingReplaysFolder = savedInstanceState.getString("pending-replays-folder");
             pendingImportFolder = savedInstanceState.getString("pending-import-folder");
+            pendingModsFolder = savedInstanceState.getString("pending-mods-folder");
         }
         if (mLayout != null) {
             touchControls = new TouchControls(this);
@@ -125,6 +135,7 @@ public class HaloActivity extends SDLActivity {
         state.putString("pending-layout-export", pendingLayoutExport);
         state.putString("pending-replays-folder", pendingReplaysFolder);
         state.putString("pending-import-folder", pendingImportFolder);
+        state.putString("pending-mods-folder", pendingModsFolder);
     }
 
     /**
@@ -309,6 +320,152 @@ public class HaloActivity extends SDLActivity {
         runOnUiThread(() -> Toast.makeText(this, text, Toast.LENGTH_LONG).show());
     }
 
+    /**
+     * The Mods screen's IMPORT (port/linux/game/menu_functions.c, through host_android_import_mods): the system's
+     * file picker, several .zip files at once, then each one taken into a folder of its own name in folder, the mods
+     * folder, where the Mods screen finds it. A mod's .zip holds its folder's files as they are laid out there
+     * (mod.toml and tags/ at its top). Called on the game's thread; no storage permission.
+     */
+    public void importMods(String folder) {
+        runOnUiThread(() -> {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            // (the providers call a .zip any of these)
+            intent.setType("*/*");
+            intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] { "application/zip", "application/x-zip-compressed",
+                "application/x-zip", "application/octet-stream" });
+            intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+            pendingModsFolder = folder;
+            try {
+                startActivityForResult(intent, IMPORT_MODS);
+            } catch (android.content.ActivityNotFoundException e) {
+                pendingModsFolder = null;
+                Toast.makeText(this, "This device has no file picker.", Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    /**
+     * the folder a mod's .zip is taken into: the file's name without .zip, with what a folder's name cannot hold
+     * (slashes, a leading dot, which the game passes over, and control characters) made '_', no longer than the game
+     * takes
+     */
+    private static String modFolderName(String chosen) {
+        String name = chosen != null ? chosen : "";
+        if (name.toLowerCase(java.util.Locale.ROOT).endsWith(".zip"))
+            name = name.substring(0, name.length() - 4);
+        name = name.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_").trim();
+        if (name.startsWith("."))
+            name = "_" + name.substring(1);
+        if (name.isEmpty())
+            name = "mod";
+        while (name.getBytes(StandardCharsets.UTF_8).length > MOD_FOLDER_LENGTH)
+            name = name.substring(0, name.offsetByCodePoints(name.length(), -1));
+        return name;
+    }
+
+    /** a file, or a folder and everything in it, deleted */
+    private static void deleteTree(File file) {
+        File[] children = file.isDirectory() ? file.listFiles() : null;
+        if (children != null) {
+            for (File child : children)
+                deleteTree(child);
+        }
+        file.delete();
+    }
+
+    /** a .zip's entries written into folder, which none may leave */
+    private void unzipInto(Uri document, File folder) throws IOException {
+        String top = folder.getCanonicalPath() + File.separator;
+        int files = 0;
+        try (InputStream input = getContentResolver().openInputStream(document)) {
+            if (input == null)
+                throw new IOException("it cannot be opened");
+            try (ZipInputStream zip = new ZipInputStream(input)) {
+                byte[] buffer = new byte[65536];
+                ZipEntry entry;
+                while ((entry = zip.getNextEntry()) != null) {
+                    String path = entry.getName().replace('\\', '/');
+                    File target = new File(folder, path);
+                    if (!target.getCanonicalPath().startsWith(top) && !target.getCanonicalPath().equals(folder.getCanonicalPath()))
+                        throw new IOException("it names a file outside its folder (" + entry.getName() + ")");
+                    if (entry.isDirectory()) {
+                        target.mkdirs();
+                        continue;
+                    }
+                    if (++files > MOD_MAXIMUM_FILES)
+                        throw new IOException("it has more than " + MOD_MAXIMUM_FILES + " files");
+                    File parent = target.getParentFile();
+                    if (parent != null)
+                        parent.mkdirs();
+                    try (OutputStream output = new FileOutputStream(target)) {
+                        int size;
+                        while ((size = zip.read(buffer)) != -1)
+                            output.write(buffer, 0, size);
+                    }
+                }
+            }
+        }
+        if (files == 0)
+            throw new IOException("it is not a .zip file, or it is empty");
+    }
+
+    /**
+     * the .zip files chosen taken into the mods folder, on a thread of their own; a Toast says how it went. Each is
+     * written into .import/<name> (the game passes over a folder whose name begins with a dot), which becomes the mod
+     * only once it is whole and has a mod.toml at its top; a name the folder has already is left as it is.
+     */
+    private void copyModsIn(List<Uri> documents, String folder) {
+        File mods = new File(folder);
+        File staging = new File(mods, ".import");
+        int copied = 0, skipped = 0;
+        String failed = null;
+        runOnUiThread(() -> Toast.makeText(this, "Importing...", Toast.LENGTH_SHORT).show());
+        for (Uri document : documents) {
+            String name = modFolderName(documentName(document));
+            File mod = new File(mods, name);
+            File part = new File(staging, name);
+            if (mod.exists()) {
+                skipped++;
+                continue;
+            }
+            try {
+                deleteTree(part);
+                if (!part.mkdirs())
+                    throw new IOException("its folder cannot be made");
+                unzipInto(document, part);
+                if (!new File(part, "mod.toml").isFile())
+                    throw new IOException("it has no mod.toml at its top");
+                if (!part.renameTo(mod))
+                    throw new IOException("its folder cannot be kept");
+                copied++;
+            } catch (Exception e) {
+                failed = name + ": " + e.getMessage();
+                break;
+            } finally {
+                deleteTree(part);
+            }
+        }
+        deleteTree(staging);
+        String text = failed != null ? (copied > 0 ? copied + " imported; then " : "") + "the import stopped: " + failed
+            : copied + (copied == 1 ? " mod imported" : " mods imported")
+                + (skipped > 0 ? " (" + skipped + " already there: delete " + (skipped == 1 ? "it" : "them")
+                    + " first to import again)" : "") + ".";
+        runOnUiThread(() -> Toast.makeText(this, text, Toast.LENGTH_LONG).show());
+    }
+
+    /** the documents a picker of several files chose */
+    private static List<Uri> chosenDocuments(Intent data) {
+        List<Uri> documents = new ArrayList<>();
+        if (data.getClipData() != null) {
+            for (int index = 0; index < data.getClipData().getItemCount(); index++)
+                documents.add(data.getClipData().getItemAt(index).getUri());
+        } else if (data.getData() != null) {
+            documents.add(data.getData());
+        }
+        return documents;
+    }
+
     @Override
     protected void onActivityResult(int request, int result, Intent data) {
         if (request == IMPORT_REPLAYS) {
@@ -316,15 +473,19 @@ public class HaloActivity extends SDLActivity {
             pendingImportFolder = null;
             if (result != RESULT_OK || data == null || folder == null)
                 return;
-            List<Uri> documents = new ArrayList<>();
-            if (data.getClipData() != null) {
-                for (int index = 0; index < data.getClipData().getItemCount(); index++)
-                    documents.add(data.getClipData().getItemAt(index).getUri());
-            } else if (data.getData() != null) {
-                documents.add(data.getData());
-            }
+            List<Uri> documents = chosenDocuments(data);
             if (!documents.isEmpty())
                 new Thread(() -> copyReplaysIn(documents, folder), "halo-import-replays").start();
+            return;
+        }
+        if (request == IMPORT_MODS) {
+            String folder = pendingModsFolder;
+            pendingModsFolder = null;
+            if (result != RESULT_OK || data == null || folder == null)
+                return;
+            List<Uri> documents = chosenDocuments(data);
+            if (!documents.isEmpty())
+                new Thread(() -> copyModsIn(documents, folder), "halo-import-mods").start();
             return;
         }
         if (request == EXPORT_REPLAYS) {

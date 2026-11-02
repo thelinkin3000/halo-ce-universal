@@ -148,6 +148,12 @@ into folder (a path; HaloActivity.importReplays); returns at once, the copy
 done on the app's own thread */
 void host_android_import_replays(const char *folder);
 
+/* the system's file picker, after which the app takes each .zip file chosen
+into a folder of its name in folder (a path: the mods folder;
+HaloActivity.importMods); returns at once, the copy done on the app's own
+thread */
+void host_android_import_mods(const char *folder);
+
 /* ---------- the on-screen touch controls (host_touch.c, android_imports.list) */
 
 /* the overlay's controller: the SDL axes (left x, y, right x, y, left

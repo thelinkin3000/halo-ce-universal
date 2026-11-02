@@ -1500,6 +1500,12 @@ void host_android_import_replays(const char *folder)
 	(void)folder;
 }
 
+/* (and the Mods screen's IMPORT) */
+void host_android_import_mods(const char *folder)
+{
+	(void)folder;
+}
+
 void host_touch_read(int32_t *state)
 {
 	memset(state, 0, 7 * sizeof(*state));

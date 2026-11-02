@@ -397,7 +397,7 @@ static char const *const port_function_names[] =
 	"new campaign decision",
 	/* (the main menu's Mods: menu_functions.c) */
 	"port mods init", "port mods close", "port mods toggle", "port mods move up", "port mods move down",
-	"port mods save", "port mods accept",
+	"port mods save", "port mods accept", "port mods delete", "port mods import",
 	/* (the main menu's news: menu_functions.c) */
 	"port news init", "port news close", "port news up", "port news down", "port news page up",
 	"port news page down",

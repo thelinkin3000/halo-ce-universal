@@ -2920,7 +2920,9 @@ def _mods() -> list:
     is on and its priority, and what its mod.toml says. A turns the mod chosen
     on or off, left and right (and MOVE UP and MOVE DOWN, for the mouse) move
     it; OK keeps it all (load_order.toml) and plays them, Cancel forgets it
-    (menu_functions.c)"""
+    (menu_functions.c). Android has a row fewer, and in its place a second
+    bar: IMPORT (a mod's .zip file, the app's file picker,
+    HaloActivity.importMods) and DELETE (the mod chosen, at a second press)"""
     base = MODS
     lines = _widget("main_menu/main_menu_item_mods",
                     [("type", "text"), ("width", 256), ("height", 33), ("bitmap", "main_menu/menu_mods")],
@@ -2938,8 +2940,10 @@ def _mods() -> list:
                       *[f'<child widget="{base}/{key}" x="{x}" y="{y}" platform="{platform}"/>'
                         for key, x, y, platform in MOD_HINT_PLACES]])
     lines += _header(f"{base}/header_mods", f"{base}/header_mods")
-    # (the lobby's rows, MOD_ROWS of them, scrolling over more mods)
-    rows = [f'<child widget="{base}/op_mod_{index + 1}" x="20" y="{73 + 30 * index}"/>' for index in range(MOD_ROWS)]
+    # (the lobby's rows, MOD_ROWS of them, scrolling over more mods; the
+    # last not on Android, where IMPORT and DELETE are)
+    rows = [f'<child{attributes([("widget", f"{base}/op_mod_{index + 1}"), ("x", 20), ("y", 73 + 30 * index), ("platform", "desktop switch ps5 web" if index == MOD_ROWS - 1 else None)])}/>'
+            for index in range(MOD_ROWS)]
     lines += _widget(f"{base}/mods_list", [("type", "column_list"), ("width", 640), ("height", 480),
                                            ("flags", "pass_unhandled_to_focused_child up_down_tabs_children"),
                                            ("description", f"{base}/mod_details")],
@@ -2951,6 +2955,7 @@ def _mods() -> list:
                       # focus)
                       '<on event="y" run="port mods toggle"/>', '<on event="white" run="port mods move up"/>',
                       '<on event="black" run="port mods move down"/>', *rows,
+                      f'<child widget="{base}/button_bar_files" y="384" platform="android"/>',
                       f'<child widget="{base}/button_bar" y="414"/>'])
     for index in range(MOD_ROWS):
         lines += _widget(f"{base}/op_mod_{index + 1}",
@@ -2993,6 +2998,16 @@ def _mods() -> list:
                       f'<child widget="{base}/button_down" x="130" y="1" platform="desktop android web"/>',
                       f'<child widget="{base}/button_ok" x="380" y="1" platform="desktop android web"/>',
                       '<child widget="common_button_cancel" x="510" y="1" platform="desktop android web"/>'])
+    # (Android's, under MOVE UP and MOVE DOWN)
+    lines += _widget(f"{base}/button_bar_files",
+                     [("type", "column_list"), ("width", 640), ("height", 28),
+                      ("flags", "pass_unhandled_to_focused_child left_right_tabs_items")],
+                     [f'<child widget="{base}/button_import" y="1"/>',
+                      f'<child widget="{base}/button_delete" x="130" y="1"/>'])
+    lines += _text_button(f"{base}/button_import", "IMPORT", ['<on event="a" run="port mods import"/>',
+                                                             '<on event="start" run="port mods import"/>'])
+    lines += _text_button(f"{base}/button_delete", "DELETE", ['<on event="a" run="port mods delete"/>',
+                                                             '<on event="start" run="port mods delete"/>'])
     lines += _text_button(f"{base}/button_up", "MOVE UP", ['<on event="a" run="port mods move up"/>',
                                                           '<on event="start" run="port mods move up"/>'])
     lines += _text_button(f"{base}/button_down", "MOVE DOWN", ['<on event="a" run="port mods move down"/>',

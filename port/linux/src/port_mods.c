@@ -871,6 +871,39 @@ static int text_file_write(const char *path, const char *text)
 	return written;
 }
 
+/* removes path: a folder's files and folders first (as deep as
+MAXIMUM_FOLDER_DEPTH); whether it is gone */
+static int path_remove(const char *path, int depth)
+{
+	struct posix_file_information information;
+
+	if (posix_stat(path, &information) != 0)
+		return 1;
+	if ((information.flags & _posix_file_is_directory) && depth <= MAXIMUM_FOLDER_DEPTH)
+	{
+		void *directory = posix_directory_open(path);
+		char name[256];
+
+		while (directory && posix_directory_next(directory, name, sizeof(name)))
+		{
+			char child[MAXIMUM_PATH_LENGTH];
+
+			if (!strcmp(name, ".") || !strcmp(name, ".."))
+				continue;
+			if (snprintf(child, sizeof(child), "%s/%s", path, name) < (int)sizeof(child))
+				path_remove(child, depth + 1);
+		}
+		if (directory)
+			posix_directory_close(directory);
+	}
+#ifdef HALO_GUEST
+	/* (musl's remove takes an empty folder too) */
+	return remove(path) == 0;
+#else
+	return SDL_RemovePath(path);
+#endif
+}
+
 static long file_add(long mod, const char *key, const char *path)
 {
 	struct port_mod_file *file;
@@ -1030,6 +1063,44 @@ long port_mods_scan(void)
 		platform_log("mods: load order %s", order);
 	}
 	return port_mods.played_count;
+}
+
+long port_mods_folders(void)
+{
+	char root[MAXIMUM_PATH_LENGTH];
+	void *directory = posix_directory_open(mods_root(root, sizeof(root)));
+	char name[256];
+	long count = 0;
+
+	while (directory && posix_directory_next(directory, name, sizeof(name)))
+	{
+		char path[MAXIMUM_PATH_LENGTH];
+		struct posix_file_information information;
+
+		snprintf(path, sizeof(path), "%s/%s", root, name);
+		if (name[0] != '.' && posix_stat(path, &information) == 0 && (information.flags & _posix_file_is_directory))
+			count++;
+	}
+	if (directory)
+		posix_directory_close(directory);
+	return count;
+}
+
+int port_mods_delete(long index)
+{
+	char root[MAXIMUM_PATH_LENGTH];
+	char path[MAXIMUM_PATH_LENGTH];
+
+	if (index < 0 || index >= port_mods.mod_count)
+		return 0;
+	/* (its files closed first; the list of them is the next scan's to
+	forget) */
+	pthread_mutex_lock(&open_files_lock);
+	open_files_close();
+	pthread_mutex_unlock(&open_files_lock);
+	snprintf(path, sizeof(path), "%s/%s", mods_root(root, sizeof(root)), port_mods.mods[index].folder);
+	platform_log("mods: deleting %s", path);
+	return path_remove(path, 0);
 }
 
 long port_mods_file_find(const char *tag_file, const char *map_name)

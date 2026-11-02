@@ -372,11 +372,12 @@ void host_gesture_insets(int *insets)
 	}
 }
 
-/* ---------- the Theater's EXPORT and IMPORT */
+/* ---------- the Theater's EXPORT and IMPORT, and the Mods screen's IMPORT */
 
-/* calls the activity's method (a String argument, the replays' folder),
-found on the activity's class as host_gesture_insets' method is */
-static void host_android_replays_call(const char *method_name, const char *folder)
+/* calls the activity's method (a String argument, the replays' or the
+mods' folder), found on the activity's class as host_gesture_insets' method
+is */
+static void host_android_folder_call(const char *method_name, const char *folder)
 {
 	JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
 	jobject activity = (jobject)SDL_GetAndroidActivity();
@@ -414,7 +415,7 @@ chooses (HaloActivity.exportReplays: the system's folder picker, then the
 copy on a thread of its own) */
 void host_android_export_replays(const char *folder)
 {
-	host_android_replays_call("exportReplays", folder);
+	host_android_folder_call("exportReplays", folder);
 }
 
 /* asks the activity to copy replays the player chooses into folder
@@ -422,7 +423,15 @@ void host_android_export_replays(const char *folder)
 thread of its own) */
 void host_android_import_replays(const char *folder)
 {
-	host_android_replays_call("importReplays", folder);
+	host_android_folder_call("importReplays", folder);
+}
+
+/* asks the activity to take the mods in .zip files the player chooses into
+folder, a folder each (HaloActivity.importMods: the system's file picker,
+then the copy on a thread of its own) */
+void host_android_import_mods(const char *folder)
+{
+	host_android_folder_call("importMods", folder);
 }
 
 /* the settings of [debug] that this file reads, from config.toml */

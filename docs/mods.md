@@ -96,6 +96,10 @@ later plays.
   or off (ON, OFF); left and right, or **Move up** and **Move down**, move
   the chosen mod (up: over one more mod). **OK** keeps the order and plays
   it at once (on a map that is loaded, too); **Cancel** leaves it as it was.
+- On Android the menu has a row fewer and two more buttons: **Import**
+  (below), and **Delete**, which deletes the chosen mod's folder at a
+  second press. Both keep the order and the mods turned on or off as **OK**
+  does, then find the mods again and play them.
 - A warning sign beside a mod means it is on the wrong side of a mod it
   asks to load before or after (both on): a mod that loads after another is
   above it in the menu. A red cross means a mod that is on says it cannot be
@@ -146,7 +150,14 @@ game.
 ### Getting a mod onto each platform
 
 - **Linux, Windows**: put the mod's folder in `mods/` next to `maps/`.
-- **Android**: put it in `mods/` in the app's data folder,
+- **Android**: in the Mods menu, **Import** takes mods from `.zip` files
+  (the system's file picker, several at once). A mod's `.zip` holds its
+  folder's files as they are laid out in it, `mod.toml` and `tags/` at the
+  top, and becomes a folder of the `.zip`'s name (`hd_audio.zip` is
+  `mods/hd_audio`). It is unpacked into `mods/.import` first and kept only
+  once it is whole and has a `mod.toml`; a `.zip` whose name the mods
+  folder has already is passed over (delete that mod first). Or put the
+  folder in `mods/` in the app's data folder,
   `/sdcard/Android/data/com.halo.decomp/files/mods`, for example with
   `adb push hd_audio /sdcard/Android/data/com.halo.decomp/files/mods/`.
 - **Web**: on the page, **Mods**, **Add a mod folder…** copies a mod's

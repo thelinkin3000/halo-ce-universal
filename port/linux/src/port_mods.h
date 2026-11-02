@@ -20,6 +20,12 @@ int port_mods_list(char *text, unsigned long size);
 unsigned long port_mods_scans(void);
 /* how many mods the last port_mods_scan found that are on */
 long port_mods_played(void);
+/* the folders in the mods folder now (but those whose names begin with a
+dot), mods or not: the Mods menu sees one come (Android's IMPORT) */
+long port_mods_folders(void);
+/* deletes a mod's folder and everything in it (its files closed first: the
+next port_mods_scan finds it gone); 0 if some of it is left */
+int port_mods_delete(long index);
 
 /* the file a tag's path names (its name and extension: "sound\x.sound",
 any case, either slash) of the mods played on the map `map_name` (its
