@@ -388,6 +388,10 @@ void xgpu_static_range_remove(const void *start, int indices)
 	(void)indices;
 }
 
+void xgpu_static_forget_all(void)
+{
+}
+
 /* display.shadow_resolution, display.per_pixel_lighting and
 display.anti_aliasing are the OpenGL renderer's (d3d8_gl.c): here the shadow
 maps stay the Xbox's 128x128, every draw is lit as its vertex shader lights

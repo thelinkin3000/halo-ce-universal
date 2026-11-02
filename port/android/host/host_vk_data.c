@@ -17,6 +17,8 @@ only wait is for the frame's fence, which the frame's command buffer needs as we
 #include "host.h"
 #include "host_vk.h"
 
+#include <pthread.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -270,10 +272,138 @@ int host_vk_data_command(const struct vk_command_data *command, uint32_t size)
 	return 1;
 }
 
+/* ---------- static buffers
+
+The game's geometry written once as a map loads (an Xbox map's models in its tags, its BSP's vertices and indices; the
+ranges xgpu_static_buffers_add names, as the OpenGL renderer's static buffers), each copied once into a host-visible
+buffer of its own when a draw first reads it (host_vk_static_make, on the game's thread, during the call: the guest's
+memory is read then and never later), which draws name instead of putting the bytes again. Made on the game's thread
+and let go on the render thread (VK_COMMAND_STATIC_FREE, after the draws that name it): a slot goes back to the game's
+thread for another only once its buffer is destroyed, after the frames that may use it. */
+
+#define STATIC_LIMIT 4096
+
+static struct
+{
+	VkBuffer buffer;
+	VkDeviceMemory memory;
+	uint32_t size;
+	/* the game's thread may give it out (0), or it is in use or being let go */
+	int used;
+} statics[STATIC_LIMIT];
+static pthread_mutex_t statics_lock = PTHREAD_MUTEX_INITIALIZER;
+static unsigned long static_bytes;
+
+/* the slots let go in each frame slot, destroyed once its fence has passed */
+static uint32_t *static_graveyard[HOST_VK_FRAMES];
+static unsigned static_graveyard_count[HOST_VK_FRAMES], static_graveyard_capacity[HOST_VK_FRAMES];
+
+uint32_t host_vk_static_make(uint32_t address, uint32_t size)
+{
+	static int said_full;
+	uint32_t id;
+	VkBuffer buffer;
+	VkDeviceMemory memory;
+	void *mapped;
+
+	if (!size || !host_vk_backend_ensure())
+		return 0;
+	pthread_mutex_lock(&statics_lock);
+	for (id = 1; id < STATIC_LIMIT && statics[id].used; id++)
+		;
+	if (id < STATIC_LIMIT)
+		statics[id].used = 1;
+	pthread_mutex_unlock(&statics_lock);
+	if (id >= STATIC_LIMIT)
+	{
+		if (!said_full)
+			host_logf(HOST_LOG_WARN, "vk: %u static buffers: the rest are put at each draw", (unsigned)STATIC_LIMIT);
+		said_full = 1;
+		return 0;
+	}
+	if (!host_vk_buffer_make(size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, &buffer, &memory,
+		&mapped))
+	{
+		pthread_mutex_lock(&statics_lock);
+		statics[id].used = 0;
+		pthread_mutex_unlock(&statics_lock);
+		return 0;
+	}
+	memcpy(mapped, (const void *)(uintptr_t)address, size);
+	statics[id].buffer = buffer;
+	statics[id].memory = memory;
+	statics[id].size = size;
+	pthread_mutex_lock(&statics_lock);
+	static_bytes += size;
+	pthread_mutex_unlock(&statics_lock);
+	host_logf(HOST_LOG_INFO, "vk: static buffer %u: %u KB at 0x%08x (%lu KB in all)", (unsigned)id, (unsigned)(size / 1024),
+		(unsigned)address, static_bytes / 1024);
+	return id | VK_DATA_STATIC;
+}
+
+void host_vk_static_free_command(const struct vk_command_static_free *command)
+{
+	uint32_t id = command->id & ~VK_DATA_STATIC;
+	unsigned slot = (unsigned)B.frame;
+
+	if (!(command->id & VK_DATA_STATIC) || id < 1 || id >= STATIC_LIMIT || !statics[id].buffer)
+		return;
+	if (static_graveyard_count[slot] == static_graveyard_capacity[slot])
+	{
+		unsigned capacity = static_graveyard_capacity[slot] ? static_graveyard_capacity[slot] * 2 : 64;
+		uint32_t *grown = realloc(static_graveyard[slot], capacity * sizeof(*grown));
+
+		if (!grown)
+			return; /* (kept: a leak rather than a buffer destroyed under the GPU) */
+		static_graveyard[slot] = grown;
+		static_graveyard_capacity[slot] = capacity;
+	}
+	static_graveyard[slot][static_graveyard_count[slot]++] = id;
+}
+
+void host_vk_static_frame_reset(unsigned slot)
+{
+	unsigned index;
+
+	for (index = 0; index < static_graveyard_count[slot]; index++)
+	{
+		uint32_t id = static_graveyard[slot][index];
+
+		vkDestroyBuffer(B.device, statics[id].buffer, NULL);
+		vkFreeMemory(B.device, statics[id].memory, NULL);
+		pthread_mutex_lock(&statics_lock);
+		static_bytes -= statics[id].size;
+		statics[id].buffer = VK_NULL_HANDLE;
+		statics[id].memory = VK_NULL_HANDLE;
+		statics[id].size = 0;
+		statics[id].used = 0;
+		pthread_mutex_unlock(&statics_lock);
+	}
+	static_graveyard_count[slot] = 0;
+}
+
 int host_vk_data_find(uint32_t id, uint32_t offset, uint32_t size, VkBuffer *buffer, VkDeviceSize *buffer_offset)
 {
 	static int said;
 	const struct entry *entry = id >= 1 && id <= table.count ? &table.entries[id - 1] : NULL;
+
+	if (id & VK_DATA_STATIC)
+	{
+		uint32_t index = id & ~VK_DATA_STATIC;
+
+		if (index >= 1 && index < STATIC_LIMIT && statics[index].buffer && (uint64_t)offset + size <= statics[index].size)
+		{
+			*buffer = statics[index].buffer;
+			*buffer_offset = offset;
+			return 1;
+		}
+		if (!said)
+			host_logf(HOST_LOG_ERROR, "vk: a command names %u bytes at %u of static buffer %u, which is %s; the command is "
+				"skipped", (unsigned)size, (unsigned)offset, (unsigned)index, index >= 1 && index < STATIC_LIMIT &&
+				statics[index].buffer ? "too short" : "not known");
+		said = 1;
+		return 0;
+	}
 
 	if (!entry || !entry->buffer || entry->received != entry->total || (uint64_t)offset + size > entry->total)
 	{

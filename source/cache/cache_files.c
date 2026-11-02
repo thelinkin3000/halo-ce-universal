@@ -148,6 +148,7 @@ void xgpu_static_buffers_add(const void *buffers, long count, unsigned long stri
 void xgpu_static_buffers_remove(const void *buffers, long count, unsigned long stride, int indices);
 void xgpu_static_range_add(const void *start, unsigned long size, int indices);
 void xgpu_static_range_remove(const void *start, int indices);
+void xgpu_static_forget_all(void);
 #endif
 
 /* ---------- constants */
@@ -651,6 +652,31 @@ char const *cache_files_map_directory(
 	return map_directory;
 }
 
+/* port: tag_loaded's recent answers, found ones and NONE alike. Each of its
+walks compares the name with every loaded tag of the group, and the menus,
+the HUD and the widgets' event routing ask by name each frame (a sixtieth of
+the game thread's time on a phone, 48 bots). An answer holds until the
+loaded tags change: their table is made, replaced or let go
+(tag_loaded_forget), which also covers the menus' tags added to a copy of it.
+A name too long for an entry is looked up as before. */
+#define TAG_LOADED_MEMO_SIZE 256
+#define TAG_LOADED_MEMO_NAME_SIZE 96
+
+static struct
+{
+	unsigned long serial;
+	long group_tag;
+	long result;
+	char name[TAG_LOADED_MEMO_NAME_SIZE];
+} tag_loaded_memo[TAG_LOADED_MEMO_SIZE];
+static unsigned long tag_loaded_serial = 1;
+
+static void tag_loaded_forget(
+	void)
+{
+	tag_loaded_serial++;
+}
+
 void scenario_tags_unload(
 	void)
 {
@@ -692,9 +718,15 @@ void scenario_tags_unload(
 #endif
 		tags_header_deregister_vertex_and_index_buffers(cache_file_globals.tag_header);
 	}
+#ifdef HALO_ANDROID
+	/* port: every static range goes with the tags (a Custom Edition map's too), the BSP's among them, which is let go
+	only later (xgpu.h) */
+	xgpu_static_forget_all();
+#endif
 	cache_file_globals.tags_loaded = FALSE;
 	global_tag_instances = NULL;
 	global_tag_count = 0;
+	tag_loaded_forget();
 
 	return;
 }
@@ -714,6 +746,7 @@ void cache_files_set_tag_instances(
 {
 	global_tag_instances = instances;
 	global_tag_count = count;
+	tag_loaded_forget();
 }
 
 void tag_files_open(
@@ -757,6 +790,26 @@ long tag_loaded(
 	0x7FFF, and the walk never ended) */
 	long absolute_index;
 	long result = NONE;
+	/* port: the memo's entry for the group and the name, case aside */
+	unsigned long hash = 2166136261UL ^ (unsigned long)group_tag;
+	long length;
+	boolean memo;
+
+	for (length = 0; name[length] && length < TAG_LOADED_MEMO_NAME_SIZE; length++)
+	{
+		unsigned char character = (unsigned char)name[length];
+
+		hash = (hash ^ (character >= 'A' && character <= 'Z' ? character + ('a' - 'A') : character)) * 16777619UL;
+	}
+	memo = length < TAG_LOADED_MEMO_NAME_SIZE;
+	hash %= TAG_LOADED_MEMO_SIZE;
+	if (memo &&
+		tag_loaded_memo[hash].serial == tag_loaded_serial &&
+		tag_loaded_memo[hash].group_tag == group_tag &&
+		!_stricmp(name, tag_loaded_memo[hash].name))
+	{
+		return tag_loaded_memo[hash].result;
+	}
 
 	if (cache_file_globals.tags_loaded)
 	{
@@ -776,6 +829,13 @@ long tag_loaded(
 				break;
 			}
 		}
+	}
+	if (memo)
+	{
+		tag_loaded_memo[hash].group_tag = group_tag;
+		tag_loaded_memo[hash].result = result;
+		csmemcpy(tag_loaded_memo[hash].name, name, length + 1);
+		tag_loaded_memo[hash].serial = tag_loaded_serial;
 	}
 
 	return result;
@@ -1284,6 +1344,7 @@ long scenario_tags_load(
 		{
 			global_tag_instances = cache_file_globals.tag_header->tag_instances;
 			global_tag_count = cache_file_globals.tag_header->tag_count;
+			tag_loaded_forget();
 			cache_file_globals.tags_loaded = TRUE;
 			/* (the menus' tags, as for this build's maps below) */
 			{
@@ -1396,6 +1457,7 @@ long scenario_tags_load(
 					's'));
 			global_tag_instances = cache_file_globals.tag_header->tag_instances;
 			global_tag_count = cache_file_globals.tag_header->tag_count;
+			tag_loaded_forget();
 			tags_header_register_vertex_and_index_buffers(cache_file_globals.tag_header);
 #ifdef HALO_ANDROID
 			/* port: (an Xbox map's model vertices and indices, in its tags

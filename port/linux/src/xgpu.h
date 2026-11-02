@@ -359,6 +359,10 @@ void xgpu_static_buffers_remove(const void *buffers, long count, unsigned long s
 /* Android: size bytes of vertices or indices from start, as above */
 void xgpu_static_range_add(const void *start, unsigned long size, int indices);
 void xgpu_static_range_remove(const void *start, int indices);
+/* Android: the map's tags are let go, and with them every range above (its
+BSP's among them, which the game lets go only later, after the next map's
+data may have been read over it) */
+void xgpu_static_forget_all(void);
 /* fills the corners x0, y0 to x1, y1 of the window (row 0 at the bottom)
 with color, as it is (an HDR display's scRGB framebuffer: linear, 1.0 at 80
 nits), or only the ring ring[0], ring[1] (its centre in the window), from

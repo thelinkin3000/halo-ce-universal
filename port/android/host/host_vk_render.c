@@ -2186,6 +2186,10 @@ static void submit_run(uint32_t commands, uint32_t size)
 			if (header->size >= sizeof(struct vk_command_texture_data))
 				host_vk_texture_data_command((const struct vk_command_texture_data *)header);
 			break;
+		case VK_COMMAND_STATIC_FREE:
+			if (header->size >= sizeof(struct vk_command_static_free))
+				host_vk_static_free_command((const struct vk_command_static_free *)header);
+			break;
 		case VK_COMMAND_TEXTURE_FREE:
 			if (header->size >= sizeof(struct vk_command_texture_free))
 				host_vk_texture_free_command((const struct vk_command_texture_free *)header);

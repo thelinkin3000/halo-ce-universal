@@ -5759,6 +5759,12 @@ void xgpu_static_range_remove(const void *start, int indices)
 	static_buffer_forget(&static_buffer_lists[indices != 0], (unsigned long)start);
 }
 
+/* (the OpenGL renderer keeps its ranges until the game lets each go, as it
+always has) */
+void xgpu_static_forget_all(void)
+{
+}
+
 /* the GL buffers of released resources, deleted; the state cache forgets
 them, as GL unbinds them and may give their names to new buffers */
 static void static_buffers_collect(void)

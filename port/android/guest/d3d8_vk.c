@@ -257,49 +257,307 @@ void halo_hdr_calibration_show(int pattern, int paper_white, int peak_brightness
 	(void)peak_brightness;
 }
 
-/* the OpenGL renderer's static geometry (d3d8_gl.c's static buffers): here
-the game's vertices and indices are read where they are, as before */
+/* ---------- static geometry
+
+The game's geometry written once as a map loads and never after, as d3d8_gl.c's static buffers take it (on Android's
+OpenGL renderer they are part of its geometry fixes): the vertex and index buffers rasterizer_vertex_buffer_new and
+rasterizer_triangle_buffer_new make (Custom Edition and mod models, a Custom Edition map's BSP), one each
+(xgpu_static_buffer_add), and an Xbox map's model geometry in its tags and its BSP's in the BSP, from the first buffer
+to the end of the tags or the BSP (xgpu_static_buffers_add). A range is copied to the host the first time a draw reads
+it (host_vk_static_make), and draws inside it name that copy instead of putting their bytes; it is let go when the game
+releases or unloads it (VK_COMMAND_STATIC_FREE), and every range when the map's tags are let go (xgpu_static_forget_all).
+debug.vk_static_geometry false puts every draw's bytes as before; debug.vk_static_check keeps a copy of each range and
+every 60 frames logs one whose bytes changed since, where, and whether draws read there (they would read it stale). */
+
+uint32_t host_vk_static_make(uint32_t address, uint32_t size);
+
+struct static_range
+{
+	unsigned long start;
+	unsigned long size;
+	/* the host's copy (VK_DATA_STATIC and its own), 0 until a draw reads it; failed: the host could not, and draws put
+	their bytes, as before */
+	uint32_t id;
+	BOOL failed;
+	/* (debug.vk_static_check) its bytes when copied, whether a change was said, and the span draws have read */
+	unsigned char *copy;
+	BOOL changed_said;
+	unsigned long read_low, read_high;
+};
+
+/* sorted by start, one list of vertices (0) and one of indices (1); the ranges of a list are separate memory */
+static struct static_range_list
+{
+	struct static_range *entries;
+	unsigned long count;
+	unsigned long capacity;
+} static_lists[2];
+
+static int static_check_on(void)
+{
+	static int read, on;
+
+	if (!read)
+	{
+		read = 1;
+		on = config_boolean("debug.vk_static_check") != 0;
+		if (on)
+			platform_log("vk: static geometry is checked every 60 frames (debug.vk_static_check)");
+	}
+	return on;
+}
+
+/* the first entry of the list whose start is above address */
+static unsigned long static_upper(const struct static_range_list *list, unsigned long address)
+{
+	unsigned long low = 0, high = list->count;
+
+	while (low < high)
+	{
+		unsigned long middle = (low + high) / 2;
+
+		if (list->entries[middle].start <= address)
+			low = middle + 1;
+		else
+			high = middle;
+	}
+	return low;
+}
+
+/* a resource's bytes in memory: vertex buffers carry a physical address, index buffers a virtual one
+(d3d8_resources.c) */
+static unsigned long static_resource_start(const void *resource, BOOL indices)
+{
+	DWORD data = ((const DWORD *)resource)[1];
+
+	if (!data)
+		return 0;
+	return indices ? (unsigned long)data : (unsigned long)PLATFORM_PHYSICAL_TO_VIRTUAL(data);
+}
+
+static void static_forget(struct static_range_list *list, unsigned long start)
+{
+	unsigned long index = static_upper(list, start);
+	struct static_range *entry;
+
+	if (!index || list->entries[index - 1].start != start)
+		return;
+	entry = &list->entries[index - 1];
+	free(entry->copy);
+	if (entry->id)
+	{
+		struct vk_command_static_free *command = vk_stream_command(VK_COMMAND_STATIC_FREE, sizeof(*command));
+
+		command->id = entry->id;
+	}
+	memmove(entry, entry + 1, (list->count - index) * sizeof(*entry));
+	list->count--;
+}
+
+static void static_note(struct static_range_list *list, unsigned long start, unsigned long size)
+{
+	unsigned long index;
+	struct static_range *entry;
+
+	if (!start || !size)
+		return;
+	static_forget(list, start);
+	index = static_upper(list, start);
+	/* (a bsp's vertices and lightmap vertices both run to its end: the one that starts lower covers the other) */
+	if (index && list->entries[index - 1].start + list->entries[index - 1].size == start + size)
+		return;
+	if (index < list->count && list->entries[index].start + list->entries[index].size == start + size)
+		static_forget(list, list->entries[index].start);
+	/* (one it overlaps is of memory read over since: let go. d3d8_gl.c leaves the new range to stream instead, and the
+	old one stays listed, stale) */
+	while (index && list->entries[index - 1].start + list->entries[index - 1].size > start)
+	{
+		static_forget(list, list->entries[index - 1].start);
+		index = static_upper(list, start);
+	}
+	while (index < list->count && start + size > list->entries[index].start)
+		static_forget(list, list->entries[index].start);
+	if (list->count == list->capacity)
+	{
+		unsigned long capacity = list->capacity ? list->capacity * 2 : 256;
+		struct static_range *entries = realloc(list->entries, capacity * sizeof(*entries));
+
+		if (!entries)
+			return;
+		list->entries = entries;
+		list->capacity = capacity;
+	}
+	memmove(&list->entries[index + 1], &list->entries[index], (list->count - index) * sizeof(*entry));
+	list->count++;
+	entry = &list->entries[index];
+	memset(entry, 0, sizeof(*entry));
+	entry->start = start;
+	entry->size = size;
+}
+
+/* [address, address + size) inside one static range of the kind asked for: the ref of the host's copy at its place in
+it, the range copied now if no draw has read it yet. FALSE (the draw puts the bytes) where it is in none, or the copy
+could not be made, or its place is not aligned as a vertex buffer's or an index buffer's offset is safely read at */
+static BOOL static_ref(const void *address, unsigned long size, BOOL indices, struct vk_data_ref *ref)
+{
+	static int read, on;
+	struct static_range_list *list = &static_lists[indices != 0];
+	unsigned long at = (unsigned long)address;
+	unsigned long index = static_upper(list, at);
+	struct static_range *entry;
+
+	/* (debug.vk_static_geometry false: every draw puts its bytes, as before) */
+	if (!read)
+	{
+		read = 1;
+		on = config_boolean("debug.vk_static_geometry") != 0;
+		if (!on)
+			platform_log("vk: static geometry is put at each draw (debug.vk_static_geometry false)");
+	}
+	if (!on || !index || !size)
+		return FALSE;
+	entry = &list->entries[index - 1];
+	if (at - entry->start > entry->size || size > entry->size - (at - entry->start) ||
+		((at - entry->start) & (indices ? 1 : 3)) || (entry->start & 3))
+	{
+		return FALSE;
+	}
+	if (!entry->id)
+	{
+		if (entry->failed)
+			return FALSE;
+		entry->id = host_vk_static_make((uint32_t)entry->start, (uint32_t)entry->size);
+		if (!entry->id)
+		{
+			entry->failed = TRUE;
+			return FALSE;
+		}
+		if (static_check_on())
+		{
+			entry->copy = malloc(entry->size);
+			if (entry->copy)
+				memcpy(entry->copy, (const void *)entry->start, entry->size);
+			entry->read_low = entry->size;
+		}
+	}
+	if (entry->copy)
+	{
+		if (at - entry->start < entry->read_low)
+			entry->read_low = at - entry->start;
+		if (at - entry->start + size > entry->read_high)
+			entry->read_high = at - entry->start + size;
+	}
+	ref->id = entry->id;
+	ref->offset = (uint32_t)(at - entry->start);
+	return TRUE;
+}
+
+/* debug.vk_static_check: every copied range hashed again (at Present, every 60 frames), and one whose bytes changed
+since it was copied said once: its draws would read the copy, stale */
+static void static_check(void)
+{
+	int kind;
+	unsigned long index;
+
+	if (!static_check_on())
+		return;
+	for (kind = 0; kind < 2; kind++)
+	{
+		for (index = 0; index < static_lists[kind].count; index++)
+		{
+			struct static_range *entry = &static_lists[kind].entries[index];
+			const unsigned char *now = (const unsigned char *)entry->start;
+			unsigned long at, first = 0, last = 0, bytes = 0, spans = 0, read = 0;
+
+			if (!entry->copy || entry->changed_said || !memcmp(entry->copy, now, entry->size))
+				continue;
+			for (at = 0; at < entry->size; at++)
+			{
+				if (entry->copy[at] == now[at])
+					continue;
+				if (!bytes || at > last + 1)
+					spans++;
+				if (!bytes)
+					first = at;
+				last = at;
+				bytes++;
+				if (at >= entry->read_low && at < entry->read_high)
+					read++;
+			}
+			entry->changed_said = TRUE;
+			platform_log("vk: STATIC CHANGED: the %s range at 0x%08lx, %lu bytes: %lu bytes changed in %lu spans, from %lu "
+				"to %lu; draws have read %lu to %lu, %lu of the changed bytes in it", kind ? "index" : "vertex",
+				entry->start, entry->size, bytes, spans, first, last, entry->read_low, entry->read_high, read);
+		}
+	}
+}
+
 void xgpu_static_buffer_add(const void *resource, unsigned long size, int indices)
 {
-	(void)resource;
-	(void)size;
-	(void)indices;
+	if (resource)
+		static_note(&static_lists[indices != 0], static_resource_start(resource, indices != 0), size);
 }
 
 void xgpu_static_buffer_remove(const void *resource, int indices)
 {
-	(void)resource;
-	(void)indices;
+	if (resource)
+		static_forget(&static_lists[indices != 0], static_resource_start(resource, indices != 0));
+}
+
+/* the lowest data of count resources, stride bytes apart; 0 without */
+static unsigned long static_resources_first(const void *buffers, long count, unsigned long stride, BOOL indices)
+{
+	unsigned long first = 0;
+	long index;
+
+	for (index = 0; buffers && index < count; index++)
+	{
+		unsigned long start = static_resource_start((const unsigned char *)buffers + index * stride, indices);
+
+		if (start && (!first || start < first))
+			first = start;
+	}
+	return first;
 }
 
 void xgpu_static_buffers_add(const void *buffers, long count, unsigned long stride, int indices, const void *end)
 {
-	(void)buffers;
-	(void)count;
-	(void)stride;
-	(void)indices;
-	(void)end;
+	unsigned long first = static_resources_first(buffers, count, stride, indices != 0);
+
+	if (first && (unsigned long)end > first)
+		static_note(&static_lists[indices != 0], first, (unsigned long)end - first);
 }
 
 void xgpu_static_buffers_remove(const void *buffers, long count, unsigned long stride, int indices)
 {
-	(void)buffers;
-	(void)count;
-	(void)stride;
-	(void)indices;
+	unsigned long first = static_resources_first(buffers, count, stride, indices != 0);
+
+	if (first)
+		static_forget(&static_lists[indices != 0], first);
 }
 
 void xgpu_static_range_add(const void *start, unsigned long size, int indices)
 {
-	(void)start;
-	(void)size;
-	(void)indices;
+	static_note(&static_lists[indices != 0], (unsigned long)start, size);
 }
 
 void xgpu_static_range_remove(const void *start, int indices)
 {
-	(void)start;
-	(void)indices;
+	static_forget(&static_lists[indices != 0], (unsigned long)start);
+}
+
+/* the map's tags are let go: every range with them. The game lets its BSP's go only later, after the next map's tags
+(the menu's) may have been read over it, and a draw inside the stale range would read its copy (debug.vk_static_check
+found the BSP's ranges rewritten while still listed) */
+void xgpu_static_forget_all(void)
+{
+	int kind;
+
+	for (kind = 0; kind < 2; kind++)
+	{
+		while (static_lists[kind].count)
+			static_forget(&static_lists[kind], static_lists[kind].entries[static_lists[kind].count - 1].start);
+	}
 }
 
 /* display.shadow_resolution: the size the shadow maps are drawn at, as in
@@ -2861,6 +3119,8 @@ static struct
 	/* the bytes put for draws, by kind, and how many puts of the vertex data, constants and indices */
 	unsigned long long put_vertex, put_expanded, put_index, put_constants, put_parameters, put_pixel, put_immediate, put_other;
 	unsigned long n_vertex, n_constants, n_index;
+	/* and the bytes drawn from static geometry's copies instead */
+	unsigned long long static_vertex, static_index;
 } stats;
 static BOOL statistics_on, statistics_read;
 
@@ -3367,8 +3627,16 @@ static BOOL vertex_input_make(struct vk_command_draw *draw, unsigned long first,
 		}
 		else
 		{
-			draw->vertex_buffers[binding] = data_ref(vk_data_put(base, bytes));
-			stats.put_vertex += bytes; stats.n_vertex++;
+			/* (the game's static geometry: its copy on the host, at a stride a vertex buffer is read at safely) */
+			if (stride && !(stride & 3) && static_ref(base, bytes, FALSE, &draw->vertex_buffers[binding]))
+			{
+				stats.static_vertex += bytes;
+			}
+			else
+			{
+				draw->vertex_buffers[binding] = data_ref(vk_data_put(base, bytes));
+				stats.put_vertex += bytes; stats.n_vertex++;
+			}
 			state->bindings[binding].stride = (uint32_t)stride;
 			for (index = 0; index < declaration->element_count; index++)
 			{
@@ -3734,8 +4002,15 @@ static void draw_make(D3DPRIMITIVETYPE type, unsigned long count, BOOL immediate
 			return;
 		}
 		record.indexed = 1;
-		record.index_data = data_ref(vk_data_put(indices, index_count * sizeof(WORD)));
-		stats.put_index += index_count * sizeof(WORD); stats.n_index++;
+		if (indices == index_data && static_ref(indices, index_count * sizeof(WORD), TRUE, &record.index_data))
+		{
+			stats.static_index += index_count * sizeof(WORD);
+		}
+		else
+		{
+			record.index_data = data_ref(vk_data_put(indices, index_count * sizeof(WORD)));
+			stats.put_index += index_count * sizeof(WORD); stats.n_index++;
+		}
 		record.vertex_offset = index_data ? -(int32_t)minimum : 0;
 		record.count = (uint32_t)index_count;
 	}
@@ -3977,6 +4252,8 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 		puts_reset();
 		vk_texture_cache_begin_frame();
 		stats.presents++;
+		if (!(device.frame % 60))
+			static_check();
 		if (!statistics_read)
 		{
 			statistics_read = TRUE;
@@ -3989,10 +4266,12 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 				stats.skipped_no_program, stats.skipped_no_target, stats.skipped_shader, stats.skipped_texture,
 				stats.skipped_other);
 			platform_log("vk: puts a frame: vertex %llu KB (%lu), expanded %llu KB, index %llu KB (%lu), constants %llu KB (%lu), "
-				"parameters %llu KB, pixel %llu KB, immediate %llu KB", stats.put_vertex / 1024 / stats.presents, stats.n_vertex / stats.presents,
+				"parameters %llu KB, pixel %llu KB, immediate %llu KB; read from static copies: vertex %llu KB, index %llu KB",
+				stats.put_vertex / 1024 / stats.presents, stats.n_vertex / stats.presents,
 				stats.put_expanded / 1024 / stats.presents, stats.put_index / 1024 / stats.presents, stats.n_index / stats.presents,
 				stats.put_constants / 1024 / stats.presents, stats.n_constants / stats.presents, stats.put_parameters / 1024 / stats.presents,
-				stats.put_pixel / 1024 / stats.presents, stats.put_immediate / 1024 / stats.presents);
+				stats.put_pixel / 1024 / stats.presents, stats.put_immediate / 1024 / stats.presents,
+				stats.static_vertex / 1024 / stats.presents, stats.static_index / 1024 / stats.presents);
 			memset(&stats, 0, sizeof(stats));
 		}
 	}

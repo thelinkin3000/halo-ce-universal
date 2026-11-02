@@ -49,6 +49,7 @@ enum
 	VK_COMMAND_HUD_PREPARE,
 	VK_COMMAND_HUD_FORGET,
 	VK_COMMAND_HUD_IMAGE,
+	VK_COMMAND_STATIC_FREE,
 };
 
 /* a surface's kind, as the host makes its image */
@@ -198,6 +199,18 @@ struct vk_data_ref
 {
 	uint32_t id;
 	uint32_t offset;
+};
+
+/* a data ref whose id has this bit names a static buffer (host_vk_static_make), the rest of the id its own: the game's
+geometry written once as a map loads, copied to the host once, not put at each draw */
+#define VK_DATA_STATIC 0x80000000u
+
+/* a static buffer let go (its range released or unloaded): the host destroys it once the frames that may use it have
+passed */
+struct vk_command_static_free
+{
+	struct vk_command_header header;
+	uint32_t id;
 };
 
 /* part of the data of an id: parts of one id come in order (part_offset 0, then the

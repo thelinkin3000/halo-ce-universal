@@ -303,6 +303,10 @@ writes again only VK_COMMAND_STREAMS - 1 hand-overs later. host_vk_retired is th
 finished */
 void host_vk_submit(uint32_t commands, uint32_t size);
 uint32_t host_vk_retired(void);
+/* the game's geometry at [address, address + size) (guest), written once as a map loads, copied now into a buffer the
+GPU reads: its id (draws name it with VK_DATA_STATIC), or 0 if there is none (the draws put the bytes as before).
+VK_COMMAND_STATIC_FREE lets it go (host_vk_data.c) */
+uint32_t host_vk_static_make(uint32_t address, uint32_t size);
 /* the shader service (host_vk_shaders.c): see port/android/VULKAN.md, phase 5. find returns a handle (1 or more) of the
 shader's module, or 0 and writes a VK_SHADER_STATUS_* to the guest address status_out; compile queues GLSL (a guest
 address, copied during the call) for the compile thread. A 64-bit hash travels in one register */

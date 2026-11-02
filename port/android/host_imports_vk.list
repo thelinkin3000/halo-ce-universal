@@ -12,5 +12,7 @@ host_vk_bc_supported
 host_vk_samples_supported
 host_vk_visibility
 host_vk_driver_name
+# the game's static geometry, copied once (port/android/host/host_vk_data.c)
+host_vk_static_make
 # the high-res HUD's sheets, decoded by the host (port/android/host/host_vk_hud.c)
 host_vk_hud_ready

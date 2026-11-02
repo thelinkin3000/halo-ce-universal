@@ -1667,6 +1667,14 @@ static const struct config_setting config_settings[] =
 	{ "debug.vk_present_marker", _config_boolean, "false", "HALO_VK_PRESENT_MARKER", _environment_set_is_true, PLATFORM_VULKAN,
 		"Under the Vulkan renderer, draw a red square at the top left and a green one\n"
 		"at the top right of the picture, so that a screenshot shows which way up it is." },
+	{ "debug.vk_static_geometry", _config_boolean, "true", "HALO_VK_STATIC_GEOMETRY", _environment_set_is_true,
+		PLATFORM_VULKAN,
+		"Under the Vulkan renderer, draw the map's geometry (written once as it loads)\n"
+		"from a copy made the first time it is drawn, rather than copying it at each\n"
+		"draw. false copies it at each draw, as before." },
+	{ "debug.vk_static_check", _config_boolean, "false", "HALO_VK_STATIC_CHECK", _environment_set_is_true, PLATFORM_VULKAN,
+		"Under the Vulkan renderer, compare the game's static geometry with what was\n"
+		"copied every 60 frames and log a range that changed (it would be drawn stale)." },
 	{ "debug.vk_render_thread", _config_boolean, "true", "HALO_VK_RENDER_THREAD", _environment_set_is_true, _platform_android,
 		"Under the Vulkan renderer, record the game's commands, hand them to the\n"
 		"driver and present on a thread of their own, while the game makes the next\n"

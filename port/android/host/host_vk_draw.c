@@ -213,6 +213,7 @@ void host_vk_draw_frame_reset(struct host_vk_frame *frame)
 	for (index = 0; index < frame->pool_count; index++)
 		HOST_VK_CHECK(vkResetDescriptorPool(B.device, frame->pools[index], 0));
 	host_vk_texture_frame_reset((unsigned)(frame - B.frames));
+	host_vk_static_frame_reset((unsigned)(frame - B.frames));
 	frame->pool_current = 0;
 }
 

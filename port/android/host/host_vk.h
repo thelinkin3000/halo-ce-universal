@@ -378,6 +378,9 @@ hand-over is dropped */
 int host_vk_data_command(const struct vk_command_data *command, uint32_t size);
 /* a command's data: the buffer and the offset in it of size bytes at offset in the data of id; 0 (said once)
 if the id or the range is not known */
+void host_vk_static_free_command(const struct vk_command_static_free *command);
+/* the frame slot's static buffers let go, destroyed: its fence has passed */
+void host_vk_static_frame_reset(unsigned slot);
 int host_vk_data_find(uint32_t id, uint32_t offset, uint32_t size, VkBuffer *buffer, VkDeviceSize *buffer_offset);
 /* the frame's data is let go (PRESENT): its ring is reset when the frame is used again */
 void host_vk_data_frame_end(void);
