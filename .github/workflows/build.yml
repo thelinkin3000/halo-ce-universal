@@ -19,8 +19,9 @@ name: Build
 #
 # A release is made by pushing a tag v<number> (git tag v94 && git push
 # origin v94) to a commit of main: the builds of that commit are published as
-# the GitHub release build-<number>, "Build <number>", its notes the commit's
-# message, marked latest, so that
+# the GitHub release build-<number>, "Build <number>" (or the commit's subject,
+# "Build <number>: <title>", for a release with a title), its notes the
+# commit's message, marked latest, so that
 # https://github.com/<repository>/releases/latest/download/<file> always
 # gives the latest build; the last five are kept. The release is named
 # build-<number>, not v<number>, because that is what the builds already
@@ -824,12 +825,19 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           tag="build-$NUMBER"
+          # the title: the commit's subject where it is "Build <number>: <title>"
+          # (a release with a title of its own), else "Build <number>"
+          subject="$(git log -1 --format=%s "$GITHUB_SHA")"
+          case "$subject" in
+            "Build $NUMBER: "*) title="$subject" ;;
+            *) title="Build $NUMBER" ;;
+          esac
           # the notes: the tagged commit's whole message, then where it came from
           git log -1 --format=%B "$GITHUB_SHA" > notes.md
           printf '\nCommit: %s\nBuild: %s\n\nThe release builds are for playing; the debug builds stop at the first failed assertion and log it.\n' \
             "$COMMIT_URL" "$RUN_URL" >> notes.md
           gh release create "$tag" release/*.zip --target "$GITHUB_SHA" --latest \
-            --title "Build $NUMBER (${GITHUB_SHA:0:7})" --notes-file notes.md
+            --title "$title (${GITHUB_SHA:0:7})" --notes-file notes.md
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       # The Windows builds' executables and PDBs to Sentry, which turns the

@@ -1,5 +1,19 @@
 # Changelog
 
+## Build 132: Faster Vulkan and compatibility with older phones!
+
+- Vulkan: phones whose own Vulkan driver lacks dynamic rendering (Samsung's Mali phones, older Adreno phones such as the Nokia 8) now run the Vulkan renderer on that driver instead of falling back to OpenGL ES. A 48-bot match on a Galaxy S21 FE (Exynos 2100) runs at about 71 fps, where the open-source PanVK driver managed 33 to 39. (thelinkin3000)
+- Vulkan: the renderer no longer makes the GPU finish all its work at every change of render target, which phone GPUs pay for most; on a Galaxy S21 FE with its own driver that took about a tenth off the GPU's time in a busy frame. (thelinkin3000)
+- Vulkan: Video Setup's VULKAN DRIVER lists STOCK and then every driver archive in the freedreno_drivers folder by its name, including the Turnip build the app downloads for Adreno phones. TURNIP is gone from the list, and a vk_driver = "auto" left in config.toml becomes STOCK. (thelinkin3000)
+- Vulkan: IMPORT DRIVER in Video Setup (Android, with VULKAN chosen) adds Vulkan driver archives (.zip) from your phone's files, checking each one is a driver first; it's listed the next time you open Video Setup. (thelinkin3000)
+- Vulkan: if Vulkan can't start on your phone, the game sets GRAPHICS BACKEND to OPENGL, so Video Setup shows what's actually running. (thelinkin3000)
+- Android: on phones whose CPU timer reports the wrong speed (the Galaxy S21 FE's Exynos 2100), the game no longer freezes: the main menu's background moves, a campaign loads after Choose Difficulty, and the menus keep responding after you create a profile. (thelinkin3000)
+- Theater: on Android, IMPORT adds replays from your phone's files. (thelinkin3000)
+- Mods: on Android, IMPORT adds a mod from a .zip of its folder, and DELETE deletes the selected mod after asking. (thelinkin3000)
+- Saved games: checkpoints are kept in memory instead of written to storage, so a checkpoint no longer holds up the game's other reads and writes for seconds (most noticeable on Switch in co-op). (thelinkin3000)
+- Replays and logs: the replay recording and debug.txt are written in the background, so writing them no longer drops frames (on Switch, a dropped frame every five seconds while recording). The overlay menu's System folder can turn off Write debug.txt and Write halo.log, on every platform. (thelinkin3000)
+- Switch: a large write to the SD card no longer keeps the game's other reads and writes waiting until it finishes. (thelinkin3000)
+
 ## Build 131
 
 - Saved games: a checkpoint or Save and Quit made on Android, Switch or PS5 is no longer lost between runs. The game's memory can land somewhere else each time it starts, and a save made with it elsewhere was refused; such saves now load, and so do saves made before this build. (thelinkin3000)
