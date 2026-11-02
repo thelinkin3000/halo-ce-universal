@@ -1277,6 +1277,10 @@ static const struct config_setting config_settings[] =
 	{ "debug.benchmark_bots", _config_integer, "63", "HALO_BENCHMARK_BOTS", _environment_value, _platform_all,
 		"The computer players in the benchmark's multiplayer games: 63, with the\n"
 		"player 64 in all; 0 to 63." },
+	{ "debug.benchmark_manual", _config_boolean, "false", "HALO_BENCHMARK_MANUAL", _environment_set_is_true,
+		_platform_all,
+		"The benchmark leaves the player's view to the player rather than turning\n"
+		"it, to measure the game as it is played (the player still cannot be hurt)." },
 	{ "debug.benchmark_quit", _config_boolean, "true", "HALO_BENCHMARK_QUIT", _environment_value, _platform_all,
 		"Quit the game once the benchmark is done; false goes back to the main\n"
 		"menu." },

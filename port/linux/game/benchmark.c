@@ -24,7 +24,7 @@ plays (a skippable stretch with none playing, as The Library's opening, is the p
 starts as debug.network_test's local games do (network_test.c). Either way the player cannot be hurt (as
 cheat_deathless_player), WARM_UP_SECONDS go by unmeasured (a level's first textures and shaders), and while it is
 measured the player's view turns at TURN_DEGREES a second, a little down: every run sees the same views in the same
-order, whatever its frame rate. The AI and the bots still play as they will, so two runs differ by a little.
+order, whatever its frame rate (debug.benchmark_manual leaves it to the player, to measure the game as played). The AI and the bots still play as they will, so two runs differ by a little.
 
 Each map's frames are timed by the performance counter, from one of the main loop's frames to the next (what the
 player sees: vsync and the GPU's waits included). benchmark.txt has a line a map - average frames per second, the
@@ -552,7 +552,8 @@ void benchmark_update(
 		if (benchmark.frame_count < MAXIMUM_FRAMES && seconds > 0.0)
 			benchmark.frame_ms[benchmark.frame_count++] = (float)(seconds * 1000.0);
 		benchmark.measured_seconds += seconds;
-		if (benchmark_unit() != NONE)
+		/* (debug.benchmark_manual: the player's own, to measure play with the touch controls or a pad) */
+		if (benchmark_unit() != NONE && !config_boolean("debug.benchmark_manual"))
 			benchmark_turn(seconds);
 		if (benchmark.measured_seconds >= stage->seconds)
 		{
