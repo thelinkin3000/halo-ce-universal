@@ -270,9 +270,10 @@ public class LauncherActivity extends Activity {
 
         TextView message = new TextView(this);
         message.setText("This phone's GPU (" + choice.gpu + ") can run the game's Vulkan renderer on Turnip, the "
-            + "open-source Vulkan driver for Adreno GPUs. It is downloaded once into the game's data folder (about "
-            + ((choice.driver.size + (1 << 19)) >> 20) + " MB), and is not used until you turn it on: set vk_driver = "
-            + "\"auto\" in the [display] section of config.toml (the README says how).");
+            + "open-source Vulkan driver for Adreno GPUs. It is downloaded once into the freedreno_drivers folder of "
+            + "the game's data folder (about " + ((choice.driver.size + (1 << 19)) >> 20) + " MB), and is not used "
+            + "until you turn it on: choose TURNIP for VULKAN DRIVER in the game's Video Setup. Other driver archives "
+            + "put in that folder are listed there too.");
         message.setTextColor(Color.rgb(200, 205, 210));
         message.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
         message.setGravity(Gravity.CENTER);

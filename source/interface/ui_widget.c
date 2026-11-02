@@ -1454,6 +1454,8 @@ static void widget_instance_process_one_event_recursive(
 	boolean *return_widget_deleted);
 static boolean ui_check_for_pause_game(
 	void);
+static short spinner_string_list_extra_kind(
+	long string_list_index);
 static long spinner_string_list_extra_count(
 	long string_list_index);
 static wchar_t *spinner_string_list_get_string(
@@ -1471,7 +1473,24 @@ Edition maps' display indices (custom_edition_maps.c keeps them below 0x7000) */
 
 /* port: the strings a spinner's string list has past the tag's own, as more
 items: the higher kills to win of the Slayer game type editor
-(ui_widget_event_handler_functions.c saves and loads them) */
+(ui_widget_event_handler_functions.c saves and loads them), and on Android
+Video Setup's VULKAN DRIVER's driver archives (menu_functions.c's
+vk_driver_list, read again as the spinner is made) */
+enum
+{
+	_spinner_extra_none,
+	_spinner_extra_kills_to_win,
+	_spinner_extra_vk_drivers,
+};
+#define KILLS_TO_WIN_STRINGS \
+	"ui\\shell\\main_menu\\settings_select\\multiplayer_setup\\playlist_edit\\slayer_edit\\var_kills_to_win"
+#if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
+#define VK_DRIVER_STRINGS \
+	"pc\\main_menu\\settings_select\\player_setup\\player_profile_edit\\video_settings\\vk_driver_spinner strings"
+void vk_driver_list_read(void);
+short vk_driver_list_count(void);
+wchar_t const *vk_driver_list_label(short index);
+#endif
 static wchar_t const *const kills_to_win_extra_strings[] =
 {
 	L"75", L"100", L"150", L"200", L"250", L"500",
@@ -3678,6 +3697,11 @@ static boolean ui_widget_load_children_recursive(
 			definition->text_label_string_list.index != NONE,
 			"_list_items_generated_from_string_list_tag flag was set but no string list tag was specified");
 		string_list = unicode_string_list_definition_get(definition->text_label_string_list.index);
+#if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
+		/* port: the driver archives there now */
+		if (spinner_string_list_extra_kind(definition->text_label_string_list.index) == _spinner_extra_vk_drivers)
+			vk_driver_list_read();
+#endif
 		widget_globals.dont_load_children_recursive = TRUE;
 		for (string_index = 0;
 			string_index < string_list->strings.count +
@@ -5578,9 +5602,9 @@ static void widget_instance_render_spinner_list(
 
 		csmemset(&parameters, 0, sizeof(parameters));
 		bounds = definition->list_header_bounds;
-		/* port: a spinner with extra items is wider, to the left, its arrow
-		with it */
-		if (spinner_string_list_extra_count(definition->text_label_string_list.index))
+		/* port: a spinner with extra kills to win is wider, to the left, its
+		arrow with it */
+		if (spinner_string_list_extra_kind(definition->text_label_string_list.index) == _spinner_extra_kills_to_win)
 		{
 			bounds.x0 -= SPINNER_EXTRA_WIDTH;
 			bounds.x1 -= SPINNER_EXTRA_WIDTH;
@@ -5704,9 +5728,10 @@ static void widget_instance_render_spinner_list(
 				bounds.y1 += offset.y;
 				bounds.x0 += offset.x;
 				bounds.y0 += offset.y;
-				/* port: a spinner with extra items (three digits) is wider, to the
-				left */
-				if (spinner_string_list_extra_count(definition->text_label_string_list.index))
+				/* port: a spinner with extra kills to win (three digits) is wider,
+				to the left */
+				if (spinner_string_list_extra_kind(definition->text_label_string_list.index) ==
+					_spinner_extra_kills_to_win)
 				{
 					bounds.x0 -= SPINNER_EXTRA_WIDTH;
 					clip.x0 -= SPINNER_EXTRA_WIDTH;
@@ -7701,13 +7726,31 @@ void render_ui_widgets_over_split_screen(
 /* ---------- private code */
 
 
+static short spinner_string_list_extra_kind(
+	long string_list_index)
+{
+	if (string_list_index == NONE)
+		return _spinner_extra_none;
+	if (!csstrcmp(tag_get_name(string_list_index), KILLS_TO_WIN_STRINGS))
+		return _spinner_extra_kills_to_win;
+#if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
+	if (!csstrcmp(tag_get_name(string_list_index), VK_DRIVER_STRINGS))
+		return _spinner_extra_vk_drivers;
+#endif
+	return _spinner_extra_none;
+}
+
 static long spinner_string_list_extra_count(
 	long string_list_index)
 {
-	if (string_list_index != NONE && !csstrcmp(tag_get_name(string_list_index),
-		"ui\\shell\\main_menu\\settings_select\\multiplayer_setup\\playlist_edit\\slayer_edit\\var_kills_to_win"))
+	switch (spinner_string_list_extra_kind(string_list_index))
 	{
+	case _spinner_extra_kills_to_win:
 		return NUMBEROF(kills_to_win_extra_strings);
+#if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
+	case _spinner_extra_vk_drivers:
+		return vk_driver_list_count();
+#endif
 	}
 	return 0;
 }
@@ -7746,6 +7789,10 @@ static wchar_t *spinner_string_list_get_string(
 	if (string_list && string_index >= string_list->strings.count &&
 		string_index - string_list->strings.count < spinner_string_list_extra_count(string_list_index))
 	{
+#if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
+		if (spinner_string_list_extra_kind(string_list_index) == _spinner_extra_vk_drivers)
+			return (wchar_t *)vk_driver_list_label((short)(string_index - string_list->strings.count));
+#endif
 		return (wchar_t *)kills_to_win_extra_strings[string_index - string_list->strings.count];
 	}
 	return unicode_string_list_get_string(string_list_index, string_index);

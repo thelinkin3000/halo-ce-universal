@@ -104,6 +104,9 @@ their handlers open opens.
 #include "../src/server_master.h"
 #include "../src/server_json.h"
 #include "text_filter.h"
+#if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
+#include "../src/posix.h"
+#endif
 
 #include <pthread.h>
 #include <stdlib.h>
@@ -263,6 +266,9 @@ struct pc_menu_setting *pc_menu_setting_get(long definition_index);
 /* ---------- private code */
 
 static boolean campaign_profile(short controller, struct player_profile *profile);
+#if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
+static void vk_driver_setting_values(struct widget_instance *spinner, struct pc_menu_setting *setting);
+#endif
 
 static boolean text_is_number(char const *text, double *number)
 {
@@ -493,6 +499,9 @@ static boolean setting_load(struct widget_instance *widget)
 		return TRUE;
 	if (!setting || !setting_text(setting->setting, current, sizeof(current), FALSE))
 		return FALSE;
+#if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
+	vk_driver_setting_values(widget, setting);
+#endif
 	setting->loaded_index = setting_value_index(setting, current);
 	if (setting->loaded_index < (short)widget->parameters.list.number_of_items)
 		widget->parameters.list.selected_index = setting->loaded_index;
@@ -1921,6 +1930,98 @@ static void video_rows_show(struct widget_instance *list)
 		list->parameters.list.selected_index = index;
 	}
 }
+
+#if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
+/* Video Setup's VULKAN DRIVER's archives: the zips in the data folder's
+freedreno_drivers (where the launcher downloads Turnip: Updater.java),
+after the spinner's own STOCK and TURNIP, by name. ui_widget.c shows them
+as the spinner's extra items, read again as it is made; the host opens the
+one chosen at the next start (port/android/host/host_vk_driver.c) */
+#define VK_DRIVER_FOLDER "freedreno_drivers"
+#define MAXIMUM_VK_DRIVERS 32
+#define VK_DRIVER_NAME_SIZE 128
+/* (the spinner's width: a longer name keeps its start and end) */
+#define VK_DRIVER_LABEL_LENGTH 16
+
+const char *platform_data_root(void);
+
+static struct
+{
+	short count;
+	char names[MAXIMUM_VK_DRIVERS][VK_DRIVER_NAME_SIZE];
+	wchar_t labels[MAXIMUM_VK_DRIVERS][VK_DRIVER_LABEL_LENGTH + 1];
+} vk_drivers;
+
+static int vk_driver_name_compare(void const *a, void const *b)
+{
+	return _stricmp((char const *)a, (char const *)b);
+}
+
+/* a name without its ".zip", cut in the middle to the label's length */
+static void vk_driver_label(char const *name, wchar_t *label)
+{
+	size_t length = strlen(name) - 4, index, kept = (VK_DRIVER_LABEL_LENGTH - 2) / 2;
+
+	for (index = 0; index < length && index < VK_DRIVER_LABEL_LENGTH; index++)
+		label[index] = (wchar_t)(unsigned char)name[index];
+	if (length > VK_DRIVER_LABEL_LENGTH)
+	{
+		label[kept] = L'.';
+		label[kept + 1] = L'.';
+		for (index = 0; index < kept; index++)
+			label[kept + 2 + index] = (wchar_t)(unsigned char)name[length - kept + index];
+		length = VK_DRIVER_LABEL_LENGTH;
+	}
+	label[length] = 0;
+}
+
+void vk_driver_list_read(void)
+{
+	char path[512], name[VK_DRIVER_NAME_SIZE];
+	void *directory;
+	short index;
+
+	vk_drivers.count = 0;
+	snprintf(path, sizeof(path), "%s/" VK_DRIVER_FOLDER, platform_data_root());
+	directory = posix_directory_open(path);
+	while (directory && vk_drivers.count < MAXIMUM_VK_DRIVERS && posix_directory_next(directory, name, sizeof(name)))
+	{
+		size_t length = strlen(name);
+
+		if (name[0] == '.' || length <= 4 || length >= VK_DRIVER_NAME_SIZE || _stricmp(name + length - 4, ".zip"))
+			continue;
+		strcpy(vk_drivers.names[vk_drivers.count++], name);
+	}
+	if (directory)
+		posix_directory_close(directory);
+	qsort(vk_drivers.names, (size_t)vk_drivers.count, sizeof(vk_drivers.names[0]), vk_driver_name_compare);
+	for (index = 0; index < vk_drivers.count; index++)
+		vk_driver_label(vk_drivers.names[index], vk_drivers.labels[index]);
+}
+
+short vk_driver_list_count(void)
+{
+	return vk_drivers.count;
+}
+
+wchar_t const *vk_driver_list_label(short index)
+{
+	return index >= 0 && index < vk_drivers.count ? vk_drivers.labels[index] : L"";
+}
+
+/* the spinner's values past its own: the archives' names, as listed */
+static void vk_driver_setting_values(struct widget_instance *spinner, struct pc_menu_setting *setting)
+{
+	short own, index;
+
+	if (!setting->setting || strcmp(setting->setting, "display.vk_driver"))
+		return;
+	own = ui_widget_spinner_own_item_count(spinner);
+	for (index = 0; index < vk_drivers.count && own + index < MAXIMUM_STRINGS; index++)
+		setting->values[own + index] = vk_drivers.names[index];
+	setting->value_count = own + index;
+}
+#endif
 
 /* Video Setup's Vulkan Driver (Android's: tools/port_settings.py), shown
 while the backend shown is Vulkan; the list passes over it while it is

@@ -85,8 +85,9 @@ final class Updater {
 
     /* ---------- the open-source Vulkan driver for Adreno GPUs
 
-    On an Adreno, the Turnip build (Mesa's Vulkan driver for Adreno) for its series is downloaded into the data folder when it
-    is not there, from the project that releases it (port/android/README.md, "Graphics: OpenGL ES and Vulkan"). The download
+    On an Adreno, the Turnip build (Mesa's Vulkan driver for Adreno) for its series is downloaded into the data folder's
+    freedreno_drivers when it is not there (one downloaded before into the data folder itself is moved there), where Video
+    Setup lists every archive as a driver to choose (port/linux/game/menu_functions.c), from the project that releases it (port/android/README.md, "Graphics: OpenGL ES and Vulkan"). The download
     must have the size and SHA-256 of the build that was chosen, or it is dropped. Every build looks, whatever update.auto says:
     the driver is not an update of the game. LauncherActivity does it before the game starts, with the download's progress on
     screen, so that the game finds the driver on its first start.
@@ -122,6 +123,24 @@ final class Updater {
             "27e400a39cae06ac22695d74b837449868f712c679662c5793776bd575eca3bd", 800, 899, "8xx"),
     };
     private static final String AUTO_FILE = "vk_driver_auto.txt";
+    static final String DRIVER_FOLDER = "freedreno_drivers";
+
+    /** where an archive goes: the data folder's freedreno_drivers (made, and the archive moved there from the data folder
+     * if it was downloaded there before) */
+    private static File driverFile(File root, Driver driver) {
+        File folder = new File(root, DRIVER_FOLDER);
+        File archive = new File(folder, driver.name);
+        File old = new File(root, driver.name);
+
+        if (!folder.isDirectory() && !folder.mkdirs())
+            android.util.Log.i("halo", "driver: could not make " + folder);
+        if (old.length() == driver.size && archive.length() != driver.size) {
+            archive.delete();
+            if (old.renameTo(archive))
+                android.util.Log.i("halo", "driver: moved " + driver.name + " into " + DRIVER_FOLDER);
+        }
+        return archive;
+    }
 
     private static Driver driverNamed(String name) {
         for (Driver driver : DRIVERS) {
@@ -141,7 +160,7 @@ final class Updater {
             return false;
         Driver driver = driverNamed(lines.get(0).trim());
 
-        return driver == null || new File(root, driver.name).length() == driver.size;
+        return driver == null || driverFile(root, driver).length() == driver.size;
     }
 
     /** the GPU's name, and this phone's archive (null for a GPU that has none) */
@@ -183,15 +202,16 @@ final class Updater {
         return new Choice(renderer, chosen);
     }
 
-    /** whether an archive is in the data folder at root */
+    /** whether an archive is in the data folder at root's freedreno_drivers */
     static boolean driverPresent(File root, Driver driver) {
-        return new File(root, driver.name).length() == driver.size;
+        return driverFile(root, driver).length() == driver.size;
     }
 
-    /** the archive downloaded into root (as a .partial file, renamed once it is checked); throws why it could not be */
+    /** the archive downloaded into root's freedreno_drivers (as a .partial file, renamed once it is checked); throws why it
+     * could not be */
     static void driverDownload(File root, Driver driver, String gpu, Progress progress) throws Exception {
-        File archive = new File(root, driver.name);
-        File partial = new File(root, driver.name + ".partial");
+        File archive = driverFile(root, driver);
+        File partial = new File(archive.getParentFile(), driver.name + ".partial");
 
         try {
             android.util.Log.i("halo", "driver: downloading " + driver.url + " for the " + gpu);
@@ -201,7 +221,7 @@ final class Updater {
             archive.delete();
             if (!partial.renameTo(archive))
                 throw new IOException("it could not be renamed to " + archive);
-            android.util.Log.i("halo", "driver: " + driver.name + " is in the data folder");
+            android.util.Log.i("halo", "driver: " + driver.name + " is in " + DRIVER_FOLDER);
         } catch (Exception e) {
             partial.delete();
             android.util.Log.i("halo", "driver: could not download " + driver.name + ": " + e);

@@ -174,8 +174,9 @@ static const struct config_setting config_settings[] =
 		"The Vulkan driver the Vulkan renderer runs on: empty for the phone's own;\n"
 		"\"auto\" for Turnip, the open-source driver, on an Adreno GPU (the app\n"
 		"downloads the build for its series; the phone's own on any other GPU); or the\n"
-		"name of a driver archive (an adrenotools zip) left in the game's folder. One\n"
-		"that does not load is logged and the phone's own is used." },
+		"name of a driver archive (an adrenotools zip) in freedreno_drivers in the\n"
+		"game's folder, which Video Setup lists. One that does not load is logged and\n"
+		"the phone's own is used." },
 	/* read by the Android host before the game starts, to choose the game
 	image built with that renderer (port/android/VULKAN.md) */
 	{ "display.renderer", _config_string, "\"vulkan\"", "HALO_RENDERER", _environment_value, _platform_android,
