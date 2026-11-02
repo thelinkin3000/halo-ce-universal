@@ -214,4 +214,16 @@ status, the headers ("Name: value" lines) and up to body_capacity bytes of
 the body (its size in body_size), else 0 and why in error */
 int host_https_get(const char *url, char *headers, char *body, char *error, struct host_https_sizes *sizes);
 
+/* ---------- a replay's records, kept in the host's memory (host_replay.c;
+port/linux/game/network_replay_playback.c) */
+
+/* size bytes at data added to the kept replay's end: 1, or 0 if the host has
+not the memory */
+int host_replay_store_append(unsigned int data, unsigned int size);
+/* up to size bytes of the kept replay from offset copied to destination; how
+many */
+unsigned int host_replay_store_read(unsigned int offset, unsigned int destination, unsigned int size);
+/* the kept replay let go */
+void host_replay_store_free(void);
+
 #endif

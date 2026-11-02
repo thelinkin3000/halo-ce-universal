@@ -62,3 +62,8 @@ host_gl_buffer_write
 host_gl_fence_frame
 host_gl_wait_frame
 host_errno
+# a replay's records kept in the host's memory, outside the guest's
+# (port/android/host/host_replay.c; port/linux/game/network_replay_playback.c)
+host_replay_store_append
+host_replay_store_read
+host_replay_store_free

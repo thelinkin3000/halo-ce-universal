@@ -114,11 +114,18 @@ the way put back (playback_seek_chase); back, once it is let go.
 
 #include <math.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "zlib.h" /* source/memory/zlib */
+
+/* the replay's records, kept in the host's memory (port/android/host/host_replay.c;
+port/android/guest/runtime/guest_host.h) */
+int host_replay_store_append(unsigned int data, unsigned int size);
+unsigned int host_replay_store_read(unsigned int offset, unsigned int destination, unsigned int size);
+void host_replay_store_free(void);
 
 /* the touch controls (port/linux/src/touch_input.c): whether they show, and
 the replay's buttons for them to press, each TOUCH_TARGET_FIELDS ints (x0,
@@ -204,8 +211,15 @@ static struct
 	/* (41: a vote's status, with the vote to end the game's) */
 	{ 41, _distributed_message_votekick_status },
 };
-/* the largest replay read (all of it, at once) */
+/* the largest replay file read, and the most of its records kept (inflated,
+in the host's memory: host_replay.c) */
 #define REPLAY_MAXIMUM_FILE_SIZE (256 * 1024 * 1024)
+#define REPLAY_MAXIMUM_RECORDS_SIZE (1024 * 1024 * 1024)
+/* the window of the records the guest reads them through (larger than the
+largest record, a header and 64 KB); as the file is read, its first half takes
+the file's bytes and its second their inflated records */
+#define REPLAY_WINDOW_SIZE (1024 * 1024)
+#define REPLAY_LOAD_PART (REPLAY_WINDOW_SIZE / 2)
 /* how long the main menu waits after the replay's end, or the game's */
 #define REPLAY_END_MILLISECONDS 500
 /* the least time between two of D-pad Down's resets of the free camera */
@@ -398,8 +412,10 @@ static real const replay_speeds[] = { 0.0f, 0.25f, 0.5f, 1.0f, 2.0f, 4.0f, 8.0f 
 
 static struct
 {
-	/* the file, read whole, and where its next record is */
-	byte *data;
+	/* the window the replay's records are read through (they are kept in
+	the host's memory: host_replay.c; NULL when no replay is), the records'
+	size (the file's header with them) and where the next record is */
+	byte *window;
 	long size;
 	long next;
 	long start_tick;
@@ -525,6 +541,9 @@ static struct
 	unsigned long scrub_moved;
 	/* a record's bytes, aligned as the handlers read them */
 	word message[0x10000 / sizeof(word)];
+	/* where in the records the window starts, and how much of them it has */
+	long window_start;
+	long window_length;
 } playback = { NULL, 0, 0, 0, FALSE, FALSE, FALSE, 0, FALSE, FALSE, NONE };
 
 static unsigned long replay_get_long(
@@ -534,67 +553,137 @@ static unsigned long replay_get_long(
 		(unsigned long)source[3] << 24;
 }
 
-/* the file's records (all after its header: one zlib stream, format 3)
-inflated, after its header, in a buffer of their own in place of the file's;
-as much of them as there is, of a file a crash cut short; FALSE if not even
-that */
-static boolean playback_inflate(
-	unsigned long header_size)
+/* the record at offset in the replay's records, through the window (read
+again from the host where it does not have all of it), and its size; NULL
+where none is whole (the records' end, or a file a crash cut short). The
+pointer holds until the next call */
+static byte const *playback_record(
+	long offset,
+	word *size)
 {
-	z_stream stream;
-	unsigned long capacity = (unsigned long)playback.size * 6 + 0x10000;
-	unsigned long used = header_size;
-	byte *inflated;
-	int result;
+	long length;
 
-	if (capacity > REPLAY_MAXIMUM_FILE_SIZE)
-		capacity = REPLAY_MAXIMUM_FILE_SIZE;
-	if (!(inflated = (byte *)malloc(capacity)))
-		return FALSE;
-	csmemcpy(inflated, playback.data, header_size);
-	csmemset(&stream, 0, sizeof(stream));
-	if (inflateInit(&stream) != Z_OK)
-	{
-		free(inflated);
-		return FALSE;
-	}
-	stream.next_in = playback.data + header_size;
-	stream.avail_in = (uInt)(playback.size - (long)header_size);
+	if (offset < 0 || offset + REPLAY_RECORD_HEADER_SIZE > playback.size)
+		return NULL;
+	length = REPLAY_RECORD_HEADER_SIZE;
 	for (;;)
 	{
-		stream.next_out = inflated + used;
-		stream.avail_out = (uInt)(capacity - used);
-		result = inflate(&stream, Z_NO_FLUSH);
-		used = capacity - stream.avail_out;
-		if (result == Z_STREAM_END || result != Z_OK || !stream.avail_in)
-			break;
-		/* (more room: twice as much, up to the largest taken) */
-		if (!stream.avail_out)
+		if (offset < playback.window_start || offset + length > playback.window_start + playback.window_length)
 		{
-			unsigned long larger = MIN(capacity * 2, REPLAY_MAXIMUM_FILE_SIZE);
-			byte *grown;
-
-			if (larger <= capacity || !(grown = (byte *)malloc(larger)))
-				break;
-			csmemcpy(grown, inflated, used);
-			free(inflated);
-			inflated = grown;
-			capacity = larger;
+			playback.window_start = offset;
+			playback.window_length = (long)host_replay_store_read((unsigned int)offset,
+				(unsigned int)(uintptr_t)playback.window, REPLAY_WINDOW_SIZE);
+			if (length > playback.window_length)
+				return NULL;
 		}
+		if (length > REPLAY_RECORD_HEADER_SIZE)
+			return playback.window + (offset - playback.window_start);
+		{
+			byte const *header = playback.window + (offset - playback.window_start);
+
+			*size = (word)(header[2] | header[3] << 8);
+		}
+		length = REPLAY_RECORD_HEADER_SIZE + *size;
+		if (offset + length > playback.size)
+			return NULL;
 	}
-	inflateEnd(&stream);
-	if (used <= header_size)
+}
+
+/* the replay's records read from the file (after its header, which is
+kept already) into the host's memory (host_replay.c): as they are (formats
+before 4), or inflated (one zlib stream, format 4 on), as much of them as
+there is of a file a crash cut short. The guest's memory, below 4 GB, holds
+none of them but its window's: a long match's replay of 46 MB inflates to
+152 MB, which the Switch's guest could not be given in one piece.
+REPLAY_LOADED, REPLAY_LOAD_UNREADABLE (not even part of a stream), or
+REPLAY_LOAD_NO_MEMORY (the host's) */
+enum
+{
+	REPLAY_LOADED,
+	REPLAY_LOAD_UNREADABLE,
+	REPLAY_LOAD_NO_MEMORY,
+};
+
+/* records kept; FALSE if the host has not the memory for them */
+static boolean playback_keep(
+	byte const *data,
+	unsigned long size,
+	boolean *capped)
+{
+	if ((unsigned long)playback.size + size > REPLAY_MAXIMUM_RECORDS_SIZE)
 	{
-		free(inflated);
-		return FALSE;
+		size = REPLAY_MAXIMUM_RECORDS_SIZE - (unsigned long)playback.size;
+		*capped = TRUE;
 	}
-	if (result != Z_STREAM_END)
-		error(_error_log, "replay: the file ends before its stream does (cut short): %lu bytes of records kept",
-			used - header_size);
-	free(playback.data);
-	playback.data = inflated;
-	playback.size = (long)used;
+	if (size && !host_replay_store_append((unsigned int)(uintptr_t)data, (unsigned int)size))
+		return FALSE;
+	playback.size += (long)size;
 	return TRUE;
+}
+
+static int playback_load_records(
+	FILE *file,
+	unsigned long header_size,
+	boolean compressed)
+{
+	byte *in = playback.window;
+	byte *out = playback.window + REPLAY_LOAD_PART;
+	z_stream stream;
+	int result = Z_OK;
+	boolean capped = FALSE;
+	boolean ended;
+
+	if (compressed)
+	{
+		csmemset(&stream, 0, sizeof(stream));
+		if (inflateInit(&stream) != Z_OK)
+			return REPLAY_LOAD_NO_MEMORY;
+	}
+	while (!capped && result == Z_OK)
+	{
+		size_t read = fread(in, 1, REPLAY_LOAD_PART, file);
+
+		if (!read)
+			break;
+		if (!compressed)
+		{
+			if (!playback_keep(in, read, &capped))
+				return REPLAY_LOAD_NO_MEMORY;
+			continue;
+		}
+		stream.next_in = in;
+		stream.avail_in = (uInt)read;
+		do
+		{
+			stream.next_out = out;
+			stream.avail_out = REPLAY_LOAD_PART;
+			result = inflate(&stream, Z_NO_FLUSH);
+			/* (none to be made of what is left of this part: the next's) */
+			if (result == Z_BUF_ERROR)
+				result = Z_OK;
+			if (result != Z_OK && result != Z_STREAM_END)
+				break;
+			if (!playback_keep(out, REPLAY_LOAD_PART - stream.avail_out, &capped))
+			{
+				inflateEnd(&stream);
+				return REPLAY_LOAD_NO_MEMORY;
+			}
+		} while (!capped && result == Z_OK && !stream.avail_out);
+	}
+	ended = !compressed || result == Z_STREAM_END;
+	if (compressed)
+		inflateEnd(&stream);
+	if ((unsigned long)playback.size <= header_size)
+		return REPLAY_LOAD_UNREADABLE;
+	if (capped)
+		error(_error_log, "replay: its records are more than %d MB: the first %d MB kept",
+			REPLAY_MAXIMUM_RECORDS_SIZE >> 20, REPLAY_MAXIMUM_RECORDS_SIZE >> 20);
+	else if (!ended)
+		error(_error_log, "replay: the file ends before its stream does (cut short): %lu bytes of records kept",
+			(unsigned long)playback.size - header_size);
+	error(_error_log, "replay: %lu MB of records kept in the host's memory",
+		(unsigned long)playback.size >> 20);
+	return REPLAY_LOADED;
 }
 
 static boolean playback_keyframe_collect(boolean wait);
@@ -644,9 +733,12 @@ static void playback_free(
 	void)
 {
 	/* (the game's free takes no NULL: debug_memory.c) */
-	if (playback.data)
-		free(playback.data);
-	playback.data = NULL;
+	if (playback.window)
+		free(playback.window);
+	playback.window = NULL;
+	playback.window_start = 0;
+	playback.window_length = 0;
+	host_replay_store_free();
 	playback.size = 0;
 	playback.next = 0;
 	playback.starting = FALSE;
@@ -679,21 +771,19 @@ header (format 4), and the players of its own input's records (an older
 client's recording has those alone) */
 static void playback_find_recorders(
 	unsigned long format,
+	byte const *header,
 	unsigned long header_size)
 {
 	long next = playback.next;
+	byte const *record;
+	word size;
 
 	playback.client = format >= 4 && header_size >= REPLAY_FLAGS_OFFSET + 4 &&
-		(replay_get_long(playback.data + REPLAY_FLAGS_OFFSET) & REPLAY_FLAG_CLIENT) != 0;
+		(replay_get_long(header + REPLAY_FLAGS_OFFSET) & REPLAY_FLAG_CLIENT) != 0;
 	csmemset(playback.recorders, 0, sizeof(playback.recorders));
 	playback.end_tick = playback.start_tick;
-	while (next + REPLAY_RECORD_HEADER_SIZE <= playback.size)
+	while ((record = playback_record(next, &size)) != NULL)
 	{
-		byte const *record = playback.data + next;
-		word size = (word)(record[2] | record[3] << 8);
-
-		if (next + REPLAY_RECORD_HEADER_SIZE + size > playback.size)
-			break;
 		playback.end_tick = MAX(playback.end_tick, (long)replay_get_long(record + 4));
 		if (record[0] == _network_replay_own_actions)
 		{
@@ -765,15 +855,13 @@ static void playback_scan_facings(
 {
 	long next = playback.next;
 
+	byte const *record;
+	word size;
+
 	csmemset(scan->newest, 0, sizeof(scan->newest));
 	csmemset(scan->any, 0, sizeof(scan->any));
-	while (next + REPLAY_RECORD_HEADER_SIZE <= playback.size)
+	while ((record = playback_record(next, &size)) != NULL)
 	{
-		byte const *record = playback.data + next;
-		word size = (word)(record[2] | record[3] << 8);
-
-		if (next + REPLAY_RECORD_HEADER_SIZE + size > playback.size)
-			break;
 		scan->tick = (long)replay_get_long(record + 4);
 		switch (record[0])
 		{
@@ -825,6 +913,12 @@ boolean network_replay_watch(
 	FILE *file;
 	long size;
 	unsigned long format, network_version, header_size;
+	byte start[32];
+	byte *header;
+	byte const *record;
+	word record_size;
+	boolean header_capped = FALSE;
+	int loaded;
 	struct network_game game;
 
 	why[0] = 0;
@@ -836,59 +930,80 @@ boolean network_replay_watch(
 		return FALSE;
 	}
 	if (fseek(file, 0, SEEK_END) != 0 || (size = ftell(file)) <= 0 || size > REPLAY_MAXIMUM_FILE_SIZE ||
-		fseek(file, 0, SEEK_SET) != 0 || !(playback.data = (byte *)malloc((size_t)size)) ||
-		fread(playback.data, (size_t)size, 1, file) != 1)
+		fseek(file, 0, SEEK_SET) != 0 || (size >= 32 && fread(start, sizeof(start), 1, file) != 1))
 	{
 		fclose(file);
-		playback_free();
 		snprintf(why, (size_t)why_size, "The replay cannot be read.");
 		return FALSE;
 	}
-	fclose(file);
-	playback.size = size;
-	format = size >= 32 ? replay_get_long(playback.data + 8) : 0;
-	network_version = size >= 32 ? replay_get_long(playback.data + 12) : 0;
-	header_size = size >= 32 ? replay_get_long(playback.data + 28) : 0;
-	if (size < 32 || memcmp(playback.data, REPLAY_MAGIC, 8) || header_size < 32 ||
+	format = size >= 32 ? replay_get_long(start + 8) : 0;
+	network_version = size >= 32 ? replay_get_long(start + 12) : 0;
+	header_size = size >= 32 ? replay_get_long(start + 28) : 0;
+	if (size < 32 || memcmp(start, REPLAY_MAGIC, 8) || header_size < 32 ||
 		header_size + REPLAY_RECORD_HEADER_SIZE > (unsigned long)size)
 	{
+		fclose(file);
 		snprintf(why, (size_t)why_size, "This is not a replay.");
-		playback_free();
 		return FALSE;
 	}
 	if (format < REPLAY_PLAYABLE_FORMAT)
 	{
+		fclose(file);
 		snprintf(why, (size_t)why_size, "This replay was recorded by a build that could not play it back.");
-		playback_free();
 		return FALSE;
 	}
 	if (!network_replay_network_version_playable(network_version))
 	{
+		fclose(file);
 		snprintf(why, (size_t)why_size, "This replay is of network version %lu; this build plays %d.",
 			network_version, HALO_PORT_NETWORK_VERSION);
+		return FALSE;
+	}
+	/* (the header kept as the records' start, as the file has it; the
+	records after it into the host's memory, through the window) */
+	if (!(header = (byte *)malloc((size_t)header_size)) ||
+		!(playback.window = (byte *)malloc(REPLAY_WINDOW_SIZE)))
+	{
+		fclose(file);
+		if (header)
+			free(header);
+		snprintf(why, (size_t)why_size, "There is not memory enough to play this replay.");
+		return FALSE;
+	}
+	csmemcpy(header, start, sizeof(start));
+	if (header_size > sizeof(start) && fread(header + sizeof(start), header_size - sizeof(start), 1, file) != 1)
+		loaded = REPLAY_LOAD_UNREADABLE;
+	else if (!playback_keep(header, header_size, &header_capped))
+		loaded = REPLAY_LOAD_NO_MEMORY;
+	else
+		loaded = playback_load_records(file, header_size, format >= REPLAY_COMPRESSED_FORMAT);
+	fclose(file);
+	if (loaded != REPLAY_LOADED)
+	{
+		free(header);
+		if (loaded == REPLAY_LOAD_NO_MEMORY)
+			snprintf(why, (size_t)why_size, "There is not memory enough to play this replay (%lu MB read).",
+				(unsigned long)playback.size >> 20);
+		else
+			snprintf(why, (size_t)why_size, "The replay cannot be read.");
 		playback_free();
 		return FALSE;
 	}
 	playback.network_version = network_version;
-	if (format >= REPLAY_COMPRESSED_FORMAT && !playback_inflate(header_size))
-	{
-		snprintf(why, (size_t)why_size, "The replay cannot be read.");
-		playback_free();
-		return FALSE;
-	}
 	/* (its first record is the game) */
-	if (playback.data[header_size] != _network_replay_game ||
-		(playback.data[header_size + 2] | playback.data[header_size + 3] << 8) != sizeof(game) ||
-		header_size + REPLAY_RECORD_HEADER_SIZE + sizeof(game) > (unsigned long)size)
+	record = playback_record((long)header_size, &record_size);
+	if (!record || record[0] != _network_replay_game || record_size != sizeof(game))
 	{
+		free(header);
 		snprintf(why, (size_t)why_size, "This replay has no game to play.");
 		playback_free();
 		return FALSE;
 	}
-	csmemcpy(&game, playback.data + header_size + REPLAY_RECORD_HEADER_SIZE, sizeof(game));
-	playback.start_tick = (long)replay_get_long(playback.data + 24);
+	csmemcpy(&game, record + REPLAY_RECORD_HEADER_SIZE, sizeof(game));
+	playback.start_tick = (long)replay_get_long(header + 24);
 	playback.next = (long)(header_size + REPLAY_RECORD_HEADER_SIZE + sizeof(game));
-	playback_find_recorders(format, header_size);
+	playback_find_recorders(format, header, header_size);
+	free(header);
 	playback_index_facings();
 	/* (as a client joins a game: none of this machine's own network game is
 	left, benchmark.c's way) */
@@ -936,7 +1051,7 @@ boolean network_replay_skips_message(
 boolean network_replay_playing(
 	void)
 {
-	return playback.data != NULL && (playback.starting || playback.playing);
+	return playback.window != NULL && (playback.starting || playback.playing);
 }
 
 boolean network_replay_hold_wanted(
@@ -993,7 +1108,7 @@ void network_replay_playback_tick(
 boolean network_replay_playback_starting(
 	void)
 {
-	return playback.data != NULL && playback.starting;
+	return playback.window != NULL && playback.starting;
 }
 
 void network_replay_playback_started(
@@ -1014,7 +1129,7 @@ void network_replay_playback_stop(
 {
 	if (playback.setting_up)
 		return;
-	if (playback.data)
+	if (playback.window)
 	{
 		error(_error_log, "replay: stopped");
 		playback_theater_wanted = TRUE;
@@ -1095,19 +1210,21 @@ static void playback_feed(
 	struct transport_address host;
 
 	csmemset(&host, 0, sizeof(host));
-	while (playback.next + REPLAY_RECORD_HEADER_SIZE <= playback.size)
+	while (playback.next < playback.size)
 	{
-		byte const *record = playback.data + playback.next;
-		byte kind = record[0];
-		word size = (word)(record[2] | record[3] << 8);
-		long tick = (long)replay_get_long(record + 4);
+		word size;
+		byte const *record = playback_record(playback.next, &size);
+		byte kind;
+		long tick;
 
-		if (playback.next + REPLAY_RECORD_HEADER_SIZE + size > playback.size)
+		if (!record)
 		{
 			/* (a file cut short: its end) */
 			playback.next = playback.size;
 			break;
 		}
+		kind = record[0];
+		tick = (long)replay_get_long(record + 4);
 		if (tick > game_time_get())
 			break;
 		/* (the game over: none of the records after it, the host's
