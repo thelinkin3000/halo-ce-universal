@@ -3363,6 +3363,43 @@ static void pixel_parameters_make(struct vk_pixel_parameters *p, const float tex
 		memcpy(p->model_lights[stage], device.constants[model_light_register(stage)], sizeof(p->model_lights[stage]));
 }
 
+/* the most register changes since the frame's last put of the vertex constants that are sent as a patch of it
+(VK_COMMAND_DATA_PATCH) rather than all 192 registers again: a model's draw changes its node matrices, a few dozen */
+#define CONSTANTS_PATCH_MOST 64
+
+/* the vertex constants as a patch of the frame's put base (its data id), the registers changed after serial `since`
+(the constant log's, which holds the latest CONSTANT_LOG_SIZE changes); its data id */
+static uint32_t constants_patch(uint32_t base, unsigned long since)
+{
+	unsigned char registers[CONSTANTS_PATCH_MOST];
+	uint32_t seen[(XGPU_VERTEX_CONSTANT_COUNT + 31) / 32] = { 0 };
+	unsigned long serial, count = 0, index;
+	struct vk_command_data_patch *command;
+
+	for (serial = since + 1; serial <= constants_serial; serial++)
+	{
+		unsigned char reg = constant_log[serial % CONSTANT_LOG_SIZE];
+
+		if (!(seen[reg / 32] & (1u << (reg % 32))))
+		{
+			seen[reg / 32] |= 1u << (reg % 32);
+			registers[count++] = reg;
+		}
+	}
+	command = stream_command(VK_COMMAND_DATA_PATCH, sizeof(*command) + count * sizeof(command->patches[0]));
+	command->id = ++data_id;
+	command->base = base;
+	command->count = (uint32_t)count;
+	for (index = 0; index < count; index++)
+	{
+		command->patches[index].offset = (uint32_t)registers[index] * (uint32_t)sizeof(device.constants[0]);
+		memcpy(command->patches[index].value, device.constants[registers[index]], sizeof(command->patches[index].value));
+	}
+	stats.put_constants += count * sizeof(command->patches[0]);
+	stats.n_constants++;
+	return command->id;
+}
+
 static void uniforms_make(struct vk_command_draw *draw, const float texture_scale[4][4], BOOL lit)
 {
 	struct vk_vertex_parameters parameters;
@@ -3370,8 +3407,15 @@ static void uniforms_make(struct vk_command_draw *draw, const float texture_scal
 
 	if (!puts_this_frame.constants_valid || puts_this_frame.constants_serial != constants_serial)
 	{
-		puts_this_frame.constants_ref = data_ref(vk_data_put(device.constants, sizeof(device.constants)));
-		stats.put_constants += sizeof(device.constants); stats.n_constants++;
+		/* (a few registers changed since the frame's last put: those alone, on top of it) */
+		if (puts_this_frame.constants_valid && constants_serial - puts_this_frame.constants_serial <= CONSTANTS_PATCH_MOST)
+			puts_this_frame.constants_ref = data_ref(constants_patch(puts_this_frame.constants_ref.id,
+				puts_this_frame.constants_serial));
+		else
+		{
+			puts_this_frame.constants_ref = data_ref(vk_data_put(device.constants, sizeof(device.constants)));
+			stats.put_constants += sizeof(device.constants); stats.n_constants++;
+		}
 		puts_this_frame.constants_serial = constants_serial;
 		puts_this_frame.constants_valid = TRUE;
 	}

@@ -55,6 +55,8 @@ static struct
 	struct entry *entries;
 	unsigned count, capacity;
 } table;
+/* the frames whose tables were let go (VK_COMMAND_DATA_PATCH's copy is of one frame's) */
+static unsigned long data_frames;
 
 int host_vk_buffer_make(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer *buffer, VkDeviceMemory *memory, void **mapped)
 {
@@ -188,6 +190,7 @@ void host_vk_data_frame_end(void)
 {
 	B.frames[B.frame].ring_valid = 0;
 	table.count = 0;
+	data_frames++;
 }
 
 unsigned host_vk_data_buffers(void)
@@ -380,6 +383,86 @@ void host_vk_static_frame_reset(unsigned slot)
 		pthread_mutex_unlock(&statics_lock);
 	}
 	static_graveyard_count[slot] = 0;
+}
+
+/* the bytes of the latest patched data, in the host's own memory: a patch's base is nearly always the one before, and
+the ring's memory, which the GPU reads, may be slow for the CPU to read back */
+static struct
+{
+	uint32_t id;
+	uint32_t size;
+	unsigned char *bytes;
+	/* the frame's table it belongs to (ids start again at each frame) */
+	unsigned long frame;
+} patched;
+
+int host_vk_data_patch_command(const struct vk_command_data_patch *command, uint32_t size)
+{
+	struct host_vk_ring *ring;
+	struct entry *entry;
+	const struct entry *base;
+	struct ring_buffer *place;
+	uint32_t index;
+
+	if (size < sizeof(*command) || (uint64_t)command->count * sizeof(command->patches[0]) + sizeof(*command) > size)
+		return bad_record("the patch is shorter than its pieces", (const struct vk_command_data *)command);
+	ring = ring_ready();
+	if (!ring)
+		return 1;
+	if (command->id != table.count + 1 || command->base < 1 || command->base > table.count)
+		return bad_record("a patch's id out of order, or its base unknown", (const struct vk_command_data *)command);
+	if (table.entries[table.count - 1].received != table.entries[table.count - 1].total)
+		return bad_record("a patch began before the id before it was complete", (const struct vk_command_data *)command);
+	base = &table.entries[command->base - 1];
+	if (table.count == table.capacity)
+	{
+		unsigned capacity = table.capacity ? table.capacity * 2 : 256;
+		struct entry *entries = realloc(table.entries, sizeof(*entries) * capacity);
+
+		if (!entries)
+			return 1;
+		table.entries = entries;
+		table.capacity = capacity;
+		base = &table.entries[command->base - 1];
+	}
+	entry = &table.entries[table.count++];
+	memset(entry, 0, sizeof(*entry));
+	entry->total = base->total;
+	entry->received = base->total;
+	if (!base->mapped || base->received != base->total)
+		return 1;
+	/* the base's bytes, from the host's copy where it has them */
+	if (!(patched.frame == data_frames && patched.id == command->base && patched.size == base->total))
+	{
+		if (patched.size < base->total)
+		{
+			unsigned char *grown = realloc(patched.bytes, base->total);
+
+			if (!grown)
+				return 1;
+			patched.bytes = grown;
+		}
+		memcpy(patched.bytes, base->mapped, base->total);
+	}
+	for (index = 0; index < command->count; index++)
+	{
+		const struct vk_data_patch *patch = &command->patches[index];
+
+		if ((uint64_t)patch->offset + sizeof(patch->value) <= base->total)
+			memcpy(patched.bytes + patch->offset, patch->value, sizeof(patch->value));
+	}
+	patched.id = command->id;
+	patched.size = base->total;
+	patched.frame = data_frames;
+	place = ring_place(ring, entry->total ? entry->total : 1, &entry->offset);
+	if (!place)
+		return 1;
+	entry->buffer = place->buffer;
+	entry->mapped = place->mapped + entry->offset;
+	memcpy(entry->mapped, patched.bytes, entry->total);
+	B.counts.data_records++;
+	B.counts.data_bytes += command->count * sizeof(command->patches[0]);
+	return 1;
 }
 
 int host_vk_data_find(uint32_t id, uint32_t offset, uint32_t size, VkBuffer *buffer, VkDeviceSize *buffer_offset)

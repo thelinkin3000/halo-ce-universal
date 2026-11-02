@@ -50,6 +50,7 @@ enum
 	VK_COMMAND_HUD_FORGET,
 	VK_COMMAND_HUD_IMAGE,
 	VK_COMMAND_STATIC_FREE,
+	VK_COMMAND_DATA_PATCH,
 };
 
 /* a surface's kind, as the host makes its image */
@@ -225,6 +226,23 @@ struct vk_command_data
 	uint32_t total_size;
 	uint32_t part_size;
 	uint32_t payload[];
+};
+
+/* a new data id (the next, as a VK_COMMAND_DATA's is) whose bytes are those of an earlier one of the frame, base, with
+count 16-byte pieces replaced, each at its offset: the vertex constants, of which a draw changes a few registers of 192 */
+struct vk_data_patch
+{
+	uint32_t offset;
+	uint32_t value[4];
+};
+
+struct vk_command_data_patch
+{
+	struct vk_command_header header;
+	uint32_t id;
+	uint32_t base;
+	uint32_t count;
+	struct vk_data_patch patches[];
 };
 
 /* the self-test's vertex: a position and a colour */
