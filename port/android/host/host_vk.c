@@ -289,7 +289,10 @@ int host_vk_startup(const char *vk_driver, int validation, char *line, size_t si
 	const char *extensions[8];
 	uint32_t extension_count = 0;
 	const char *layer_name = "VK_LAYER_KHRONOS_validation";
-	int layer_found = 0, debug_utils = 0;
+	int layer_found = 0, debug_utils = 0, validation_features = 0;
+	/* (the layer's synchronization validation: barriers that leave a hazard between two commands are reported too) */
+	VkValidationFeatureEnableEXT validation_enables[] = { VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT };
+	VkValidationFeaturesEXT features = { VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT };
 	VkApplicationInfo application = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
 	VkInstanceCreateInfo info = { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
 	VkPhysicalDevice *devices = NULL;
@@ -384,9 +387,40 @@ int host_vk_startup(const char *vk_driver, int validation, char *line, size_t si
 			}
 		}
 		free(layers);
+		/* (the layer provides the extensions itself where the loader does not: a phone's system loader, a Mali's and an
+		Adreno's) */
+		if (layer_found)
+		{
+			VkExtensionProperties *layer_extensions = NULL;
+
+			do
+			{
+				free(layer_extensions);
+				count = 0;
+				result = enumerate_extensions(layer_name, &count, NULL);
+				layer_extensions = malloc(sizeof(*layer_extensions) * (count ? count : 1));
+				if (result == VK_SUCCESS && layer_extensions)
+					result = enumerate_extensions(layer_name, &count, layer_extensions);
+			}
+			while (result == VK_INCOMPLETE);
+			if (result == VK_SUCCESS && layer_extensions)
+			{
+				debug_utils |= has_name(layer_extensions, count, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+				validation_features = has_name(layer_extensions, count, VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
+			}
+			free(layer_extensions);
+		}
 		if (layer_found && debug_utils)
 		{
 			extensions[extension_count++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+			if (validation_features)
+			{
+				extensions[extension_count++] = VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME;
+				features.enabledValidationFeatureCount = 1;
+				features.pEnabledValidationFeatures = validation_enables;
+				info.pNext = &features;
+				host_logf(HOST_LOG_INFO, "vk: validation with synchronization validation (hazards between commands)");
+			}
 			info.enabledLayerCount = 1;
 			info.ppEnabledLayerNames = &layer_name;
 			host_vk.validation = 1;
