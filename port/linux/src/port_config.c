@@ -181,9 +181,9 @@ static const struct config_setting config_settings[] =
 	image built with that renderer (port/android/VULKAN.md) */
 	{ "display.renderer", _config_string, "\"vulkan\"", "HALO_RENDERER", _environment_value, _platform_android,
 		"How the game draws: \"vulkan\" (over display.vk_driver; OpenGL ES if Vulkan\n"
-		"cannot start) or \"gl\" (OpenGL ES over the phone's driver). Takes effect the\n"
-		"next time the game starts. See the Android README, \"Graphics: OpenGL ES and\n"
-		"Vulkan\"." },
+		"cannot start, which sets this to \"gl\") or \"gl\" (OpenGL ES over the\n"
+		"phone's driver). Takes effect the next time the game starts. See the Android\n"
+		"README, \"Graphics: OpenGL ES and Vulkan\"." },
 #endif
 	{ "display.vsync", _config_boolean, "true", "HALO_NO_VSYNC", _environment_set_is_false, _platform_all,
 		"Wait for the display between frames; false draws as fast as possible." },

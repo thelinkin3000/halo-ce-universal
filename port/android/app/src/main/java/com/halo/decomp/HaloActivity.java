@@ -34,6 +34,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 import java.util.zip.ZipInputStream;
 
 import org.libsdl.app.SDLActivity;
@@ -54,7 +55,7 @@ public class HaloActivity extends SDLActivity {
     /** the on-screen touch controls, over SDL's surface */
     private TouchControls touchControls;
     private static final int EXPORT_LAYOUT = 401, IMPORT_LAYOUT = 402, EXPORT_REPLAYS = 403, IMPORT_REPLAYS = 404,
-        IMPORT_MODS = 405;
+        IMPORT_MODS = 405, IMPORT_VK_DRIVERS = 406;
     private String pendingLayoutExport;
     /** the folder of the replays the Theater's EXPORT REPLAYS copies, while the folder picker is open */
     private String pendingReplaysFolder;
@@ -66,6 +67,13 @@ public class HaloActivity extends SDLActivity {
      * terminator), in UTF-8's bytes, and the most files a mod's .zip may hold (its MAXIMUM_MOD_FILES) */
     private static final int MOD_FOLDER_LENGTH = 63;
     private static final int MOD_MAXIMUM_FILES = 262144;
+    /** the freedreno_drivers folder Video Setup's IMPORT DRIVER copies archives into, while the file picker is open */
+    private String pendingDriversFolder;
+    /** the most an archive and its entries may be (port/android/host/host_vk_driver.c's ARCHIVE_MAXIMUM and
+     * ENTRY_COUNT_MAXIMUM), and the longest name Video Setup lists (menu_functions.c's VK_DRIVER_NAME_SIZE) */
+    private static final long DRIVER_MAXIMUM_SIZE = 256L * 1024 * 1024;
+    private static final int DRIVER_MAXIMUM_ENTRIES = 256;
+    private static final int DRIVER_NAME_LENGTH = 127;
     /** a replay's file name ends so, and the file begins so (port/linux/game/network_replay.c) */
     private static final String REPLAY_EXTENSION = ".ocreplay";
     private static final byte[] REPLAY_MAGIC = "OCREPLAY".getBytes(StandardCharsets.US_ASCII);
@@ -87,6 +95,7 @@ public class HaloActivity extends SDLActivity {
             pendingReplaysFolder = savedInstanceState.getString("pending-replays-folder");
             pendingImportFolder = savedInstanceState.getString("pending-import-folder");
             pendingModsFolder = savedInstanceState.getString("pending-mods-folder");
+            pendingDriversFolder = savedInstanceState.getString("pending-drivers-folder");
         }
         if (mLayout != null) {
             touchControls = new TouchControls(this);
@@ -136,6 +145,7 @@ public class HaloActivity extends SDLActivity {
         state.putString("pending-replays-folder", pendingReplaysFolder);
         state.putString("pending-import-folder", pendingImportFolder);
         state.putString("pending-mods-folder", pendingModsFolder);
+        state.putString("pending-drivers-folder", pendingDriversFolder);
     }
 
     /**
@@ -454,6 +464,128 @@ public class HaloActivity extends SDLActivity {
         runOnUiThread(() -> Toast.makeText(this, text, Toast.LENGTH_LONG).show());
     }
 
+    /**
+     * Video Setup's IMPORT DRIVER (port/linux/game/menu_functions.c, through host_android_import_vk_drivers): the
+     * system's file picker, several archives at once, then each one copied into folder, freedreno_drivers, where
+     * VULKAN DRIVER lists it the next time Video Setup opens. An archive is an adrenotools zip: a meta.json naming
+     * the driver's library, and the library, at its top. Called on the game's thread; no storage permission.
+     */
+    public void importVkDrivers(String folder) {
+        runOnUiThread(() -> {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("*/*");
+            intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] { "application/zip", "application/x-zip-compressed",
+                "application/x-zip", "application/octet-stream" });
+            intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+            pendingDriversFolder = folder;
+            try {
+                startActivityForResult(intent, IMPORT_VK_DRIVERS);
+            } catch (android.content.ActivityNotFoundException e) {
+                pendingDriversFolder = null;
+                Toast.makeText(this, "This device has no file picker.", Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    /** the name a driver archive is kept under: its own, with anything but letters, digits, '-', '_' and '.' made
+     * '_', ending .zip, short enough for Video Setup to list */
+    private static String driverName(String chosen) {
+        String name = chosen != null ? chosen.replaceAll("[^A-Za-z0-9._-]", "_") : "";
+        if (name.toLowerCase(java.util.Locale.ROOT).endsWith(".zip"))
+            name = name.substring(0, name.length() - 4);
+        if (name.isEmpty() || name.startsWith("."))
+            name = "driver" + name;
+        if (name.length() > DRIVER_NAME_LENGTH - 4)
+            name = name.substring(0, DRIVER_NAME_LENGTH - 4);
+        return name + ".zip";
+    }
+
+    /** why an archive is not one the game can load (as host_vk_driver.c reads it), else null */
+    private static String driverArchiveProblem(File archive) {
+        try (ZipFile zip = new ZipFile(archive)) {
+            if (zip.size() > DRIVER_MAXIMUM_ENTRIES)
+                return "it has more than " + DRIVER_MAXIMUM_ENTRIES + " files";
+            ZipEntry meta = zip.getEntry("meta.json");
+            if (meta == null)
+                return "it has no meta.json at its top (it is not a driver archive)";
+            String library;
+            try (InputStream input = zip.getInputStream(meta)) {
+                ByteArrayOutputStream text = new ByteArrayOutputStream();
+                byte[] buffer = new byte[4096];
+                int size;
+                while ((size = input.read(buffer)) != -1) {
+                    if (text.size() + size > 65536)
+                        return "its meta.json is too large";
+                    text.write(buffer, 0, size);
+                }
+                library = new org.json.JSONObject(new String(text.toByteArray(), StandardCharsets.UTF_8))
+                    .optString("libraryName", "");
+            }
+            if (library.isEmpty() || library.contains("/") || library.contains("\\") || library.contains(".."))
+                return "its meta.json names no library";
+            if (zip.getEntry(library) == null)
+                return "it has no " + library;
+            return null;
+        } catch (Exception e) {
+            return "it is not a zip file (" + e.getMessage() + ")";
+        }
+    }
+
+    /**
+     * the archives chosen copied into folder, on a thread of their own; a Toast says how it went. Each goes to
+     * <name>.part, which becomes the archive only once it is whole and holds a driver; a name the folder has already
+     * is left as it is.
+     */
+    private void copyVkDriversIn(List<Uri> documents, String folder) {
+        File directory = new File(folder);
+        directory.mkdirs();
+        List<String> copied = new ArrayList<>();
+        int skipped = 0;
+        String failed = null;
+        for (Uri document : documents) {
+            String name = driverName(documentName(document));
+            File archive = new File(directory, name);
+            File part = new File(directory, name + ".part");
+            if (archive.exists()) {
+                skipped++;
+                continue;
+            }
+            try {
+                try (InputStream input = getContentResolver().openInputStream(document);
+                     OutputStream output = new FileOutputStream(part)) {
+                    if (input == null)
+                        throw new IOException("it cannot be opened");
+                    byte[] buffer = new byte[65536];
+                    long total = 0;
+                    int size;
+                    while ((size = input.read(buffer)) != -1) {
+                        total += size;
+                        if (total > DRIVER_MAXIMUM_SIZE)
+                            throw new IOException("it is larger than " + (DRIVER_MAXIMUM_SIZE >> 20) + " MB");
+                        output.write(buffer, 0, size);
+                    }
+                }
+                String problem = driverArchiveProblem(part);
+                if (problem != null)
+                    throw new IOException(problem);
+                if (!part.renameTo(archive))
+                    throw new IOException("it cannot be kept");
+                copied.add(name.substring(0, name.length() - 4));
+            } catch (Exception e) {
+                failed = name + ": " + e.getMessage();
+                break;
+            } finally {
+                part.delete();
+            }
+        }
+        String text = (copied.isEmpty() ? "" : "Imported " + String.join(", ", copied)
+                + ". Open Video Setup again and choose it as VULKAN DRIVER. ")
+            + (skipped > 0 ? skipped + (skipped == 1 ? " archive was" : " archives were") + " already there. " : "")
+            + (failed != null ? "The import stopped: " + failed : copied.isEmpty() && skipped == 0 ? "Nothing imported." : "");
+        runOnUiThread(() -> Toast.makeText(this, text.trim(), Toast.LENGTH_LONG).show());
+    }
+
     /** the documents a picker of several files chose */
     private static List<Uri> chosenDocuments(Intent data) {
         List<Uri> documents = new ArrayList<>();
@@ -476,6 +608,16 @@ public class HaloActivity extends SDLActivity {
             List<Uri> documents = chosenDocuments(data);
             if (!documents.isEmpty())
                 new Thread(() -> copyReplaysIn(documents, folder), "halo-import-replays").start();
+            return;
+        }
+        if (request == IMPORT_VK_DRIVERS) {
+            String folder = pendingDriversFolder;
+            pendingDriversFolder = null;
+            if (result != RESULT_OK || data == null || folder == null)
+                return;
+            List<Uri> documents = chosenDocuments(data);
+            if (!documents.isEmpty())
+                new Thread(() -> copyVkDriversIn(documents, folder), "halo-import-vk-drivers").start();
             return;
         }
         if (request == IMPORT_MODS) {

@@ -372,7 +372,8 @@ void host_gesture_insets(int *insets)
 	}
 }
 
-/* ---------- the Theater's EXPORT and IMPORT, and the Mods screen's IMPORT */
+/* ---------- the Theater's EXPORT and IMPORT, the Mods screen's IMPORT and Video
+Setup's IMPORT DRIVER */
 
 /* calls the activity's method (a String argument, the replays' or the
 mods' folder), found on the activity's class as host_gesture_insets' method
@@ -432,6 +433,14 @@ then the copy on a thread of its own) */
 void host_android_import_mods(const char *folder)
 {
 	host_android_folder_call("importMods", folder);
+}
+
+/* asks the activity to copy the Vulkan driver archives the player chooses
+into folder, freedreno_drivers (HaloActivity.importVkDrivers: the system's
+file picker, then the copy on a thread of its own) */
+void host_android_import_vk_drivers(const char *folder)
+{
+	host_android_folder_call("importVkDrivers", folder);
 }
 
 /* the settings of [debug] that this file reads, from config.toml */
@@ -716,6 +725,11 @@ static void *game_main(void *unused)
 			host_logf(HOST_LOG_INFO, "renderer: GL ES");
 		profile_run_describe("GL ES (no GPU times: gpu.txt is the Vulkan renderer's)");
 	}
+	/* Vulkan asked for (not for the probe, which runs on the GL image) and
+	not started: the GL ES image sets display.renderer to "gl" (d3d8_gl.c),
+	so that Video Setup shows the backend the game runs on */
+	if (!settings.vk_probe[0] && strcmp(settings.renderer, "gl") && !host_renderer_vulkan)
+		host_environment_set(&environment, "HALO_VULKAN_REFUSED", "1");
 	if (host_renderer_vulkan)
 	{
 		image_used = vk_image;

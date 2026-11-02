@@ -154,6 +154,12 @@ HaloActivity.importMods); returns at once, the copy done on the app's own
 thread */
 void host_android_import_mods(const char *folder);
 
+/* the system's file picker, after which the app copies each Vulkan driver
+archive chosen (an adrenotools zip) into folder (a path: freedreno_drivers;
+HaloActivity.importVkDrivers); returns at once, the copy done on the app's
+own thread */
+void host_android_import_vk_drivers(const char *folder);
+
 /* ---------- the on-screen touch controls (host_touch.c, android_imports.list) */
 
 /* the overlay's controller: the SDL axes (left x, y, right x, y, left

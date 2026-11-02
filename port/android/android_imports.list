@@ -22,6 +22,8 @@ host_android_export_replays
 host_android_import_replays
 # the Mods screen's IMPORT (port/android/host/host_main.c; port/linux/game/menu_functions.c)
 host_android_import_mods
+# Video Setup's IMPORT DRIVER (port/android/host/host_main.c; port/linux/game/menu_functions.c)
+host_android_import_vk_drivers
 # the server browser's requests to the master servers (port/android/host/host_https.c;
 # port/linux/src/master_list.c)
 host_https_get

@@ -2021,16 +2021,34 @@ static void vk_driver_setting_values(struct widget_instance *spinner, struct pc_
 		setting->values[own + index] = vk_drivers.names[index];
 	setting->value_count = own + index;
 }
+
+/* (the app's file picker, which copies the driver archives chosen into
+freedreno_drivers: port/android/host/host_main.c, HaloActivity.importVkDrivers) */
+void host_android_import_vk_drivers(const char *folder);
+
+/* "port vk driver import" (A on Video Setup's IMPORT DRIVER, Android's
+alone): the archives chosen are copied on the app's own thread, and listed
+the next time Video Setup opens (its spinner's items are made as it is) */
+static boolean vk_driver_import(void)
+{
+	char folder[512];
+
+	snprintf(folder, sizeof(folder), "%s/" VK_DRIVER_FOLDER, platform_data_root());
+	host_android_import_vk_drivers(folder);
+	return TRUE;
+}
 #endif
 
-/* Video Setup's Vulkan Driver (Android's: tools/port_settings.py), shown
-while the backend shown is Vulkan; the list passes over it while it is
-hidden, and the focus on it goes to the backend's row */
+/* Video Setup's Vulkan Driver and IMPORT DRIVER (Android's:
+tools/port_settings.py), shown while the backend shown is Vulkan; the lists
+pass over them while they are hidden, and the focus on the row goes to the
+backend's row, on the button to DEFAULTS */
 static void vk_driver_row_show(struct widget_instance *list)
 {
 	struct widget_instance *renderer = named(list, "renderer_spinner", 0);
 	struct widget_instance *renderer_row = named(list, "op_renderer", 0);
 	struct widget_instance *driver_row = named(list, "op_vk_driver", 0);
+	struct widget_instance *import_button = named(list, "button_vk_driver_import", 0);
 	struct pc_menu_setting *setting = renderer ? pc_menu_setting_get(renderer->definition_tag_index) : NULL;
 	struct widget_instance *child;
 	short index;
@@ -2039,6 +2057,17 @@ static void vk_driver_row_show(struct widget_instance *list)
 		return;
 	index = renderer->parameters.list.selected_index;
 	driver_row->visible = index >= 0 && index < setting->value_count && !strcmp(setting->values[index], "vulkan");
+	if (import_button && import_button->parent)
+	{
+		struct widget_instance *bar = import_button->parent;
+
+		import_button->visible = driver_row->visible;
+		if (!import_button->visible && bar->focused_child == import_button && bar->child)
+		{
+			bar->focused_child = bar->child;
+			bar->parameters.list.selected_index = 0;
+		}
+	}
 	if (!driver_row->visible && list->focused_child == driver_row)
 	{
 		for (index = 0, child = list->child; child && child != renderer_row; child = child->next)
@@ -10222,6 +10251,12 @@ boolean pc_menu_event_function_invoke(
 		{
 			return mods_import();
 		}
+#if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
+		else if (!strcmp(name, "port vk driver import"))
+		{
+			return vk_driver_import();
+		}
+#endif
 		else if (!strcmp(name, "controls screen init") || !strcmp(name, "controls screen defaults"))
 		{
 			return controls_load(!strcmp(name, "controls screen defaults"));

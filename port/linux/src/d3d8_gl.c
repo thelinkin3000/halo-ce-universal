@@ -2385,6 +2385,17 @@ static void gl_initialize(void)
 #ifdef HALO_ANDROID
 	platform_log("Android render policy: chip=%d geometry=%s CE textures=%s per-draw refresh=off",
 		android_render_chip, android_geometry_fixes ? "on" : "off", android_texture_fixes ? "on" : "off");
+#if !defined(HALO_SWITCH) && !defined(HALO_PS5)
+	/* the app asked for Vulkan, which did not start (port/android/host/host_main.c
+	says why in logcat): display.renderer back to "gl", so that Video Setup
+	shows OPENGL, the backend the game runs on, and the next start does not
+	try again until Vulkan is chosen there */
+	if (getenv("HALO_VULKAN_REFUSED") && strcmp(config_string("display.renderer"), "gl"))
+	{
+		platform_log("renderer: Vulkan did not start; display.renderer is \"gl\" now");
+		config_write("display.renderer", "gl");
+	}
+#endif
 #endif
 	glGetIntegerv(GL_MINOR_VERSION, &minor);
 #ifdef HALO_GLES

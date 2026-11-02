@@ -1500,8 +1500,13 @@ void host_android_import_replays(const char *folder)
 	(void)folder;
 }
 
-/* (and the Mods screen's IMPORT) */
+/* (and the Mods screen's IMPORT, and Video Setup's IMPORT DRIVER) */
 void host_android_import_mods(const char *folder)
+{
+	(void)folder;
+}
+
+void host_android_import_vk_drivers(const char *folder)
 {
 	(void)folder;
 }

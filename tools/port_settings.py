@@ -122,6 +122,11 @@ SCREENS = {
         # row. Below Android's rows, wherever they end (place 6 was below
         # them until Maximum Resolution and Extra Effects came)
         "notes": [("The graphics backend and driver change when the game restarts.", "android", None)],
+        # (buttons of the bar's own, between DEFAULTS and OK: (key, words,
+        # menu function, platform, x). Android's IMPORT DRIVER, the app's file
+        # picker for a driver archive copied into freedreno_drivers:
+        # menu_functions.c, HaloActivity.importVkDrivers)
+        "bar_buttons": [("button_vk_driver_import", "IMPORT DRIVER", "port vk driver import", "android", 130)],
         "rows": [
             ("DISPLAY MODE:", "display.mode",
              [("FULLSCREEN", "fullscreen"), ("BORDERLESS", "borderless"), ("WINDOWED", "windowed")],
@@ -146,7 +151,7 @@ SCREENS = {
             # archive's name left there by hand is kept unless another is
             # chosen: port/android/host/host_vk_driver.c)
             ("VULKAN DRIVER:", "display.vk_driver", [("STOCK", ""), ("TURNIP", "auto")],
-             "The phone's own driver, Turnip, or a zip from\nfreedreno_drivers. Takes effect at the next start.",
+             "The phone's own driver, Turnip, or a zip that\nIMPORT DRIVER adds. Takes effect at the next start.",
              "android"),
             ("RESOLUTION SCALING:", "display.resolution_scaling", [("NATIVE", "native"), ("ORIGINAL", "original")],
              "Native draws at the resolution; Original draws\nthe Xbox's 640x480 and scales it up.", "desktop web"),
@@ -870,8 +875,13 @@ def _screen(folder: str, spec: dict, rows: list, list_inputs: list, list_handler
                      [("type", "column_list"), ("width", 640), ("height", 28),
                       ("flags", "pass_unhandled_to_focused_child left_right_tabs_items")],
                      [f'<child{attributes([("widget", f"{base}/button_defaults"), ("y", 1)])}/>',
+                      *[f'<child{attributes([("widget", f"{base}/{key}"), ("x", x), ("y", 1), ("platform", platform)])}/>'
+                        for key, _, _, platform, x in spec.get("bar_buttons", [])],
                       f'<child{attributes([("widget", f"{base}/button_ok"), ("x", 380), ("y", 1)])}/>',
                       '<child widget="common_button_cancel" x="510" y="1"/>'])
+    for key, words, function, _, _ in spec.get("bar_buttons", []):
+        lines += _text_button(f"{base}/{key}", words, [f'<on event="a" run="{function}"/>',
+                                                       f'<on event="start" run="{function}"/>'])
     lines += extra
     return lines
 

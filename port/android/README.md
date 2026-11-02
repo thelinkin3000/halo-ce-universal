@@ -283,7 +283,7 @@ These settings are only for Android:
 | `debug.memory_watch` | `true` (the default): the app notices the game's writes to textures and vertices by page protection. `false`: it compares page contents once a frame instead, which is slower. Under OpenGL ES, geometry is streamed in either mode. Refer to "Limits". |
 | `debug.profile_hz` | Refer to "Find problems". |
 | `debug.profile_run` | `true`: each start records a profile of the run into its own folder, `Download/halo_profiles/DDMMYYYY_HHMMSS` (the day and time it started), to send as it is. Refer to "Find problems". `false` (the default): none. Takes effect the next time the game starts. |
-| `display.renderer` | How the game draws: `"vulkan"` (the default; OpenGL ES if Vulkan cannot start) or `"gl"` (OpenGL ES over the phone's driver). Takes effect the next time the game starts. The line below the version number in the main menu shows the renderer that runs. VIDEO SETUP's GRAPHICS BACKEND sets it. Refer to "Graphics: OpenGL ES and Vulkan". |
+| `display.renderer` | How the game draws: `"vulkan"` (the default; OpenGL ES if Vulkan cannot start, which sets it to `"gl"`) or `"gl"` (OpenGL ES over the phone's driver). Takes effect the next time the game starts. The line below the version number in the main menu shows the renderer that runs. VIDEO SETUP's GRAPHICS BACKEND sets it. Refer to "Graphics: OpenGL ES and Vulkan". |
 | `display.vk_driver` | The Vulkan driver of the Vulkan renderer (and of the Vulkan probe). Empty (the default): the phone's own. `"auto"`: Turnip on an Adreno, which the app downloads (refer to "Turn on Turnip"). Otherwise the file name of a driver archive in `freedreno_drivers` in the data folder (or in the data folder itself). VIDEO SETUP's VULKAN DRIVER sets `""` (STOCK), `"auto"` (TURNIP) or the name of an archive in `freedreno_drivers`. |
 | `debug.vk_probe` | Refer to "Find problems". |
 | `debug.vk_validation` | Refer to "Find problems". |
@@ -430,8 +430,14 @@ To turn Turnip off, set **VULKAN DRIVER** to `STOCK` (or
    `meta.json` file and the driver library (`.so`) at its top level. Some
    of these sites also have Qualcomm's own drivers in this format; they
    load in the same way.
-2. Copy the `.zip` file into the `freedreno_drivers` folder of the data
-   folder (`/sdcard/Android/data/com.halo.decomp/files/freedreno_drivers/`;
+2. In **VIDEO SETUP**, with **GRAPHICS BACKEND** on `VULKAN`, select
+   **IMPORT DRIVER** and choose the `.zip` file (several at once if you
+   like). The app copies each one into the `freedreno_drivers` folder of
+   the data folder, once it has checked that it is a driver archive (a
+   `meta.json` naming a library that is in the zip, 256 MB at most); a
+   name the folder has already is left as it is. Leave Video Setup and open
+   it again to see it listed. Or copy the `.zip` file into that folder
+   yourself (`/sdcard/Android/data/com.halo.decomp/files/freedreno_drivers/`;
    the app makes the folder when it looks for its own download).
 3. In **VIDEO SETUP**, set **VULKAN DRIVER** to the archive: every `.zip`
    in `freedreno_drivers` is listed after `STOCK` and `TURNIP`, by its file
@@ -456,7 +462,11 @@ In **VIDEO SETUP**, or in `config.toml`, in the `[display]` section:
 | Vulkan on a driver archive that you add | `VULKAN`, the archive's name | `renderer = "vulkan"` and `vk_driver = "<file name>.zip"` |
 | OpenGL ES | `OPENGL` | `renderer = "gl"` |
 
-Either way, the change applies the next time the game starts.
+Either way, the change applies the next time the game starts. If Vulkan
+does not start (the phone's Vulkan cannot run the renderer, or the driver
+chosen cannot be loaded), the game runs on OpenGL ES and sets `renderer =
+"gl"`, so that VIDEO SETUP shows `OPENGL`; choose `VULKAN` there to try
+again at the next start.
 
 When the app is updated to the version that makes Vulkan the default, it
 changes `renderer = "gl"` in an existing `config.toml` to `"vulkan"` one
