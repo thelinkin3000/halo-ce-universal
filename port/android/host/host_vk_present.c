@@ -453,6 +453,7 @@ uint32_t host_vk_present_record(VkCommandBuffer command, struct host_vk_target *
 	struct host_vk_frame *frame = &B.frames[B.frame];
 	VkImage image;
 	VkImageMemoryBarrier barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+	VkPipelineStageFlags source_stage, destination_stage;
 	VkImageBlit blit;
 	int attempt, acquired = 0;
 	int64_t width, height, x, y;
@@ -512,8 +513,10 @@ uint32_t host_vk_present_record(VkCommandBuffer command, struct host_vk_target *
 	/* the back buffer is read by the blit; the image is cleared black (the bars) and the picture blitted into it, the
 	letterbox as d3d8_gl.c's Present works it out: the window's width, or its height, whichever the picture's shape fits */
 	host_vk_target_transition(command, back_buffer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-	barrier.srcAccessMask = 0;
-	barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+	host_vk_barrier_scope(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &source_stage,
+		&barrier.srcAccessMask, &destination_stage, &barrier.dstAccessMask);
+	/* (the layout change must follow the acquire semaphore's wait, which is at the transfer stage: frame_submit) */
+	source_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 	barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -522,8 +525,7 @@ uint32_t host_vk_present_record(VkCommandBuffer command, struct host_vk_target *
 	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	barrier.subresourceRange.levelCount = 1;
 	barrier.subresourceRange.layerCount = 1;
-	vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL,
-		1, &barrier);
+	vkCmdPipelineBarrier(command, source_stage, destination_stage, 0, 0, NULL, 0, NULL, 1, &barrier);
 	{
 		VkClearColorValue black = { { 0.0f, 0.0f, 0.0f, 1.0f } };
 		VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
@@ -580,12 +582,11 @@ uint32_t host_vk_present_record(VkCommandBuffer command, struct host_vk_target *
 
 		if (size > (uint32_t)height)
 			size = (uint32_t)height;
-		barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-		barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+		host_vk_barrier_scope(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, &source_stage,
+			&barrier.srcAccessMask, &destination_stage, &barrier.dstAccessMask);
 		barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 		barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-		vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0,
-			NULL, 1, &barrier);
+		vkCmdPipelineBarrier(command, source_stage, destination_stage, 0, 0, NULL, 0, NULL, 1, &barrier);
 		attachment.imageView = B.chain.views[index];
 		attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 		attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
@@ -621,11 +622,10 @@ uint32_t host_vk_present_record(VkCommandBuffer command, struct host_vk_target *
 	/* (the picture as it is presented, copied when a screenshot is due; the image is then in barrier.oldLayout) */
 	host_vk_screenshot_record(command, image, &barrier.oldLayout);
 #endif
-	barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-	barrier.dstAccessMask = 0;
+	host_vk_barrier_scope(barrier.oldLayout, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, &source_stage, &barrier.srcAccessMask,
+		&destination_stage, &barrier.dstAccessMask);
 	barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-	vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL,
-		1, &barrier);
+	vkCmdPipelineBarrier(command, source_stage, destination_stage, 0, 0, NULL, 0, NULL, 1, &barrier);
 	return index;
 }
 

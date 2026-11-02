@@ -219,9 +219,10 @@ static uint32_t level_bytes(const struct host_vk_image *image, unsigned level)
 static void barrier(VkCommandBuffer command, struct host_vk_image *image, VkImageLayout to)
 {
 	VkImageMemoryBarrier barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+	VkPipelineStageFlags source_stage, destination_stage;
 
-	barrier.srcAccessMask = image->layout == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
-	barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+	host_vk_barrier_scope(image->layout, to, &source_stage, &barrier.srcAccessMask, &destination_stage,
+		&barrier.dstAccessMask);
 	barrier.oldLayout = image->layout;
 	barrier.newLayout = to;
 	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -230,8 +231,7 @@ static void barrier(VkCommandBuffer command, struct host_vk_image *image, VkImag
 	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	barrier.subresourceRange.levelCount = image->levels;
 	barrier.subresourceRange.layerCount = image->layers;
-	vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL,
-		1, &barrier);
+	vkCmdPipelineBarrier(command, source_stage, destination_stage, 0, 0, NULL, 0, NULL, 1, &barrier);
 	image->layout = to;
 }
 

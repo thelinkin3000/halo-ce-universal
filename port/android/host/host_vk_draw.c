@@ -25,14 +25,14 @@ cube), so the view's type always matches the shader's sampler.
 
 /* ---------- barriers */
 
-/* a full barrier (all commands to all commands, memory read and write) from one layout to another, outside a rendering */
+/* a barrier from one layout to another, outside a rendering (host_vk_barrier_scope's stages and accesses) */
 static void image_barrier(VkCommandBuffer command, VkImage image, VkImageAspectFlags aspect, uint32_t levels,
 	uint32_t layers, VkImageLayout from, VkImageLayout to)
 {
 	VkImageMemoryBarrier barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+	VkPipelineStageFlags source_stage, destination_stage;
 
-	barrier.srcAccessMask = from == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
-	barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+	host_vk_barrier_scope(from, to, &source_stage, &barrier.srcAccessMask, &destination_stage, &barrier.dstAccessMask);
 	barrier.oldLayout = from;
 	barrier.newLayout = to;
 	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -41,8 +41,7 @@ static void image_barrier(VkCommandBuffer command, VkImage image, VkImageAspectF
 	barrier.subresourceRange.aspectMask = aspect;
 	barrier.subresourceRange.levelCount = levels;
 	barrier.subresourceRange.layerCount = layers;
-	vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL,
-		1, &barrier);
+	vkCmdPipelineBarrier(command, source_stage, destination_stage, 0, 0, NULL, 0, NULL, 1, &barrier);
 }
 
 /* ---------- the dummies */
@@ -319,12 +318,12 @@ static unsigned dimension(unsigned base, unsigned level)
 static void level_barrier(VkCommandBuffer command, struct composite *composite, unsigned level, VkImageLayout to)
 {
 	VkImageMemoryBarrier barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+	VkPipelineStageFlags source_stage, destination_stage;
 
 	if (composite->layout[level] == to)
 		return;
-	barrier.srcAccessMask = composite->layout[level] == VK_IMAGE_LAYOUT_UNDEFINED ? 0 :
-		VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
-	barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+	host_vk_barrier_scope(composite->layout[level], to, &source_stage, &barrier.srcAccessMask, &destination_stage,
+		&barrier.dstAccessMask);
 	barrier.oldLayout = composite->layout[level];
 	barrier.newLayout = to;
 	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -334,8 +333,7 @@ static void level_barrier(VkCommandBuffer command, struct composite *composite, 
 	barrier.subresourceRange.baseMipLevel = level;
 	barrier.subresourceRange.levelCount = 1;
 	barrier.subresourceRange.layerCount = 1;
-	vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL,
-		1, &barrier);
+	vkCmdPipelineBarrier(command, source_stage, destination_stage, 0, 0, NULL, 0, NULL, 1, &barrier);
 	composite->layout[level] = to;
 }
 

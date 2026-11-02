@@ -342,6 +342,13 @@ int host_vk_check(VkResult result, const char *call);
 void host_vk_wait_fence(VkFence fence, const char *what, uint64_t number);
 /* the transition of a target to a layout (outside a rendering) */
 void host_vk_target_transition(VkCommandBuffer command, struct host_vk_target *target, VkImageLayout layout);
+/* the stages and accesses of a barrier from one layout to another: what was done in from must be done and its writes
+made available (source), before what is done in to begins (destination). Each barrier waits only for what the image
+was used for and holds back only what it is used for next, not all commands for all: on a GPU that draws in tiles, a
+full barrier between renderings stops the next one's vertices from being worked while the last one's pixels are (on a
+Galaxy S21 FE's Mali-G78, Damnation's frame took 9% longer on the GPU with full barriers) */
+void host_vk_barrier_scope(VkImageLayout from, VkImageLayout to, VkPipelineStageFlags *source_stage,
+	VkAccessFlags *source_access, VkPipelineStageFlags *destination_stage, VkAccessFlags *destination_access);
 /* ends the open rendering, if any */
 void host_vk_rendering_end(void);
 /* the target for a surface of a command, made (and cleared) the first time; NULL if there is none */

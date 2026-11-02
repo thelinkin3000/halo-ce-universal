@@ -9,9 +9,11 @@ present. host_vk_present.c has the surface and the swapchain.
 The guest writes a frame's commands into its own memory and calls
 host_vk_submit(); everything a command names is read during that call, and a
 frame is one command buffer, recorded as the commands come and submitted at
-PRESENT. At most one rendering (dynamic rendering) is open at a time. Every
-image is transitioned from the layout it is tracked in, with a full barrier
-(all commands to all commands): this phase is for being right.
+PRESENT. At most one rendering (dynamic rendering, or a render pass where the
+driver has none: host_vk_passes.c) is open at a time. Every image is
+transitioned from the layout it is tracked in, with a barrier that waits for
+what that layout was used for and holds back what the next is used for
+(host_vk_barrier_scope).
 */
 
 #include "host.h"
@@ -159,7 +161,9 @@ VkCommandBuffer host_vk_frame_command(void)
 static void frame_submit(uint32_t wait_image)
 {
 	struct host_vk_frame *frame = &B.frames[B.frame];
-	VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+	/* (the swapchain image is touched only by the clear and the blit into it, host_vk_present_record: the frame's
+	other commands do not wait for the display to give it back) */
+	VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 	VkSubmitInfo submit = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
 
 	if (!frame->recording)
@@ -231,15 +235,76 @@ uint32_t host_vk_retired(void)
 	return result;
 }
 
+/* ---------- barriers */
+
+/* what an image is used for in a layout: the stages that use it, and its writes there (made available by a barrier
+from it) and its reads and writes (made visible by one to it) */
+static void layout_use(VkImageLayout layout, VkPipelineStageFlags *stage, VkAccessFlags *writes, VkAccessFlags *uses)
+{
+	switch (layout)
+	{
+	case VK_IMAGE_LAYOUT_UNDEFINED:
+		/* (nothing to wait for: its contents are not kept) */
+		*stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+		*writes = *uses = 0;
+		break;
+	case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+		*stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		*writes = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		*uses = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		break;
+	case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+		*stage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		*writes = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		*uses = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		break;
+	case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+		/* (the game's shaders sample in the fragment shader; the vertex shader too, for safety) */
+		*stage = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		*writes = 0;
+		*uses = VK_ACCESS_SHADER_READ_BIT;
+		break;
+	case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+		*stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		*writes = 0;
+		*uses = VK_ACCESS_TRANSFER_READ_BIT;
+		break;
+	case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+		*stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		*writes = VK_ACCESS_TRANSFER_WRITE_BIT;
+		*uses = VK_ACCESS_TRANSFER_WRITE_BIT;
+		break;
+	case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
+		/* (the presentation engine waits on the frame's semaphore, not on a stage) */
+		*stage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+		*writes = *uses = 0;
+		break;
+	default:
+		*stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+		*writes = VK_ACCESS_MEMORY_WRITE_BIT;
+		*uses = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+		break;
+	}
+}
+
+void host_vk_barrier_scope(VkImageLayout from, VkImageLayout to, VkPipelineStageFlags *source_stage,
+	VkAccessFlags *source_access, VkPipelineStageFlags *destination_stage, VkAccessFlags *destination_access)
+{
+	VkAccessFlags unused;
+
+	layout_use(from, source_stage, source_access, &unused);
+	layout_use(to, destination_stage, &unused, destination_access);
+}
+
 /* ---------- the game's render targets */
 
 static void barrier_image(VkCommandBuffer command, VkImage image, VkImageAspectFlags aspect, VkImageLayout from,
-	VkImageLayout to, VkPipelineStageFlags destination_stage, VkAccessFlags destination_access)
+	VkImageLayout to)
 {
 	VkImageMemoryBarrier barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+	VkPipelineStageFlags source_stage, destination_stage;
 
-	barrier.srcAccessMask = from == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_MEMORY_WRITE_BIT;
-	barrier.dstAccessMask = destination_access;
+	host_vk_barrier_scope(from, to, &source_stage, &barrier.srcAccessMask, &destination_stage, &barrier.dstAccessMask);
 	barrier.oldLayout = from;
 	barrier.newLayout = to;
 	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -248,15 +313,14 @@ static void barrier_image(VkCommandBuffer command, VkImage image, VkImageAspectF
 	barrier.subresourceRange.aspectMask = aspect;
 	barrier.subresourceRange.levelCount = 1;
 	barrier.subresourceRange.layerCount = 1;
-	vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, destination_stage, 0, 0, NULL, 0, NULL, 1, &barrier);
+	vkCmdPipelineBarrier(command, source_stage, destination_stage, 0, 0, NULL, 0, NULL, 1, &barrier);
 }
 
 /* the target goes to a layout, from the one it is in: always a barrier, even to the same layout, because a
 rendering's writes are not visible to the next without one */
 void host_vk_target_transition(VkCommandBuffer command, struct host_vk_target *target, VkImageLayout layout)
 {
-	barrier_image(command, target->image, target->aspect, target->layout, layout, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-		VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
+	barrier_image(command, target->image, target->aspect, target->layout, layout);
 	target->layout = layout;
 }
 
@@ -533,8 +597,7 @@ static void multisample_retire(struct host_vk_target *target)
 /* the multisampled image's transition to a layout (outside a rendering), as host_vk_target_transition */
 static void multisample_transition(VkCommandBuffer command, struct host_vk_target *target, VkImageLayout layout)
 {
-	barrier_image(command, target->multisample_image, target->aspect, target->multisample_layout, layout,
-		VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
+	barrier_image(command, target->multisample_image, target->aspect, target->multisample_layout, layout);
 	target->multisample_layout = layout;
 }
 
