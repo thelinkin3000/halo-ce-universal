@@ -415,8 +415,8 @@ int openat(int directory, const char *path, int flags, ...)
 	}
 }
 
-static ssize_t bounced_write(int fd, const void *buffer, size_t size);
-static ssize_t bounced_read(int fd, void *buffer, size_t size);
+static ssize_t bounced_write(int fd, const void *buffer, size_t size, int yielding);
+static ssize_t bounced_read(int fd, void *buffer, size_t size, int yielding);
 
 ssize_t pread(int descriptor, void *buffer, size_t count, off_t offset)
 {
@@ -431,7 +431,7 @@ ssize_t pread(int descriptor, void *buffer, size_t count, off_t offset)
 		here = -1;
 		goto out;
 	}
-	read_bytes = bounced_read(descriptor, buffer, count);
+	read_bytes = bounced_read(descriptor, buffer, count, 0);
 	lseek(descriptor, here, SEEK_SET);
 	here = read_bytes;
 out:
@@ -453,7 +453,7 @@ ssize_t pwrite(int descriptor, const void *buffer, size_t count, off_t offset)
 		here = -1;
 		goto out;
 	}
-	written = bounced_write(descriptor, buffer, count);
+	written = bounced_write(descriptor, buffer, count, 0);
 	lseek(descriptor, here, SEEK_SET);
 	here = written;
 out:
@@ -725,8 +725,8 @@ pid_t gettid(void)
 /* preadv and pwritev: newlib has readv and writev but not the positional
 forms, which the guest's file helpers use to read a map file's contents
 without disturbing whatever else is reading it. */
-static ssize_t readv_unlocked(int fd, const struct iovec *vectors, int count);
-static ssize_t writev_unlocked(int fd, const struct iovec *vectors, int count);
+static ssize_t readv_unlocked(int fd, const struct iovec *vectors, int count, int yielding);
+static ssize_t writev_unlocked(int fd, const struct iovec *vectors, int count, int yielding);
 
 ssize_t preadv(int fd, const struct iovec *vectors, int count, off_t offset)
 {
@@ -742,7 +742,7 @@ ssize_t preadv(int fd, const struct iovec *vectors, int count, off_t offset)
 		here = -1;
 		goto out;
 	}
-	got = readv_unlocked(fd, vectors, count);
+	got = readv_unlocked(fd, vectors, count, 0);
 	lseek(fd, here, SEEK_SET);
 	here = got;
 out:
@@ -764,7 +764,7 @@ ssize_t pwritev(int fd, const struct iovec *vectors, int count, off_t offset)
 		here = -1;
 		goto out;
 	}
-	put = writev_unlocked(fd, vectors, count);
+	put = writev_unlocked(fd, vectors, count, 0);
 	lseek(fd, here, SEEK_SET);
 	here = put;
 out:
@@ -794,7 +794,23 @@ the card lock each time, and the heartbeat waited four seconds for it. */
 
 static char bounce_buffer[BOUNCE_SIZE] __attribute__((aligned(4096)));
 
-static ssize_t bounced_write(int fd, const void *buffer, size_t size)
+/* Between chunks the bounce buffer is free, and a caller that is yielding
+lets the threads waiting for the card have it (libnx's unlock hands the
+mutex to a waiter): a checkpoint is one 20 MB write, and held for all of it
+the lock kept the game thread's texture reads waiting 1 to 7.5 seconds on
+the Switch (c10, co-op). The positional calls do not yield: they seek, move
+and seek back, and another thread on the same descriptor between would
+read or write at the wrong place. */
+static void bounce_yield(int yielding, size_t done, size_t size)
+{
+	if (yielding && done < size)
+	{
+		host_sd_unlock();
+		host_sd_lock();
+	}
+}
+
+static ssize_t bounced_write(int fd, const void *buffer, size_t size, int yielding)
 {
 	size_t done = 0;
 
@@ -812,11 +828,12 @@ static ssize_t bounced_write(int fd, const void *buffer, size_t size)
 		done += (size_t)put;
 		if ((size_t)put < chunk)
 			break;
+		bounce_yield(yielding, done, size);
 	}
 	return (ssize_t)done;
 }
 
-static ssize_t bounced_read(int fd, void *buffer, size_t size)
+static ssize_t bounced_read(int fd, void *buffer, size_t size, int yielding)
 {
 	size_t done = 0;
 
@@ -835,13 +852,14 @@ static ssize_t bounced_read(int fd, void *buffer, size_t size)
 		/* the end of the file, or a device that gives what it has */
 		if ((size_t)got < chunk)
 			break;
+		bounce_yield(yielding, done, size);
 	}
 	return (ssize_t)done;
 }
 
 /* the locks are not taken here so that preadv and pwritev can hold one
  * across a seek and a vector call; the public forms below take it */
-static ssize_t readv_unlocked(int fd, const struct iovec *vectors, int count)
+static ssize_t readv_unlocked(int fd, const struct iovec *vectors, int count, int yielding)
 {
 	ssize_t total = 0;
 	int index;
@@ -856,7 +874,7 @@ static ssize_t readv_unlocked(int fd, const struct iovec *vectors, int count)
 		 * musl retried it twelve thousand times a second, forever */
 		if (vectors[index].iov_len == 0)
 			continue;
-		got = bounced_read(fd, vectors[index].iov_base, vectors[index].iov_len);
+		got = bounced_read(fd, vectors[index].iov_base, vectors[index].iov_len, yielding);
 
 		/* an error is an error, not a short read: returning 0 for it
 		 * sent musl into a twelve-thousand-calls-a-second retry loop
@@ -876,7 +894,7 @@ static ssize_t readv_unlocked(int fd, const struct iovec *vectors, int count)
 	return total;
 }
 
-static ssize_t writev_unlocked(int fd, const struct iovec *vectors, int count)
+static ssize_t writev_unlocked(int fd, const struct iovec *vectors, int count, int yielding)
 {
 	ssize_t total = 0;
 	int index;
@@ -887,7 +905,7 @@ static ssize_t writev_unlocked(int fd, const struct iovec *vectors, int count)
 
 		if (vectors[index].iov_len == 0)
 			continue;
-		put = bounced_write(fd, vectors[index].iov_base, vectors[index].iov_len);
+		put = bounced_write(fd, vectors[index].iov_base, vectors[index].iov_len, yielding);
 
 		if (put < 0)
 		{
@@ -909,7 +927,7 @@ ssize_t readv(int fd, const struct iovec *vectors, int count)
 	ssize_t result;
 
 	host_sd_lock();
-	result = readv_unlocked(fd, vectors, count);
+	result = readv_unlocked(fd, vectors, count, 1);
 	host_sd_unlock();
 	return result;
 }
@@ -919,7 +937,7 @@ ssize_t writev(int fd, const struct iovec *vectors, int count)
 	ssize_t result;
 
 	host_sd_lock();
-	result = writev_unlocked(fd, vectors, count);
+	result = writev_unlocked(fd, vectors, count, 1);
 	host_sd_unlock();
 	return result;
 }
@@ -1344,7 +1362,7 @@ static long long host_syscall_inner(long long number, long long a, long long b, 
 			if (host_memory_file_is(host_fd))
 				return host_memory_file_write(host_fd, GUEST(const void *, b), (size_t)(uint32_t)c);
 			host_sd_lock();
-			written = bounced_write(host_fd, GUEST(const void *, b), (size_t)(uint32_t)c);
+			written = bounced_write(host_fd, GUEST(const void *, b), (size_t)(uint32_t)c, 1);
 			host_sd_unlock();
 			return result_of(written);
 		}
@@ -1603,7 +1621,7 @@ static long long host_syscall_inner(long long number, long long a, long long b, 
 		if (host_memory_file_is(host_fd))
 			return host_memory_file_read(host_fd, GUEST(void *, b), (size_t)c);
 		host_sd_lock();
-		got = bounced_read(host_fd, GUEST(void *, b), (size_t)c);
+		got = bounced_read(host_fd, GUEST(void *, b), (size_t)c, 1);
 		host_sd_unlock();
 		return result_of(got);
 	}
