@@ -392,6 +392,7 @@ struct host_vk_target *host_vk_target_get(const struct vk_surface *surface)
 	view.subresourceRange.layerCount = 1;
 	if (!HOST_VK_CHECK(vkCreateImageView(B.device, &view, NULL, &target->view)))
 		goto fail;
+	host_vk_pass_view_note(target->view, info.format, VK_SAMPLE_COUNT_1_BIT);
 	target->next_in_bucket = B.buckets[bucket];
 	B.buckets[bucket] = target;
 	B.images++;
@@ -404,7 +405,10 @@ struct host_vk_target *host_vk_target_get(const struct vk_surface *surface)
 	return target;
 fail:
 	if (target->view)
+	{
+		host_vk_pass_view_forget(target->view);
 		vkDestroyImageView(B.device, target->view, NULL);
+	}
 	if (target->memory)
 		vkFreeMemory(B.device, target->memory, NULL);
 	if (target->image)
@@ -486,6 +490,7 @@ static void multisamples_destroy_retired(int force)
 	{
 		if (retired_multisamples[index].after <= retired)
 		{
+			host_vk_pass_view_forget(retired_multisamples[index].view);
 			vkDestroyImageView(B.device, retired_multisamples[index].view, NULL);
 			vkDestroyImage(B.device, retired_multisamples[index].image, NULL);
 			vkFreeMemory(B.device, retired_multisamples[index].memory, NULL);
@@ -592,6 +597,7 @@ static int multisample_set(struct host_vk_target *target, uint32_t samples)
 	view.subresourceRange.layerCount = 1;
 	if (!HOST_VK_CHECK(vkCreateImageView(B.device, &view, NULL, &target->multisample_view)))
 		goto fail;
+	host_vk_pass_view_note(target->multisample_view, info.format, (VkSampleCountFlagBits)samples);
 	target->samples = samples;
 	target->multisample_layout = VK_IMAGE_LAYOUT_UNDEFINED;
 	host_logf(HOST_LOG_INFO, "vk: %s target %08x, %ux%u, drawn with %u samples a pixel", depth ? "depth" : "colour",
@@ -627,7 +633,10 @@ fail:
 	host_logf(HOST_LOG_ERROR, "vk: the %ux%u target at %08x cannot be drawn with %u samples a pixel; drawn with one",
 		(unsigned)target->key.pixel_width, (unsigned)target->key.pixel_height, (unsigned)target->key.data, (unsigned)samples);
 	if (target->multisample_view)
+	{
+		host_vk_pass_view_forget(target->multisample_view);
 		vkDestroyImageView(B.device, target->multisample_view, NULL);
+	}
 	if (target->multisample_memory)
 		vkFreeMemory(B.device, target->multisample_memory, NULL);
 	if (target->multisample_image)
@@ -838,6 +847,10 @@ static VkPipeline clear_pipeline(uint32_t mask, int has_depth, uint32_t samples)
 	info.pDynamicState = &dynamic;
 	info.layout = B.clear_layout;
 	info.basePipelineIndex = -1;
+	/* (a driver without dynamic rendering: a render pass of the renderings' formats and samples, host_vk_passes.c) */
+	info.renderPass = host_vk_pass_for_pipeline(&rendering, multisample.rasterizationSamples, 1);
+	if (info.renderPass)
+		info.pNext = rendering.pNext;
 	if (!HOST_VK_CHECK(vkCreateGraphicsPipelines(B.device, VK_NULL_HANDLE, 1, &info, NULL, slot)))
 		*slot = VK_NULL_HANDLE;
 	return *slot;
@@ -1377,6 +1390,10 @@ static VkPipeline test_pipeline(void)
 	info.pDynamicState = &dynamic;
 	info.layout = T.layout;
 	info.basePipelineIndex = -1;
+	/* (a driver without dynamic rendering: a render pass of the renderings' formats and samples, host_vk_passes.c) */
+	info.renderPass = host_vk_pass_for_pipeline(&rendering, multisample.rasterizationSamples, 1);
+	if (info.renderPass)
+		info.pNext = rendering.pNext;
 	if (!HOST_VK_CHECK(vkCreateGraphicsPipelines(B.device, VK_NULL_HANDLE, 1, &info, NULL, &T.pipeline)))
 		T.pipeline = VK_NULL_HANDLE;
 	return T.pipeline;
@@ -1732,7 +1749,12 @@ static int device_create(void)
 	/* the device: swapchain, and dynamic rendering (the 1.3 feature, or the extension with what it depends on
 	before 1.2: host_vk_startup found them) */
 	enabled_add(names, &name_count, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-	if (host_vk.api >= VK_API_VERSION_1_3)
+	if (host_vk.render_passes)
+	{
+		/* (render passes: host_vk_passes.c) */
+		chain_end = &features.pNext;
+	}
+	else if (host_vk.api >= VK_API_VERSION_1_3)
 	{
 		features13.dynamicRendering = VK_TRUE;
 		features.pNext = &features13;
@@ -1773,7 +1795,8 @@ static int device_create(void)
 	/* multisampling in the GPU's tile memory (VK_EXT_multisampled_render_to_single_sampled), where the device has it
 	for both target formats, and debug.original_multisample does not keep the images of samples: the counts it can */
 	B.msrtss_counts = 0;
-	if (!host_vk_original_multisample && enabled_add(names, &name_count, VK_EXT_MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_EXTENSION_NAME))
+	/* (it is dynamic rendering's: with render passes, the images of samples) */
+	if (!host_vk_original_multisample && !host_vk.render_passes && enabled_add(names, &name_count, VK_EXT_MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_EXTENSION_NAME))
 	{
 		VkPhysicalDeviceFeatures2 available = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
 		VkPhysicalDeviceMultisampledRenderToSingleSampledFeaturesEXT supported =
@@ -1831,10 +1854,15 @@ static int device_create(void)
 	if (!name) { host_logf(HOST_LOG_ERROR, "vk: the device has no %s", #name); missing++; }
 	HOST_VK_DEVICE_FUNCTIONS(X)
 #undef X
-	host_vk_cmd_begin_rendering = (PFN_vkCmdBeginRenderingKHR)host_vk.vkGetDeviceProcAddr(B.device,
-		host_vk.api >= VK_API_VERSION_1_3 ? "vkCmdBeginRendering" : "vkCmdBeginRenderingKHR");
-	host_vk_cmd_end_rendering = (PFN_vkCmdEndRenderingKHR)host_vk.vkGetDeviceProcAddr(B.device,
-		host_vk.api >= VK_API_VERSION_1_3 ? "vkCmdEndRendering" : "vkCmdEndRenderingKHR");
+	if (host_vk.render_passes)
+		host_vk_passes_install();
+	else
+	{
+		host_vk_cmd_begin_rendering = (PFN_vkCmdBeginRenderingKHR)host_vk.vkGetDeviceProcAddr(B.device,
+			host_vk.api >= VK_API_VERSION_1_3 ? "vkCmdBeginRendering" : "vkCmdBeginRenderingKHR");
+		host_vk_cmd_end_rendering = (PFN_vkCmdEndRenderingKHR)host_vk.vkGetDeviceProcAddr(B.device,
+			host_vk.api >= VK_API_VERSION_1_3 ? "vkCmdEndRendering" : "vkCmdEndRenderingKHR");
+	}
 	if (!host_vk_cmd_begin_rendering || !host_vk_cmd_end_rendering)
 	{
 		host_logf(HOST_LOG_ERROR, "vk: the device has no dynamic rendering entry points");
@@ -1895,10 +1923,11 @@ static int device_create(void)
 	if (host_vk_self_test)
 		clears_selftest();
 	host_logf(HOST_LOG_INFO, "vk: device ready: queue family %u, colour targets %s, depth targets %s, blit filter %s, "
-		"dynamic rendering from %s; anisotropy %d, non-solid fill %d, precise occlusion %d, BC textures %d", B.family, "B8G8R8A8_UNORM",
+		"renderings %s; anisotropy %d, non-solid fill %d, precise occlusion %d, BC textures %d", B.family, "B8G8R8A8_UNORM",
 		B.depth_format == VK_FORMAT_D24_UNORM_S8_UINT ? "D24_UNORM_S8_UINT" : "D32_SFLOAT_S8_UINT",
 		B.blit_filter == VK_FILTER_LINEAR ? "linear" : "nearest",
-		host_vk.api >= VK_API_VERSION_1_3 ? "Vulkan 1.3" : "VK_KHR_dynamic_rendering", B.sampler_anisotropy,
+		host_vk.render_passes ? "as render passes (host_vk_passes.c)" : host_vk.api >= VK_API_VERSION_1_3 ?
+		"by dynamic rendering, from Vulkan 1.3" : "by dynamic rendering, from VK_KHR_dynamic_rendering", B.sampler_anisotropy,
 		B.fill_mode_non_solid, B.occlusion_query_precise, B.texture_compression_bc);
 	return 1;
 failed:

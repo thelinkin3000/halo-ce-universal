@@ -159,7 +159,10 @@ static void swapchain_destroy(struct host_vk_swapchain *chain)
 		if (chain->render_done[index])
 			vkDestroySemaphore(B.device, chain->render_done[index], NULL);
 		if (chain->views[index])
+		{
+			host_vk_pass_view_forget(chain->views[index]);
 			vkDestroyImageView(B.device, chain->views[index], NULL);
+		}
 	}
 	if (chain->handle)
 		vkDestroySwapchainKHR(B.device, chain->handle, NULL);
@@ -321,6 +324,7 @@ static int swapchain_create(struct host_vk_swapchain *chain, VkSwapchainKHR old,
 				swapchain_destroy(chain);
 				return 0;
 			}
+			host_vk_pass_view_note(chain->views[index], chain->format, VK_SAMPLE_COUNT_1_BIT);
 		}
 	}
 	if (transform_out)

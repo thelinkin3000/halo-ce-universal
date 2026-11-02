@@ -102,7 +102,7 @@ SHARED_HOST_FILES = ("host_arch.c", "host_common.c", "host_loader.c", "host_thre
 # the probe, host_vk_probe.c
 SHARED_RENDERER_FILES = ("host_vk.c", "host_vk_data.c", "host_vk_draw.c", "host_vk_post.c", "host_vk_present.c",
                          "host_vk_hud.c", "host_vk_profile.c", "host_vk_render.c", "host_vk_shaders.c", "host_vk_texture.c",
-                         "host_vk_visibility.c")
+                         "host_vk_visibility.c", "host_vk_passes.c")
 # posix.h's helpers (port/linux/src) the game imports, as the Linux host
 # compiles them (port/ps5/PS5.md, phases 2 and 5), and the Linux updater's
 # HTTPS download, which the title's updater fetches with (phase 8:

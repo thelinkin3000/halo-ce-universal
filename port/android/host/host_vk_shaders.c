@@ -1078,6 +1078,10 @@ static VkPipeline pipeline_make(const struct pipeline *wanted, VkShaderModule ve
 	info.pDynamicState = &dynamic;
 	info.layout = B.draw_layout;
 	info.basePipelineIndex = -1;
+	/* (a driver without dynamic rendering: a render pass of the renderings' formats and samples, host_vk_passes.c) */
+	info.renderPass = host_vk_pass_for_pipeline(&rendering, multisample.rasterizationSamples, 1);
+	if (info.renderPass)
+		info.pNext = rendering.pNext;
 	if (!HOST_VK_CHECK(vkCreateGraphicsPipelines(B.device, B.pipeline_cache, 1, &info, NULL, &pipeline)))
 		return VK_NULL_HANDLE;
 	return pipeline;

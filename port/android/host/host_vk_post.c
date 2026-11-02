@@ -275,6 +275,10 @@ static int pass_make(void)
 	info.pDynamicState = &dynamic;
 	info.layout = post.layout;
 	info.basePipelineIndex = -1;
+	/* (a driver without dynamic rendering: a render pass of the renderings' formats and samples, host_vk_passes.c) */
+	info.renderPass = host_vk_pass_for_pipeline(&rendering, multisample.rasterizationSamples, 1);
+	if (info.renderPass)
+		info.pNext = rendering.pNext;
 	if (!HOST_VK_CHECK(vkCreateGraphicsPipelines(B.device, B.pipeline_cache, 1, &info, NULL, &post.pipeline)))
 		goto failed;
 	post.made = 1;

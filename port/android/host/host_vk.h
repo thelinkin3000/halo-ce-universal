@@ -57,6 +57,8 @@ struct host_vk
 	int validation;
 	/* VkPhysicalDeviceDriverProperties.driverID, 0 if the driver does not say (names the pipeline cache's file) */
 	uint32_t driver_id;
+	/* the device has no dynamic rendering: each rendering is a render pass (host_vk_passes.c) */
+	int render_passes;
 	VkDebugUtilsMessengerEXT messenger;
 	/* the log line of the decision: which driver and device, for the device-lost report */
 	char line[600];
@@ -97,14 +99,26 @@ as a Vulkan function */
 	X(vkCmdSetBlendConstants) X(vkCmdSetStencilCompareMask) X(vkCmdSetStencilWriteMask) X(vkCmdSetStencilReference) \
 	X(vkCreateSampler) X(vkDestroySampler) X(vkCmdCopyBufferToImage) X(vkCmdCopyImage) \
 	X(vkCreateQueryPool) X(vkDestroyQueryPool) X(vkCmdResetQueryPool) X(vkCmdBeginQuery) X(vkCmdEndQuery) \
-	X(vkCmdCopyQueryPoolResults) X(vkCmdWriteTimestamp) X(vkGetQueryPoolResults)
+	X(vkCmdCopyQueryPoolResults) X(vkCmdWriteTimestamp) X(vkGetQueryPoolResults) \
+	X(vkCreateRenderPass) X(vkDestroyRenderPass) X(vkCreateFramebuffer) X(vkDestroyFramebuffer) \
+	X(vkCmdBeginRenderPass) X(vkCmdEndRenderPass)
 
 #define X(name) extern PFN_##name name __attribute__((visibility("hidden")));
 HOST_VK_DEVICE_FUNCTIONS(X)
 #undef X
-/* dynamic rendering: core in 1.3, the extension's before */
+/* dynamic rendering: core in 1.3, the extension's before, or host_vk_passes.c's render passes (host_vk.render_passes) */
 extern PFN_vkCmdBeginRenderingKHR host_vk_cmd_begin_rendering __attribute__((visibility("hidden")));
 extern PFN_vkCmdEndRenderingKHR host_vk_cmd_end_rendering __attribute__((visibility("hidden")));
+
+/* host_vk_passes.c, with host_vk.render_passes (each a no-op without): the rendering entry points made render passes;
+a view that can be an attachment noted with its format and samples as it is made, and forgotten (with the framebuffers
+made of it) before it is destroyed; and the render pass a pipeline is made with for the formats of the renderings it is
+drawn in, with samples a pixel (resolved into a target of one sample, where a colour has more), else VK_NULL_HANDLE */
+void host_vk_passes_install(void);
+void host_vk_pass_view_note(VkImageView view, VkFormat format, VkSampleCountFlagBits samples);
+void host_vk_pass_view_forget(VkImageView view);
+VkRenderPass host_vk_pass_for_pipeline(const VkPipelineRenderingCreateInfo *rendering, VkSampleCountFlagBits samples,
+	int resolves);
 
 #define HOST_VK_FRAMES 2
 #define HOST_VK_SWAPCHAIN_IMAGES 16

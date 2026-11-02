@@ -222,10 +222,12 @@ static int device_usable(VkPhysicalDevice device, char *why, size_t why_size)
 
 	/* dynamic rendering: the core feature from 1.3; before it the extension,
 	which needs depth/stencil resolve (core in 1.2) and so renderpass2 (core in
-	1.2), and before 1.1 multiview and maintenance2 */
+	1.2), and before 1.1 multiview and maintenance2. Without it, each rendering
+	is a render pass (host_vk_passes.c: a Mali's own Vulkan 1.1) */
 	if (api >= VK_API_VERSION_1_3)
 	{
 		features.pNext = &features13;
+		dynamic = 1;
 	}
 	else
 	{
@@ -233,30 +235,29 @@ static int device_usable(VkPhysicalDevice device, char *why, size_t why_size)
 			VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME, VK_KHR_MULTIVIEW_EXTENSION_NAME, VK_KHR_MAINTENANCE_2_EXTENSION_NAME };
 		uint32_t wanted = api >= VK_API_VERSION_1_2 ? 1 : api >= VK_API_VERSION_1_1 ? 3 : 5;
 
-		for (index = 0; index < wanted; index++)
+		dynamic = 1;
+		for (index = 0; index < wanted && dynamic; index++)
 		{
 			if (!has_name(available, count, needs[index]))
 			{
-				snprintf(why, why_size, "%s (Vulkan %u.%u) lacks %s, for dynamic rendering", properties.deviceName,
-					VK_VERSION_MAJOR(api), VK_VERSION_MINOR(api), needs[index]);
-				free(available);
-				return 0;
+				host_logf(HOST_LOG_INFO, "vk: %s (Vulkan %u.%u) lacks %s, for dynamic rendering: render passes instead",
+					properties.deviceName, VK_VERSION_MAJOR(api), VK_VERSION_MINOR(api), needs[index]);
+				dynamic = 0;
 			}
 		}
-		features.pNext = &dynamic_rendering;
+		if (dynamic)
+			features.pNext = &dynamic_rendering;
 	}
 	host_vk.vkGetPhysicalDeviceFeatures2(device, &features);
-	dynamic = api >= VK_API_VERSION_1_3 ? features13.dynamicRendering : dynamic_rendering.dynamicRendering;
+	if (dynamic)
+		dynamic = api >= VK_API_VERSION_1_3 ? features13.dynamicRendering : dynamic_rendering.dynamicRendering;
 	if (!dynamic)
-	{
-		snprintf(why, why_size, "%s does not support dynamic rendering (Vulkan %u.%u)", properties.deviceName,
-			VK_VERSION_MAJOR(api), VK_VERSION_MINOR(api));
-		free(available);
-		return 0;
-	}
+		host_logf(HOST_LOG_INFO, "vk: %s has no dynamic rendering (Vulkan %u.%u): each rendering is a render pass",
+			properties.deviceName, VK_VERSION_MAJOR(api), VK_VERSION_MINOR(api));
 
 	/* it will do: keep what the backend needs of it */
 	host_vk.physical = device;
+	host_vk.render_passes = !dynamic;
 	host_vk.queue_family = queue_family;
 	host_vk.properties = properties;
 	host_vk.api = api;
