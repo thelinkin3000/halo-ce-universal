@@ -206,6 +206,13 @@ public final class TouchControls extends View implements SensorEventListener, In
     private static native int nativeTargets(int[] targets);
 
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    /**
+     * what the overlay shows, as a hash of every circle drawn (render): the one drawn last, and the one being made. A
+     * finger that changes nothing shown (the look finger, nearly all the time in play) redraws nothing: each redraw
+     * is a full-screen layer drawn by Android's renderer on the GPU the game draws with, at the display's rate while
+     * a finger moves
+     */
+    private long drawnSignature, signature;
     private final SharedPreferences preferences;
     private final SensorManager sensors;
     private final Sensor gyroscope;
@@ -700,7 +707,7 @@ public final class TouchControls extends View implements SensorEventListener, In
         else
             gameTouch(event);
         publish();
-        invalidate();
+        invalidateIfChanged();
         return true;
     }
 
@@ -1430,8 +1437,26 @@ public final class TouchControls extends View implements SensorEventListener, In
         return (color & 0x00ffffff) | (Math.max(0, Math.min(255, alpha)) << 24);
     }
 
+    private void sign(long value) {
+        signature = (signature ^ value) * 0x100000001b3L;
+    }
+
+    private void sign(float value) {
+        sign((long) Float.floatToIntBits(value));
+    }
+
+    /** a circle shown: into the signature, and drawn unless canvas is null (signatureNow) */
     private void circle(Canvas canvas, float x, float y, float radius, String label, boolean active,
             float textSize, float opacity) {
+        sign(x);
+        sign(y);
+        sign(radius);
+        sign((long) label.hashCode());
+        sign(active ? 1L : 2L);
+        sign(textSize);
+        sign(opacity);
+        if (canvas == null)
+            return;
         paint.setStyle(Paint.Style.FILL);
         paint.setColor(alpha(active ? 0x9983d9ff : 0x55304050, opacity));
         canvas.drawCircle(x, y, radius, paint);
@@ -1464,10 +1489,12 @@ public final class TouchControls extends View implements SensorEventListener, In
             toolbarItem(canvas, middle - EDITOR_SPACING, editorY(), OPTIONS_RADIUS, "Export", false);
             toolbarItem(canvas, middle, editorY(), OPTIONS_RADIUS, "Import", false);
             toolbarItem(canvas, middle + EDITOR_SPACING, editorY(), OPTIONS_RADIUS, "Save", false);
-            paint.setColor(Color.WHITE);
-            paint.setTextSize(14);
-            canvas.drawText("Drag the controls and Options, then push Save", middle,
-                editorY() + toolbarRadius(OPTIONS_RADIUS) + 24, paint);
+            if (canvas != null) {
+                paint.setColor(Color.WHITE);
+                paint.setTextSize(14);
+                canvas.drawText("Drag the controls and Options, then push Save", middle,
+                    editorY() + toolbarRadius(OPTIONS_RADIUS) + 24, paint);
+            }
         } else {
             toolbarItem(canvas, logicalWidth / 2, toolbarY(), TOOLBAR_RADIUS, hidden ? "Touch" : "Hide", false);
         }
@@ -1487,10 +1514,35 @@ public final class TouchControls extends View implements SensorEventListener, In
 
     @Override
     protected void onDraw(Canvas canvas) {
+        render(canvas);
+        drawnSignature = signature;
+    }
+
+    /** the signature of what render would draw now */
+    private long signatureNow() {
+        render(null);
+        return signature;
+    }
+
+    /** a finger moved: drawn again only if what is shown changes (the editor always) */
+    private void invalidateIfChanged() {
+        if (editing || signatureNow() != drawnSignature)
+            invalidate();
+    }
+
+    /** the overlay, into canvas; with none, only into the signature */
+    private void render(Canvas canvas) {
+        signature = 0xcbf29ce484222325L;
+        sign(showing ? 1L : 2L);
+        sign(editing ? 1L : 2L);
+        sign(hidden ? 1L : 2L);
+        sign(scale);
         if (!showing && !editing)
             return;
-        canvas.save();
-        canvas.scale(scale, scale);
+        if (canvas != null) {
+            canvas.save();
+            canvas.scale(scale, scale);
+        }
         if (!hidden || editing) {
             if (layout.shown(TouchLayout.LEFT))
                 drawStick(canvas);
@@ -1509,6 +1561,7 @@ public final class TouchControls extends View implements SensorEventListener, In
             }
         }
         drawToolbar(canvas);
-        canvas.restore();
+        if (canvas != null)
+            canvas.restore();
     }
 }
