@@ -27,7 +27,8 @@ of sight less often, and only the events the host sent it.
 The records are the bytes as they would go out, after an uncompressed
 header through one zlib stream (format 3, zlib's fastest level: about a
 fifth of their size), synced every few seconds so that a file a crash cut
-short plays to its last sync. tools/replay_stats.py says how large they
+short plays to its last sync, and written by a thread of its own (the
+game thread only deflates). tools/replay_stats.py says how large they
 are and which messages take the room; network_replay_playback.c plays them.
 The folder keeps the newest network.replays_kept (the oldest are deleted
 as a recording starts).
@@ -46,6 +47,7 @@ as a recording starts).
 #include "../src/posix.h" /* port: port/linux/src/posix.c */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <xtl.h>
@@ -93,6 +95,11 @@ game's own */
 /* the file's buffer: on the Switch each write waits for the card, so
 fewer, larger ones */
 #define REPLAY_BUFFER_SIZE 0x10000
+/* what the stream has made, kept until the next flush hands it to the
+writer: a few seconds' are some tens of KB; past the most, the recording
+stops rather than take the memory */
+#define REPLAY_PENDING_MINIMUM 0x40000
+#define REPLAY_PENDING_MAXIMUM 0x4000000
 #define REPLAY_PATH_SIZE 512
 /* a replay's file name ends so */
 #define REPLAY_EXTENSION ".ocreplay"
@@ -114,13 +121,171 @@ static struct
 	unsigned long bytes[NUMBER_OF_NETWORK_REPLAY_RECORDS];
 	unsigned long total_bytes;
 	char buffer[REPLAY_BUFFER_SIZE];
-	/* the records' stream (format 3), and what it has made not yet written */
+	/* the records' stream (format 3), and what it has made not yet given to
+	the writer */
 	z_stream stream;
-	byte compressed[REPLAY_BUFFER_SIZE];
+	byte *pending;
+	unsigned long pending_size;
+	unsigned long pending_capacity;
 } replay;
 
-/* through the stream into the file: flush Z_NO_FLUSH, Z_SYNC_FLUSH (all of
-it written out, readable) or Z_FINISH; FALSE if the file could not take it */
+/* The file is written by a thread of its own: each write waits for the
+card, and on the Switch a flush (the stream's bytes, the duration in the
+header, the seeks between) cost the game thread 40 to 110 ms every five
+seconds, a dropped frame each time in every network game. The game thread
+deflates into replay.pending and hands that over at a flush; the writer
+writes it while the game goes on. Without the thread the hand-over writes
+it there and then, as before. */
+static struct
+{
+	/* work: something to write; idle: the writer has nothing (manual reset) */
+	HANDLE thread, work, idle;
+	FILE *file;
+	byte *data;
+	unsigned long size;
+	unsigned long capacity;
+	/* the game's length so far, for the header (REPLAY_DURATION_OFFSET) */
+	unsigned long duration;
+	/* a write failed: the recording stops at the next hand-over */
+	boolean failed;
+} replay_writer = { 0 };
+
+static void replay_put_long(
+	byte *destination,
+	unsigned long value);
+
+static void replay_writer_write(
+	void)
+{
+	byte duration[4];
+	boolean written = !replay_writer.size ||
+		fwrite(replay_writer.data, replay_writer.size, 1, replay_writer.file) == 1;
+
+	/* (its length in the header, for a file a crash cuts short) */
+	replay_put_long(duration, replay_writer.duration);
+	if (written && fseek(replay_writer.file, REPLAY_DURATION_OFFSET, SEEK_SET) == 0)
+		fwrite(duration, sizeof(duration), 1, replay_writer.file);
+	if (written)
+		written = fseek(replay_writer.file, 0, SEEK_END) == 0 && fflush(replay_writer.file) == 0;
+	replay_writer.size = 0;
+	if (!written)
+		replay_writer.failed = TRUE;
+}
+
+static DWORD WINAPI replay_writer_main(
+	LPVOID unused)
+{
+	(void)unused;
+	for (;;)
+	{
+		WaitForSingleObject(replay_writer.work, INFINITE);
+		replay_writer_write();
+		SetEvent(replay_writer.idle);
+	}
+	return 0;
+}
+
+/* the writer started; FALSE if it cannot be, and the hand-over writes */
+static boolean replay_writer_ready(
+	void)
+{
+	if (replay_writer.thread)
+		return TRUE;
+	replay_writer.work = CreateEventA(NULL, FALSE, FALSE, NULL);
+	replay_writer.idle = CreateEventA(NULL, TRUE, TRUE, NULL);
+	if (replay_writer.work && replay_writer.idle)
+		replay_writer.thread = CreateThread(NULL, 0, replay_writer_main, NULL, 0, NULL);
+	if (!replay_writer.thread)
+	{
+		if (replay_writer.work)
+			CloseHandle(replay_writer.work);
+		if (replay_writer.idle)
+			CloseHandle(replay_writer.idle);
+		replay_writer.work = replay_writer.idle = NULL;
+		return FALSE;
+	}
+	return TRUE;
+}
+
+/* until the writer has written what it was given: then the file is the
+game thread's again */
+static void replay_writer_wait(
+	void)
+{
+	if (replay_writer.thread)
+		WaitForSingleObject(replay_writer.idle, INFINITE);
+}
+
+/* the writer still writing what it was given last */
+static boolean replay_writer_busy(
+	void)
+{
+	return replay_writer.thread && WaitForSingleObject(replay_writer.idle, 0) == WAIT_TIMEOUT;
+}
+
+/* what the stream has made, to the writer (the buffers swapped, nothing
+copied), with the game's length; FALSE if an earlier write failed */
+static boolean replay_hand_off(
+	void)
+{
+	byte *data;
+	unsigned long capacity;
+
+	replay_writer_wait();
+	if (replay_writer.failed)
+		return FALSE;
+	data = replay_writer.data;
+	capacity = replay_writer.capacity;
+	replay_writer.data = replay.pending;
+	replay_writer.capacity = replay.pending_capacity;
+	replay_writer.size = replay.pending_size;
+	replay_writer.file = replay.file;
+	replay_writer.duration = (unsigned long)(game_time_get() - replay.start_time);
+	replay.pending = data;
+	replay.pending_capacity = capacity;
+	replay.pending_size = 0;
+	if (replay_writer_ready())
+	{
+		ResetEvent(replay_writer.idle);
+		SetEvent(replay_writer.work);
+	}
+	else
+		replay_writer_write();
+	return TRUE;
+}
+
+/* the recording given up: the file closed once the writer is done with it */
+static void replay_abandon(
+	void)
+{
+	error(_error_log, "replay: could not write to %s; the recording stops", replay.path);
+	replay_writer_wait();
+	replay_writer.failed = FALSE;
+	deflateEnd(&replay.stream);
+	fclose(replay.file);
+	replay.file = NULL;
+	replay.pending_size = 0;
+}
+
+/* room for at least another REPLAY_BUFFER_SIZE of the stream's bytes */
+static boolean replay_pending_grow(
+	void)
+{
+	unsigned long capacity = replay.pending_capacity ? replay.pending_capacity * 2 : REPLAY_PENDING_MINIMUM;
+	byte *pending;
+
+	if (replay.pending_capacity - replay.pending_size >= REPLAY_BUFFER_SIZE)
+		return TRUE;
+	if (capacity > REPLAY_PENDING_MAXIMUM || !(pending = realloc(replay.pending, capacity)))
+		return FALSE;
+	replay.pending = pending;
+	replay.pending_capacity = capacity;
+	return TRUE;
+}
+
+/* through the stream into replay.pending: flush Z_NO_FLUSH, Z_SYNC_FLUSH
+(all of it made, readable once written) or Z_FINISH; FALSE if the stream
+failed or the bytes have no room */
 static boolean replay_deflate(
 	void const *data,
 	unsigned long size,
@@ -131,15 +296,16 @@ static boolean replay_deflate(
 	for (;;)
 	{
 		int result;
-		unsigned long made;
+		unsigned long room;
 
-		replay.stream.next_out = replay.compressed;
-		replay.stream.avail_out = sizeof(replay.compressed);
-		result = deflate(&replay.stream, flush);
-		made = sizeof(replay.compressed) - replay.stream.avail_out;
-		if (result != Z_OK && result != Z_STREAM_END && result != Z_BUF_ERROR)
+		if (!replay_pending_grow())
 			return FALSE;
-		if (made && fwrite(replay.compressed, made, 1, replay.file) != 1)
+		room = replay.pending_capacity - replay.pending_size;
+		replay.stream.next_out = replay.pending + replay.pending_size;
+		replay.stream.avail_out = (uInt)room;
+		result = deflate(&replay.stream, flush);
+		replay.pending_size += room - replay.stream.avail_out;
+		if (result != Z_OK && result != Z_STREAM_END && result != Z_BUF_ERROR)
 			return FALSE;
 		/* (done: everything taken, and for a flush all of it made) */
 		if (result == Z_STREAM_END || (!replay.stream.avail_in && replay.stream.avail_out))
@@ -262,19 +428,6 @@ static void replay_utf8(
 		used += count;
 	}
 	destination[used] = 0;
-}
-
-/* the game's length so far into the header (the file is left where it was
-written to, at its end) */
-static void replay_write_duration(
-	void)
-{
-	byte duration[4];
-
-	replay_put_long(duration, (unsigned long)(game_time_get() - replay.start_time));
-	if (fseek(replay.file, REPLAY_DURATION_OFFSET, SEEK_SET) == 0)
-		fwrite(duration, sizeof(duration), 1, replay.file);
-	fseek(replay.file, 0, SEEK_END);
 }
 
 static boolean replay_start(
@@ -634,20 +787,16 @@ void network_replay_host_tick(
 {
 	if (replay.file)
 	{
-		if (game_time_get() - replay.last_flush_time >= REPLAY_FLUSH_TICKS)
+		/* (not while the writer is still at the last flush: the card can
+		stall for seconds (d20 saw 3.4 s), and the hand-over would wait out
+		the stall on the game thread. The stream goes on into
+		replay.pending, and is handed over a tick after the writer is done) */
+		if (game_time_get() - replay.last_flush_time >= REPLAY_FLUSH_TICKS && !replay_writer_busy())
 		{
 			replay.last_flush_time = game_time_get();
-			if (replay_deflate(NULL, 0, Z_SYNC_FLUSH))
-				replay_write_duration();
-			else
-			{
-				error(_error_log, "replay: could not write to %s; the recording stops", replay.path);
-				deflateEnd(&replay.stream);
-				fclose(replay.file);
-				replay.file = NULL;
-				return;
-			}
-			fflush(replay.file);
+			/* (written by the writer, the game going on meanwhile) */
+			if (!replay_deflate(NULL, 0, Z_SYNC_FLUSH) || !replay_hand_off())
+				replay_abandon();
 		}
 		return;
 	}
@@ -677,10 +826,7 @@ void network_replay_record(
 	replay_put_long(header + 4, (unsigned long)game_time_get());
 	if (!replay_deflate(header, sizeof(header), Z_NO_FLUSH) || (size && !replay_deflate(data, (unsigned long)size, Z_NO_FLUSH)))
 	{
-		error(_error_log, "replay: could not write to %s; the recording stops", replay.path);
-		deflateEnd(&replay.stream);
-		fclose(replay.file);
-		replay.file = NULL;
+		replay_abandon();
 		return;
 	}
 	replay.records[kind]++;
@@ -694,11 +840,15 @@ void network_replay_stop(
 	if (replay.file)
 	{
 		long ticks = game_time_get() - replay.start_time;
-		boolean written = replay_deflate(NULL, 0, Z_FINISH);
+		boolean written = replay_deflate(NULL, 0, Z_FINISH) && replay_hand_off();
 		long file_size;
 
 		deflateEnd(&replay.stream);
-		replay_write_duration();
+		/* (the last of it written before the file is closed) */
+		replay_writer_wait();
+		written = written && !replay_writer.failed;
+		replay_writer.failed = FALSE;
+		replay.pending_size = 0;
 		file_size = ftell(replay.file);
 		written = fclose(replay.file) == 0 && written;
 		replay.file = NULL;
