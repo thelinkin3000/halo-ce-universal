@@ -1488,9 +1488,14 @@ int host_sdl_open_url(const char *url)
 	return 0;
 }
 
-/* (the Theater's EXPORT REPLAYS is the Android app's folder picker: the
+/* (the Theater's EXPORT and IMPORT are the Android app's pickers: the
 Switch's replays are on the card, port/linux/game/menu_functions.c) */
 void host_android_export_replays(const char *folder)
+{
+	(void)folder;
+}
+
+void host_android_import_replays(const char *folder)
 {
 	(void)folder;
 }

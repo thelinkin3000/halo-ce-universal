@@ -3580,8 +3580,9 @@ host or a client records (network_replay.c), a row each, the newest first,
 scrolling over more (as the Mods screen's rows): A plays the one chosen
 (network_replay_playback.c), and the panel says what it is. RECORD turns
 network.record_replays on or off (from the next game), DELETE deletes the
-one chosen at a second press, and EXPORT (Android) copies them to a folder
-the player chooses */
+one chosen at a second press, IMPORT (Android) copies replays the player
+chooses into the folder, and EXPORT (Android) copies them to a folder the
+player chooses */
 
 #define THEATER_TEXT_LENGTH 512
 /* the characters a line of the panel takes (its text box is the Mods
@@ -3668,8 +3669,11 @@ static void theater_refresh(void)
 
 #if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
 /* (the app's folder picker, which copies the folder's replays to the folder
-chosen: port/android/host/host_main.c, HaloActivity.exportReplays) */
+chosen: port/android/host/host_main.c, HaloActivity.exportReplays; and its
+file picker, which copies the replays chosen into the folder,
+HaloActivity.importReplays) */
 void host_android_export_replays(const char *folder);
+void host_android_import_replays(const char *folder);
 #endif
 
 /* the row (op_replay_<n>) a widget is or is in, else NULL */
@@ -3843,7 +3847,7 @@ static void theater_update(struct widget_instance *list)
 		"RECORD: OFF. Turn it on to record the network games you play, from the next one on.");
 	theater_append_wrapped(text, sizeof(text), " ");
 #if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
-	theater_append_wrapped(text, sizeof(text), "EXPORT copies them to a folder you choose.");
+	theater_append_wrapped(text, sizeof(text), "IMPORT adds replays you choose. EXPORT copies them all to a folder you choose.");
 #else
 #ifdef LINK_PAGE
 	if (network_replay_page_address()[0])
@@ -3939,6 +3943,22 @@ static boolean theater_export(void)
 
 	network_replay_folder(folder, sizeof(folder));
 	host_android_export_replays(folder);
+	return TRUE;
+#else
+	return FALSE;
+#endif
+}
+
+/* "port theater import" (A on IMPORT, Android's alone): the replays chosen
+are copied into the folder on the app's own thread, and the list finds them
+at its next refresh */
+static boolean theater_import(void)
+{
+#if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
+	char folder[THEATER_TEXT_LENGTH];
+
+	network_replay_folder(folder, sizeof(folder));
+	host_android_import_replays(folder);
 	return TRUE;
 #else
 	return FALSE;
@@ -10044,6 +10064,10 @@ boolean pc_menu_event_function_invoke(
 		else if (!strcmp(name, "port theater export"))
 		{
 			return theater_export();
+		}
+		else if (!strcmp(name, "port theater import"))
+		{
+			return theater_import();
 		}
 		else if (!strcmp(name, "controls screen init") || !strcmp(name, "controls screen defaults"))
 		{

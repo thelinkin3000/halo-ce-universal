@@ -80,7 +80,9 @@ It is read at a game's first tick, so a game is recorded whole or not at
 all: turned on during a game, it records from the next. The main menu's
 Theater has it too (RECORD REPLAYS), says how many replays there are and
 where, and on Android copies them out of the app's folder (EXPORT
-REPLAYS: the system's folder picker, `HaloActivity.exportReplays`).
+REPLAYS: the system's folder picker, `HaloActivity.exportReplays`) and
+others into it (IMPORT: the system's file picker,
+`HaloActivity.importReplays`).
 
 ### What is recorded
 
@@ -247,7 +249,7 @@ each, the newest first (its map, when and length, from its header, read
 once for each new file), scrolling over more; A plays the one chosen, and
 the panel says what it is, or why it cannot be played (a replay from
 before format 2, or of another network version). Its buttons are RECORD,
-DELETE (pressed twice), EXPORT (Android) and BACK. A recording shorter than
+DELETE (pressed twice), IMPORT and EXPORT (Android) and BACK. A recording shorter than
 15 seconds is deleted as it ends.
 `port/linux/game/network_replay_playback.c`:
 
@@ -429,7 +431,11 @@ client's replay of its game holds all of the players; an upstream host, or
 this one with it off, sends the usual.
 
 **Taking them off the console, and putting others on.** Android's
-EXPORT REPLAYS copies them through the system's folder picker. The Switch
+EXPORT REPLAYS copies them through the system's folder picker, and IMPORT
+copies the files chosen in the system's file picker into the folder, as the
+consoles' page takes an upload: each into `<name>.part`, kept only once it
+is whole and begins as a replay does, its name's other characters made `_`,
+and a name the folder has already left as it is. The Switch
 and the PS5 have no file manager another app can open, so while the
 Theater is up they serve a page on the local network
 (`port/linux/game/network_replay_page.c`, from port 8090; shown in the

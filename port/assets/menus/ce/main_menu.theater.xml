@@ -118,9 +118,10 @@
 	</widget>
 	<widget name="main_menu/theater/button_bar" type="column_list" width="640" height="28" flags="pass_unhandled_to_focused_child left_right_tabs_items">
 		<child widget="main_menu/theater/button_record" y="1" platform="desktop android web"/>
-		<child widget="main_menu/theater/button_delete" x="130" y="1" platform="desktop android web"/>
-		<child widget="main_menu/theater/button_export" x="260" y="1" platform="android"/>
-		<child widget="main_menu/theater/button_back" x="510" y="1" platform="desktop android web"/>
+		<child widget="main_menu/theater/button_delete" x="128" y="1" platform="desktop android web"/>
+		<child widget="main_menu/theater/button_import" x="256" y="1" platform="android"/>
+		<child widget="main_menu/theater/button_export" x="384" y="1" platform="android"/>
+		<child widget="main_menu/theater/button_back" x="512" y="1" platform="desktop android web"/>
 	</widget>
 	<widget name="main_menu/theater/button_record" type="text" width="128" height="24" bitmap="bitmaps/text_button_background" string_list="main_menu/theater/record_strings" string_index="0" font="ui\small_ui" color="#FFFFFFFF" align="center" text_y="2">
 		<on event="a" run="port theater record"/>
@@ -145,6 +146,11 @@
 	<widget name="main_menu/theater/theater_back_hint" type="text" controller="1" width="128" height="24" text="%b-button BACK" font="ui\small_ui" color="#FFFFFFFF" align="center" text_y="2" text_flags="no_focus_test">
 	</widget>
 	<widget name="main_menu/theater/theater_delete_hint" type="text" controller="1" width="200" height="24" text="%x-button DELETE" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/theater/button_import" type="text" width="128" height="24" bitmap="bitmaps/text_button_background" text="IMPORT" font="ui\small_ui" color="#FFFFFFFF" align="center" text_y="2">
+		<on event="a" run="port theater import"/>
+		<on event="start" run="port theater import"/>
+		<on event="left_mouse" run="mouse emit accept event"/>
 	</widget>
 	<widget name="main_menu/theater/button_export" type="text" width="128" height="24" bitmap="bitmaps/text_button_background" text="EXPORT" font="ui\small_ui" color="#FFFFFFFF" align="center" text_y="2">
 		<on event="a" run="port theater export"/>

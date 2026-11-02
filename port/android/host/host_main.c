@@ -372,26 +372,24 @@ void host_gesture_insets(int *insets)
 	}
 }
 
-/* ---------- the Theater's EXPORT REPLAYS */
+/* ---------- the Theater's EXPORT and IMPORT */
 
-/* asks the activity to copy the replays in folder to a folder the player
-chooses (HaloActivity.exportReplays: the system's folder picker, then the
-copy on a thread of its own), found on the activity's class as
-host_gesture_insets' method is */
-void host_android_export_replays(const char *folder)
+/* calls the activity's method (a String argument, the replays' folder),
+found on the activity's class as host_gesture_insets' method is */
+static void host_android_replays_call(const char *method_name, const char *folder)
 {
 	JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
 	jobject activity = (jobject)SDL_GetAndroidActivity();
 
 	if (!env || !activity || !folder)
 	{
-		host_logf(HOST_LOG_WARN, "export replays: no activity");
+		host_logf(HOST_LOG_WARN, "%s: no activity", method_name);
 		return;
 	}
 	{
 		jclass activity_class = (*env)->GetObjectClass(env, activity);
 		jmethodID method = activity_class ?
-			(*env)->GetMethodID(env, activity_class, "exportReplays", "(Ljava/lang/String;)V") : NULL;
+			(*env)->GetMethodID(env, activity_class, method_name, "(Ljava/lang/String;)V") : NULL;
 		jstring path = method ? (*env)->NewStringUTF(env, folder) : NULL;
 
 		if (path)
@@ -399,16 +397,32 @@ void host_android_export_replays(const char *folder)
 		if ((*env)->ExceptionCheck(env))
 		{
 			(*env)->ExceptionClear(env);
-			host_logf(HOST_LOG_WARN, "export replays: the activity's exportReplays failed");
+			host_logf(HOST_LOG_WARN, "%s: the activity's method failed", method_name);
 		}
 		else
-			host_logf(HOST_LOG_INFO, "export replays: %s", folder);
+			host_logf(HOST_LOG_INFO, "%s: %s", method_name, folder);
 		if (path)
 			(*env)->DeleteLocalRef(env, path);
 		if (activity_class)
 			(*env)->DeleteLocalRef(env, activity_class);
 	}
 	(*env)->DeleteLocalRef(env, activity);
+}
+
+/* asks the activity to copy the replays in folder to a folder the player
+chooses (HaloActivity.exportReplays: the system's folder picker, then the
+copy on a thread of its own) */
+void host_android_export_replays(const char *folder)
+{
+	host_android_replays_call("exportReplays", folder);
+}
+
+/* asks the activity to copy replays the player chooses into folder
+(HaloActivity.importReplays: the system's file picker, then the copy on a
+thread of its own) */
+void host_android_import_replays(const char *folder)
+{
+	host_android_replays_call("importReplays", folder);
 }
 
 /* the settings of [debug] that this file reads, from config.toml */

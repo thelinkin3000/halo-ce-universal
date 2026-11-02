@@ -143,6 +143,11 @@ folder (a path) to the folder chosen (HaloActivity.exportReplays); returns
 at once, the copy done on the app's own thread */
 void host_android_export_replays(const char *folder);
 
+/* the system's file picker, after which the app copies the replays chosen
+into folder (a path; HaloActivity.importReplays); returns at once, the copy
+done on the app's own thread */
+void host_android_import_replays(const char *folder);
+
 /* ---------- the on-screen touch controls (host_touch.c, android_imports.list) */
 
 /* the overlay's controller: the SDL axes (left x, y, right x, y, left

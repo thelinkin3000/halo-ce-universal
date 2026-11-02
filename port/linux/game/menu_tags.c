@@ -402,7 +402,8 @@ static char const *const port_function_names[] =
 	"port news init", "port news close", "port news up", "port news down", "port news page up",
 	"port news page down",
 	/* (the main menu's Theater: menu_functions.c) */
-	"port theater record", "port theater export", "port theater watch", "port theater delete",
+	"port theater record", "port theater export", "port theater import", "port theater watch",
+	"port theater delete",
 	/* (the server browser's buttons' shortcuts: menu_functions.c) */
 	"port browser refresh", "port browser filters", "port browser mode previous", "port browser mode next",
 	"port browser column previous", "port browser column next", "port browser sort decreasing",

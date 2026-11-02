@@ -3009,9 +3009,10 @@ def _mods() -> list:
 # newest first (its map and when, and its length), scrolling over more, A
 # playing the one chosen (network_replay_playback.c); on the right, in the
 # lobby's frame, what the one chosen is; and the buttons: RECORD (ON or OFF,
-# network.record_replays), DELETE (the one chosen, at a second press), EXPORT
-# (Android's: the app's folder picker, HaloActivity.exportReplays) and BACK
-# (menu_functions.c's "port theater" functions). The Switch and the PS5 have
+# network.record_replays), DELETE (the one chosen, at a second press), IMPORT
+# and EXPORT (Android's: the app's file and folder pickers,
+# HaloActivity.importReplays and exportReplays) and BACK (menu_functions.c's
+# "port theater" functions). The Switch and the PS5 have
 # fewer rows: under them a QR code of their replay page
 # (network_replay_page.c)
 
@@ -3086,10 +3087,13 @@ def _theater() -> list:
     lines += _widget(f"{base}/button_bar",
                      [("type", "column_list"), ("width", 640), ("height", 28),
                       ("flags", "pass_unhandled_to_focused_child left_right_tabs_items")],
+                     # (five buttons of 128 across the 640: Android's IMPORT
+                     # and EXPORT between DELETE and BACK)
                      [f'<child widget="{base}/button_record" y="1" platform="desktop android web"/>',
-                      f'<child widget="{base}/button_delete" x="130" y="1" platform="desktop android web"/>',
-                      f'<child widget="{base}/button_export" x="260" y="1" platform="android"/>',
-                      f'<child widget="{base}/button_back" x="510" y="1" platform="desktop android web"/>'])
+                      f'<child widget="{base}/button_delete" x="128" y="1" platform="desktop android web"/>',
+                      f'<child widget="{base}/button_import" x="256" y="1" platform="android"/>',
+                      f'<child widget="{base}/button_export" x="384" y="1" platform="android"/>',
+                      f'<child widget="{base}/button_back" x="512" y="1" platform="desktop android web"/>'])
     # (its words a string list's, OFF and ON, which "port theater update"
     # chooses between: a text widget's own words are its string list's again
     # each time it is drawn, so words set on it would not show)
@@ -3120,6 +3124,8 @@ def _theater() -> list:
                                                      ("font", "ui\\small_ui"), ("color", "#FFFFFFFF"),
                                                      ("text_y", 2),
                                                      ("text_flags", "no_focus_test")], [])
+    lines += _text_button(f"{base}/button_import", "IMPORT", ['<on event="a" run="port theater import"/>',
+                                                             '<on event="start" run="port theater import"/>'])
     lines += _text_button(f"{base}/button_export", "EXPORT", ['<on event="a" run="port theater export"/>',
                                                              '<on event="start" run="port theater export"/>'])
     lines += _text_button(f"{base}/button_back", "BACK", ['<on event="a" back="true"/>',

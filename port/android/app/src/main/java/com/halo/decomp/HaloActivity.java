@@ -11,6 +11,7 @@ import android.net.Uri;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.OpenableColumns;
 import android.provider.DocumentsContract;
 import android.view.Display;
 import android.view.View;
@@ -23,11 +24,14 @@ import android.widget.Toast;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import org.libsdl.app.SDLActivity;
@@ -47,12 +51,19 @@ public class HaloActivity extends SDLActivity {
     private volatile int[] gestureInsets = new int[] { 0, 0, 0, 0 };
     /** the on-screen touch controls, over SDL's surface */
     private TouchControls touchControls;
-    private static final int EXPORT_LAYOUT = 401, IMPORT_LAYOUT = 402, EXPORT_REPLAYS = 403;
+    private static final int EXPORT_LAYOUT = 401, IMPORT_LAYOUT = 402, EXPORT_REPLAYS = 403, IMPORT_REPLAYS = 404;
     private String pendingLayoutExport;
     /** the folder of the replays the Theater's EXPORT REPLAYS copies, while the folder picker is open */
     private String pendingReplaysFolder;
-    /** a replay's file name ends so (port/linux/game/network_replay.c) */
+    /** the folder the Theater's IMPORT copies replays into, while the file picker is open */
+    private String pendingImportFolder;
+    /** a replay's file name ends so, and the file begins so (port/linux/game/network_replay.c) */
     private static final String REPLAY_EXTENSION = ".ocreplay";
+    private static final byte[] REPLAY_MAGIC = "OCREPLAY".getBytes(StandardCharsets.US_ASCII);
+    /** the longest name the Theater lists (NETWORK_REPLAY_NAME_SIZE less its terminator), and the largest replay
+     * taken (network_replay_page.c's REPLAY_PAGE_MAXIMUM_UPLOAD) */
+    private static final int REPLAY_NAME_LENGTH = 95;
+    private static final long REPLAY_MAXIMUM_SIZE = 256L * 1024 * 1024;
 
     @Override
     protected String[] getLibraries() {
@@ -65,6 +76,7 @@ public class HaloActivity extends SDLActivity {
         if (savedInstanceState != null) {
             pendingLayoutExport = savedInstanceState.getString("pending-layout-export");
             pendingReplaysFolder = savedInstanceState.getString("pending-replays-folder");
+            pendingImportFolder = savedInstanceState.getString("pending-import-folder");
         }
         if (mLayout != null) {
             touchControls = new TouchControls(this);
@@ -112,6 +124,7 @@ public class HaloActivity extends SDLActivity {
         super.onSaveInstanceState(state);
         state.putString("pending-layout-export", pendingLayoutExport);
         state.putString("pending-replays-folder", pendingReplaysFolder);
+        state.putString("pending-import-folder", pendingImportFolder);
     }
 
     /**
@@ -189,8 +202,131 @@ public class HaloActivity extends SDLActivity {
         runOnUiThread(() -> Toast.makeText(this, text, Toast.LENGTH_LONG).show());
     }
 
+    /**
+     * The Theater's IMPORT (port/linux/game/menu_functions.c, through host_android_import_replays): the system's
+     * file picker, several files at once, then each one chosen copied into folder, where the Theater's list finds
+     * it. Called on the game's thread; no storage permission.
+     */
+    public void importReplays(String folder) {
+        runOnUiThread(() -> {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            // (a replay has no type of its own: the providers call it anything)
+            intent.setType("*/*");
+            intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+            pendingImportFolder = folder;
+            try {
+                startActivityForResult(intent, IMPORT_REPLAYS);
+            } catch (android.content.ActivityNotFoundException e) {
+                pendingImportFolder = null;
+                Toast.makeText(this, "This device has no file picker.", Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    /**
+     * the name a replay chosen is kept under: its own, with anything but letters, digits, '-', '_' and '.' made
+     * '_' (as the consoles' replay page takes them), ending .ocreplay, short enough for the Theater to list
+     */
+    private static String replayName(String chosen) {
+        String name = chosen != null ? chosen.replaceAll("[^A-Za-z0-9._-]", "_") : "";
+        if (name.endsWith(REPLAY_EXTENSION))
+            name = name.substring(0, name.length() - REPLAY_EXTENSION.length());
+        if (name.isEmpty())
+            name = "imported";
+        if (name.length() > REPLAY_NAME_LENGTH - REPLAY_EXTENSION.length())
+            name = name.substring(0, REPLAY_NAME_LENGTH - REPLAY_EXTENSION.length());
+        return name + REPLAY_EXTENSION;
+    }
+
+    /** the document's name as its provider shows it, else its path's last part */
+    private String documentName(Uri document) {
+        try (Cursor cursor = getContentResolver().query(document,
+                new String[] { OpenableColumns.DISPLAY_NAME }, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst() && cursor.getString(0) != null)
+                return cursor.getString(0);
+        } catch (Exception e) {
+            // (the path's, then)
+        }
+        return document.getLastPathSegment();
+    }
+
+    /**
+     * the documents chosen copied into folder, on a thread of their own; a Toast says how many. Each goes to
+     * <name>.part, which becomes the replay only once it is whole and begins as a replay does; a name the folder has
+     * already is left as it is.
+     */
+    private void copyReplaysIn(List<Uri> documents, String folder) {
+        File directory = new File(folder);
+        directory.mkdirs();
+        int copied = 0, skipped = 0, refused = 0;
+        String failed = null;
+        for (Uri document : documents) {
+            String name = replayName(documentName(document));
+            File replay = new File(directory, name);
+            File part = new File(directory, name + ".part");
+            if (replay.exists()) {
+                skipped++;
+                continue;
+            }
+            try (InputStream input = getContentResolver().openInputStream(document)) {
+                if (input == null)
+                    throw new IOException(name + " cannot be opened");
+                byte[] buffer = new byte[65536];
+                int first = 0, size;
+                while (first < REPLAY_MAGIC.length && (size = input.read(buffer, first, REPLAY_MAGIC.length - first)) != -1)
+                    first += size;
+                boolean isReplay = first == REPLAY_MAGIC.length;
+                for (int index = 0; isReplay && index < REPLAY_MAGIC.length; index++)
+                    isReplay = buffer[index] == REPLAY_MAGIC[index];
+                if (!isReplay) {
+                    refused++;
+                    continue;
+                }
+                long total = first;
+                try (OutputStream output = new FileOutputStream(part)) {
+                    output.write(buffer, 0, first);
+                    while ((size = input.read(buffer)) != -1) {
+                        total += size;
+                        if (total > REPLAY_MAXIMUM_SIZE)
+                            throw new IOException(name + " is too large");
+                        output.write(buffer, 0, size);
+                    }
+                }
+                if (!part.renameTo(replay))
+                    throw new IOException(name + " cannot be kept");
+                copied++;
+            } catch (Exception e) {
+                part.delete();
+                failed = e.getMessage();
+                break;
+            }
+        }
+        String text = failed != null ? "The import stopped: " + failed
+            : copied + (copied == 1 ? " replay imported" : " replays imported")
+                + (skipped > 0 ? " (" + skipped + " already there)" : "")
+                + (refused > 0 ? " (" + refused + (refused == 1 ? " is" : " are") + " not a replay)" : "") + ".";
+        runOnUiThread(() -> Toast.makeText(this, text, Toast.LENGTH_LONG).show());
+    }
+
     @Override
     protected void onActivityResult(int request, int result, Intent data) {
+        if (request == IMPORT_REPLAYS) {
+            String folder = pendingImportFolder;
+            pendingImportFolder = null;
+            if (result != RESULT_OK || data == null || folder == null)
+                return;
+            List<Uri> documents = new ArrayList<>();
+            if (data.getClipData() != null) {
+                for (int index = 0; index < data.getClipData().getItemCount(); index++)
+                    documents.add(data.getClipData().getItemAt(index).getUri());
+            } else if (data.getData() != null) {
+                documents.add(data.getData());
+            }
+            if (!documents.isEmpty())
+                new Thread(() -> copyReplaysIn(documents, folder), "halo-import-replays").start();
+            return;
+        }
         if (request == EXPORT_REPLAYS) {
             String folder = pendingReplaysFolder;
             pendingReplaysFolder = null;
