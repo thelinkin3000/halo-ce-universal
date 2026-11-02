@@ -37,6 +37,7 @@ void host_memory_report(const char *when);
 int host_texture_cache_get(uint64_t key, uint32_t buffer, uint32_t size);
 void host_texture_cache_put(uint64_t key, uint32_t buffer, uint32_t size);
 void host_texture_cache_clear(void);
+void host_texture_cache_prefetch(uint32_t items, uint32_t count);
 void host_texture_cache_report(void);
 /* puts back the clocks host_sdl2.c raised for the game */
 void host_restore_clocks(void);

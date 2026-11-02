@@ -76,7 +76,18 @@ a bitmap made is kept until the map goes, as anything may still hold it.
 int host_texture_cache_get(uint64_t key, uint32_t buffer, uint32_t size);
 void host_texture_cache_put(uint64_t key, uint32_t buffer, uint32_t size);
 void host_texture_cache_clear(void);
+/* (port/switch/guest/dk_commands.h's struct host_texture_prefetch, as the host reads it) */
+struct host_texture_prefetch
+{
+	uint64_t key;
+	uint32_t offset;
+	uint32_t size;
+	uint32_t path;
+	uint32_t reserved;
+};
+void host_texture_cache_prefetch(uint32_t items, uint32_t count);
 void memory_watch_prepare_write(void *address, unsigned long size);
+static void mod_bitmaps_prefetch(void);
 #endif
 
 /* the platform layer's (port/linux/src) */
@@ -1198,6 +1209,11 @@ long mod_bitmaps_update(
 				played_count, loaded_count, removed_count, refused_count);
 		}
 	}
+#ifdef HALO_SWITCH
+	/* (the map's played bitmaps read ahead: those already in the host's cache are skipped) */
+	if (played_count)
+		mod_bitmaps_prefetch();
+#endif
 
 	return played_count;
 }
@@ -1238,6 +1254,61 @@ boolean mod_bitmaps_contain(
 	return bitmap_of(bitmap) != NULL;
 }
 
+#ifdef HALO_SWITCH
+/* the host's cache's key of a bitmap's pixels: the file as the mods were last found, and where in it */
+static unsigned long long mod_bitmaps_cache_key(
+	struct mod_bitmap const *made,
+	unsigned long offset)
+{
+	return ((unsigned long long)(port_mods_scans() & 0x7FFF) << 48) ^
+		((unsigned long long)(made->file & 0xFFFF) << 32) ^ (unsigned long long)offset;
+}
+
+/* Every bitmap the map plays from a mod's file, read into the host's cache
+ahead of the game, on a thread of the host's: Halo reads a texture the first
+time a frame draws it, and a mod's read from the card in the middle of a
+frame took it past 33 ms, again and again in a match as new weapons,
+vehicles and effects came into view (port/switch/host/host_texture_cache.c) */
+static void mod_bitmaps_prefetch(
+	void)
+{
+	struct host_texture_prefetch *items;
+	long tag_index, count = 0, made_count = 0;
+
+	for (tag_index = 0; tag_index < mod_bitmaps_globals.override_count; tag_index++)
+	{
+		struct mod_bitmap const *made = mod_bitmaps_globals.overrides[tag_index].bitmap;
+
+		if (made)
+			count += made->group.bitmaps.count;
+	}
+	if (!count || !(items = malloc((size_t)count * sizeof(*items))))
+		return;
+	for (tag_index = 0; tag_index < mod_bitmaps_globals.override_count; tag_index++)
+	{
+		struct mod_bitmap const *made = mod_bitmaps_globals.overrides[tag_index].bitmap;
+		long index;
+
+		for (index = 0; made && index < made->group.bitmaps.count && made_count < count; index++)
+		{
+			struct bitmap_data const *bitmap = &made->bitmaps[index];
+			unsigned long offset = made->pixel_data_offset + (unsigned long)bitmap->pixels_offset;
+
+			if (bitmap->pixels_size <= 0)
+				continue;
+			items[made_count].key = mod_bitmaps_cache_key(made, offset);
+			items[made_count].offset = (uint32_t)offset;
+			items[made_count].size = (uint32_t)bitmap->pixels_size;
+			items[made_count].path = (uint32_t)(uintptr_t)made->path;
+			items[made_count].reserved = 0;
+			made_count++;
+		}
+	}
+	host_texture_cache_prefetch((uint32_t)(uintptr_t)items, (uint32_t)made_count);
+	free(items);
+}
+#endif
+
 /* a bitmap's pixels from its file: on the Switch, from the host's cache if
 it has them, and kept there once read (the texture cache takes a mod's
 bitmaps back from it, not from the card), by the file as the mods were last
@@ -1249,8 +1320,7 @@ static boolean mod_bitmaps_pixels_read(
 	unsigned long size)
 {
 #ifdef HALO_SWITCH
-	unsigned long long key = ((unsigned long long)(port_mods_scans() & 0x7FFF) << 48) ^
-		((unsigned long long)(made->file & 0xFFFF) << 32) ^ (unsigned long long)offset;
+	unsigned long long key = mod_bitmaps_cache_key(made, offset);
 
 	memory_watch_prepare_write(buffer, size);
 	if (host_texture_cache_get(key, (uint32_t)(uintptr_t)buffer, (uint32_t)size))

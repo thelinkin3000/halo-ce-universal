@@ -579,5 +579,19 @@ declares them too): by a key, 1 and the bytes copied if kept */
 int host_texture_cache_get(uint64_t key, uint32_t buffer, uint32_t size);
 void host_texture_cache_put(uint64_t key, uint32_t buffer, uint32_t size);
 void host_texture_cache_clear(void);
+/* a texture to read into the cache before the game asks for it (host_texture_cache_prefetch): its key, and where its
+bytes are in a file (path, a guest address of the path's string) */
+struct host_texture_prefetch
+{
+	uint64_t key;
+	uint32_t offset;
+	uint32_t size;
+	uint32_t path;
+	uint32_t reserved;
+};
+/* reads the count textures of items (a guest address) into the cache on a thread of the host's, the map's mod
+bitmaps, so that the game's texture cache finds them there rather than reading the card in the middle of a frame;
+returns at once (the list is copied). host_texture_cache_clear stops it */
+void host_texture_cache_prefetch(uint32_t items, uint32_t count);
 
 #endif

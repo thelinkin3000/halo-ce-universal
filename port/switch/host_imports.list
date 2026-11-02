@@ -33,6 +33,7 @@ host_dk_gpu_frame_us
 host_texture_cache_get
 host_texture_cache_put
 host_texture_cache_clear
+host_texture_cache_prefetch
 # the high-res HUD's sheets, decoded by the host (port/switch/host/host_dk_hud.c):
 # png and tag are guest addresses
 host_dk_hud_ready
