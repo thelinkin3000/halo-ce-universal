@@ -1676,6 +1676,11 @@ static const struct config_setting config_settings[] =
 		"Under the Vulkan renderer, draw the map's geometry (written once as it loads)\n"
 		"from a copy made the first time it is drawn, rather than copying it at each\n"
 		"draw. false copies it at each draw, as before." },
+	{ "debug.custom_edition_elsewhere", _config_boolean, "false", "HALO_CUSTOM_EDITION_ELSEWHERE", _environment_set_is_true,
+		PLATFORM_HOST,
+		"Put Custom Edition's tag cache somewhere other than 0x40440000 even where\n"
+		"that address is free, and move its maps' addresses there, as on a phone\n"
+		"whose Java runtime holds 0x40440000. For testing that move." },
 	{ "debug.vk_static_check", _config_boolean, "false", "HALO_VK_STATIC_CHECK", _environment_set_is_true, PLATFORM_VULKAN,
 		"Under the Vulkan renderer, compare the game's static geometry with what was\n"
 		"copied every 60 frames and log a range that changed (it would be drawn stale)." },

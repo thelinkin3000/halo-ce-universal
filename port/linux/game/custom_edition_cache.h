@@ -19,8 +19,16 @@ cache_file_formats.c.
 /* DamnationCE's 64-bit builds keep Xbox addresses apart from pointers; in
 this build's they are the same */
 #ifndef XBOX_POINTER
+#if defined(HALO_ANDROID) || defined(HALO_MOVABLE_WINDOW)
+/* (where the tags' addresses move: the tag cache, or the window, is not
+where the map was written for, halo_port_window.h) */
+#include "halo_port_window.h"
+#define xbox_pointer(address) PORT_WINDOW_REBASE(address)
+#define XBOX_POINTER(type, address) ((type *)PORT_WINDOW_REBASE(address))
+#else
 #define xbox_pointer(address) ((void *)(address))
 #define XBOX_POINTER(type, address) ((type *)(address))
+#endif
 #define XBOX_ADDRESS(pointer) ((void *)(pointer))
 #endif
 

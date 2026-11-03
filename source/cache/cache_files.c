@@ -1342,6 +1342,12 @@ long scenario_tags_load(
 			&cache_file_globals.header);
 		if (cache_file_globals.tag_header)
 		{
+#if defined(HALO_ANDROID) || defined(HALO_MOVABLE_WINDOW)
+			/* (its tag directory names its tags' data and names as it was
+			written for, 0x40440000: moved to where its tag cache is, as
+			this build's maps' are to the window's, halo_port_window.h) */
+			cache_file_rebase_tag_data(cache_file_globals.tag_header);
+#endif
 			global_tag_instances = cache_file_globals.tag_header->tag_instances;
 			global_tag_count = cache_file_globals.tag_header->tag_count;
 			tag_loaded_forget();

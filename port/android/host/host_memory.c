@@ -231,6 +231,8 @@ static int reserve(uint64_t address, uint64_t size)
 	return -1;
 }
 
+static int crosses_custom_edition(uint64_t address, uint64_t size);
+
 static struct pool *pool_new(void)
 {
 	/* above the image first: ART allocates its own low-4 GB memory from
@@ -255,6 +257,15 @@ static struct pool *pool_new(void)
 		}
 		if (!address)
 			return NULL;
+		/* (clear of Custom Edition's tag cache's own address, as the window
+		and the image are: where the tag cache cannot be had there and goes
+		elsewhere, an address in that range is always one its maps were
+		written with, to be moved, port/linux/include/halo_port_window.h) */
+		if (crosses_custom_edition(address, POOL_SIZE))
+		{
+			minimum = HALO_GUEST_CUSTOM_EDITION_END;
+			continue;
+		}
 		if (reserve(address, POOL_SIZE) == 0)
 		{
 			pool = calloc(1, sizeof(*pool));

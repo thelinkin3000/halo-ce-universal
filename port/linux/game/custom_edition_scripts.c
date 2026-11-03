@@ -261,7 +261,8 @@ static boolean scenario_scripts_convert(
 	/* (every string in the data ends with a 0, so the last byte is one, read
 	as the empty string) */
 	if (conversion.string_bytes && !conversion.strings[conversion.string_bytes - 1])
-		conversion.empty_string = (long)scenario->hs_string_constants.address + (long)conversion.string_bytes - 1;
+		conversion.empty_string = (long)XBOX_POINTER(char, scenario->hs_string_constants.address) +
+			(long)conversion.string_bytes - 1;
 	if (syntax_bytes < sizeof(*syntax) ||
 		syntax->size != sizeof(struct hs_syntax_node) ||
 		syntax->count < 0 ||

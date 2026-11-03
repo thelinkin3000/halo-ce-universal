@@ -1429,6 +1429,10 @@ the count changes (map_import_look), as each one comes */
 void platform_translate_path(char const *xbox_path, char *host_path, unsigned long host_path_size);
 /* (the app's file picker: port/android/host/host_main.c, HaloActivity.importMaps) */
 void host_android_import_maps(const char *folder);
+#if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
+#include <stdbool.h>
+bool SDL_ShowAndroidToast(const char *message, int duration, int gravity, int xoffset, int yoffset);
+#endif
 
 static struct
 {
@@ -1492,6 +1496,15 @@ static boolean map_import_start(void)
 #if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
 	char folder[1024];
 
+	/* (where Custom Edition maps cannot run, the lists show none: a map
+imported would never be seen, so the player is told why instead) */
+	if (!halo_custom_edition_tag_cache())
+	{
+		platform_log("maps: IMPORT refused: Custom Edition maps cannot run here (the log's first lines say why)");
+		SDL_ShowAndroidToast("Custom Edition maps can't run on this device, so imported maps wouldn't show. "
+			"debug.txt and halo.log say why.", 1, -1, 0, 0);
+		return TRUE;
+	}
 	platform_translate_path(CUSTOM_EDITION_MAP_DIRECTORY, folder, sizeof(folder));
 	map_import.importing = TRUE;
 	map_import.maps = map_import_count();

@@ -83,11 +83,35 @@ used, which can happen more than once for the same field) */
 #define PORT_WINDOW_MOVE(address) \
 	((void *)((byte *)(address) + PORT_WINDOW_SHIFT))
 
-/* an address the game data was written with, moved to where the window
-actually is. A value that is not one (already moved, or a count) is left
-alone, so this can be done where the value is used even if that happens more
-than once for the same field */
+/* Custom Edition's tag cache, which its maps' tags and structure BSPs are
+written for at 0x40440000 (port/linux/game/cache_file_formats.h): where that
+address is taken (on Android, the Java runtime's large object space covers it
+on some phones), port/linux/src/xbox_memory.c puts the tag cache elsewhere,
+and its addresses move by the distance, as the window's do. It is placed
+clear of both ranges the game data is linked for, and the hosts keep their
+own memory out of 0x40440000's, so a value already moved is never moved
+again */
+#if defined(HALO_ANDROID) || defined(HALO_MOVABLE_WINDOW)
+extern unsigned long platform_custom_edition_shift;
+#define PORT_CUSTOM_EDITION_SHIFT (platform_custom_edition_shift)
+#else
+#define PORT_CUSTOM_EDITION_SHIFT 0UL
+#endif
+#define PORT_CUSTOM_EDITION_LINKED_BASE 0x40440000UL
+#define PORT_CUSTOM_EDITION_LINKED_BYTES 0x01700000UL
+
+#define PORT_CUSTOM_EDITION_IS_LINKED(address) \
+	((unsigned long)(address) - PORT_CUSTOM_EDITION_LINKED_BASE < PORT_CUSTOM_EDITION_LINKED_BYTES)
+
+#define PORT_CUSTOM_EDITION_MOVE(address) \
+	((void *)((byte *)(address) + PORT_CUSTOM_EDITION_SHIFT))
+
+/* an address the game data was written with, moved to where the window (or
+Custom Edition's tag cache) actually is. A value that is not one (already
+moved, or a count) is left alone, so this can be done where the value is used
+even if that happens more than once for the same field */
 #define PORT_WINDOW_REBASE(address) \
-	(PORT_WINDOW_IS_LINKED(address) ? PORT_WINDOW_MOVE(address) : (void *)(address))
+	(PORT_WINDOW_IS_LINKED(address) ? PORT_WINDOW_MOVE(address) : \
+	 PORT_CUSTOM_EDITION_IS_LINKED(address) ? PORT_CUSTOM_EDITION_MOVE(address) : (void *)(address))
 
 #endif /* __HALO_PORT_WINDOW_H */

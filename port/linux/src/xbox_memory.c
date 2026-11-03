@@ -28,6 +28,7 @@ C heap there, do not run.
 #include "platform.h"
 #include "port_config.h"
 #include "../game/cache_file_formats.h"
+#include "halo_port_window.h"
 #ifdef HALO_GUEST
 /* the window the guests' host reserves (port/android/host/host_memory.c) */
 #include "halo_android_abi.h"
@@ -126,9 +127,57 @@ static void contiguous_arena_reserve(void)
 #endif
 }
 
+#if defined(HALO_ANDROID) || defined(HALO_MOVABLE_WINDOW)
+/* how far the Custom Edition tag cache is from 0x40440000, where its maps'
+tags are written for (halo_port_window.h); 0 where it is there */
+unsigned long platform_custom_edition_shift;
+
+/* whether [address, address + size) crosses [base, base + bytes) */
+static int ranges_cross(unsigned long address, unsigned long size, unsigned long base, unsigned long bytes)
+{
+	return address < base + bytes && address + size > base;
+}
+
+/* The tag cache somewhere else, where 0x40440000 is taken: a range of the
+guest's memory clear of both ranges the game data is linked for (0x40440000's
+own and the window's), so that an address already moved is never taken for
+one still to move (PORT_WINDOW_REBASE). NULL if there is none. */
+static void *custom_edition_tag_cache_elsewhere(void)
+{
+	void *refused[8];
+	int refused_count = 0;
+	void *found = NULL;
+	int index;
+
+	while (!found && refused_count < (int)(sizeof(refused) / sizeof(refused[0])))
+	{
+		void *result = mmap(NULL, CUSTOM_EDITION_TAG_CACHE_BYTES, PROT_READ | PROT_WRITE,
+			MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+		unsigned long address = (unsigned long)result;
+
+		if (result == MAP_FAILED)
+			break;
+		if (ranges_cross(address, CUSTOM_EDITION_TAG_CACHE_BYTES, PORT_CUSTOM_EDITION_LINKED_BASE,
+				PORT_CUSTOM_EDITION_LINKED_BYTES) ||
+			ranges_cross(address, CUSTOM_EDITION_TAG_CACHE_BYTES, 0x80000000UL, 0x08000000UL))
+		{
+			/* (kept until another is found, so that the next is elsewhere) */
+			refused[refused_count++] = result;
+			continue;
+		}
+		found = result;
+	}
+	for (index = 0; index < refused_count; index++)
+		munmap(refused[index], CUSTOM_EDITION_TAG_CACHE_BYTES);
+	return found;
+}
+#endif
+
 /* The Custom Edition tag cache, reserved before anything else can map into
 it (its pages are backed as they are touched); only when Custom Edition maps
-may run, as it takes 23 MB of the address space. */
+may run, as it takes 23 MB of the address space. Where its address is taken,
+it goes elsewhere on the ports whose tag addresses move
+(halo_port_window.h). */
 __attribute__((constructor(102)))
 static void custom_edition_tag_cache_reserve(void)
 {
@@ -144,6 +193,25 @@ static void custom_edition_tag_cache_reserve(void)
 #endif
 	if (!config_boolean("game.custom_edition"))
 		return;
+#if defined(HALO_ANDROID) || defined(HALO_MOVABLE_WINDOW)
+	/* (debug.custom_edition_elsewhere: as though the address were taken) */
+	if (config_boolean("debug.custom_edition_elsewhere"))
+	{
+		/* (0x40440000's range held, empty, as something else holds it where
+		the tag cache moves for real: nothing of the guest's lands there) */
+		mmap(wanted, CUSTOM_EDITION_TAG_CACHE_BYTES, PROT_NONE,
+			MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
+		result = custom_edition_tag_cache_elsewhere();
+		if (result)
+		{
+			custom_edition_tag_cache = result;
+			platform_custom_edition_shift = (unsigned long)result - CUSTOM_EDITION_TAG_CACHE_ADDRESS;
+			platform_log("the Custom Edition tag cache is at %p (debug.custom_edition_elsewhere), and its maps' "
+				"addresses are moved there", result);
+		}
+		return;
+	}
+#endif
 	result = mmap(wanted, CUSTOM_EDITION_TAG_CACHE_BYTES, PROT_READ | PROT_WRITE,
 		MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
 	if (result == wanted)
@@ -152,10 +220,26 @@ static void custom_edition_tag_cache_reserve(void)
 	}
 	else
 	{
+		int error_number = errno;
+
 		if (result != MAP_FAILED)
+		{
 			munmap(result, CUSTOM_EDITION_TAG_CACHE_BYTES);
+			error_number = EEXIST;
+		}
+#if defined(HALO_ANDROID) || defined(HALO_MOVABLE_WINDOW)
+		result = custom_edition_tag_cache_elsewhere();
+		if (result)
+		{
+			custom_edition_tag_cache = result;
+			platform_custom_edition_shift = (unsigned long)result - CUSTOM_EDITION_TAG_CACHE_ADDRESS;
+			platform_log("the Custom Edition tag cache's address %p is taken (%s): it is at %p, and its maps' addresses "
+				"are moved there", wanted, strerror(error_number), result);
+			return;
+		}
+#endif
 		platform_log("cannot reserve the Custom Edition tag cache at %p (%s): Custom Edition maps cannot run",
-			wanted, strerror(errno));
+			wanted, strerror(error_number));
 	}
 }
 

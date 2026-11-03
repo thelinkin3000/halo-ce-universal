@@ -104,8 +104,8 @@ addresses are where the tags were linked, not where they were read. The
 validator is what follows every one of them, so it moves each in place as it
 reads it, before checking or following it: the tags are then this process's
 (the game's accessors, TAG_BLOCK_ADDRESS and the rest, leave a moved address
-as it is). A Custom Edition map's addresses lie outside the window and are
-left alone. */
+as it is). A Custom Edition map's move too where its tag cache is not at
+0x40440000 (PORT_WINDOW_REBASE), and are otherwise left alone. */
 #if defined(HALO_ANDROID) || defined(HALO_MOVABLE_WINDOW)
 #define VALIDATE_MOVE(pointer) ((pointer) = PORT_WINDOW_REBASE(pointer))
 #else
@@ -1650,6 +1650,9 @@ boolean tag_validate_custom_edition_tags(
 		tag_validate_refuse(&validation, "cannot be checked: a tag schema is wrong");
 		return FALSE;
 	}
+	/* (where the tag cache is not at 0x40440000, its addresses move as the
+	window's do: halo_port_window.h) */
+	VALIDATE_MOVE(header->instances);
 	if (tag_cache_size > TAG_VALIDATE_MAXIMUM_TAG_CACHE_SIZE ||
 		loaded_size < (long)sizeof(*header) || (unsigned long)loaded_size > tag_cache_size ||
 		header->signature != TAG_HEADER_SIGNATURE ||

@@ -1157,12 +1157,37 @@ static enum cache_file_status load_fail(
 
 /* the offset in the tag cache of the runtime address `address`, when
 `size` bytes there lie within the bytes in use */
+#if defined(HALO_ANDROID) || defined(HALO_MOVABLE_WINDOW)
+/* how far the tag cache is from CUSTOM_EDITION_TAG_CACHE_ADDRESS
+(port/linux/include/halo_port_window.h: port/linux/src/xbox_memory.c) */
+extern unsigned long platform_custom_edition_shift;
+#endif
+
+/* an address in the tag cache as its map was written for: the game moves
+the tag directory's (cache_files.c) and the structure BSPs' to where the tag
+cache is, once the map has loaded, and the walks below take either */
+static uint32_t tag_cache_written_address(
+	uint32_t address)
+{
+#if defined(HALO_ANDROID) || defined(HALO_MOVABLE_WINDOW)
+	uint32_t shift = (uint32_t)platform_custom_edition_shift;
+
+	if (shift && address - (CUSTOM_EDITION_TAG_CACHE_ADDRESS + shift) < CUSTOM_EDITION_TAG_CACHE_BYTES)
+	{
+		return address - shift;
+	}
+#endif
+
+	return address;
+}
+
 static int tag_cache_offset(
 	struct load_state const *state,
 	uint32_t address,
 	uint32_t size,
 	uint32_t *offset)
 {
+	address = tag_cache_written_address(address);
 	if (address < CUSTOM_EDITION_TAG_CACHE_ADDRESS ||
 		!range_fits(address - CUSTOM_EDITION_TAG_CACHE_ADDRESS, size, state->used_bytes))
 	{
@@ -1731,8 +1756,10 @@ static int loaded_block_get(
 	int32_t *count,
 	uint32_t *offset)
 {
-	uint32_t block_address = read_u32(block + TAG_BLOCK_ADDRESS_OFFSET);
+	/* (either as the map was written for or moved: tag_cache_written_address) */
+	uint32_t block_address = tag_cache_written_address(read_u32(block + TAG_BLOCK_ADDRESS_OFFSET));
 
+	address = tag_cache_written_address(address);
 	*count = read_s32(block + TAG_BLOCK_COUNT_OFFSET);
 	*offset = block_address - address;
 
