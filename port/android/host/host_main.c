@@ -375,6 +375,18 @@ void host_gesture_insets(int *insets)
 /* ---------- the Theater's EXPORT and IMPORT, the Mods screen's IMPORT and Video
 Setup's IMPORT DRIVER */
 
+/* HaloActivity.nativeLog: how an import or export went, into the log (logcat and halo.log) as well as its Toast */
+JNIEXPORT void JNICALL Java_com_halo_decomp_HaloActivity_nativeLog(JNIEnv *env, jclass cls, jstring text)
+{
+	const char *line = text ? (*env)->GetStringUTFChars(env, text, NULL) : NULL;
+
+	(void)cls;
+	if (!line)
+		return;
+	host_log(HOST_LOG_INFO, line);
+	(*env)->ReleaseStringUTFChars(env, text, line);
+}
+
 /* calls the activity's method (a String argument, the replays' or the
 mods' folder), found on the activity's class as host_gesture_insets' method
 is */

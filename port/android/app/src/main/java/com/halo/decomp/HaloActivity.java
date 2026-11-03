@@ -96,6 +96,19 @@ public class HaloActivity extends SDLActivity {
     private static final int REPLAY_NAME_LENGTH = 95;
     private static final long REPLAY_MAXIMUM_SIZE = 256L * 1024 * 1024;
 
+    /** a line into the game's log: logcat and halo.log (host_main.c) */
+    private static native void nativeLog(String line);
+
+    /** how an import or export went: in a Toast, and in the log, where a report sent in shows it */
+    private void report(String what, String text) {
+        try {
+            nativeLog(what + ": " + text);
+        } catch (UnsatisfiedLinkError e) {
+            // (the game's library not loaded: the Toast alone)
+        }
+        runOnUiThread(() -> Toast.makeText(this, text, Toast.LENGTH_LONG).show());
+    }
+
     @Override
     protected String[] getLibraries() {
         return new String[] { "SDL3", "main" };
@@ -236,7 +249,7 @@ public class HaloActivity extends SDLActivity {
         String text = failed != null ? "The export stopped: " + failed
             : copied + (copied == 1 ? " replay exported" : " replays exported")
                 + (skipped > 0 ? " (" + skipped + " already there)" : "") + ".";
-        runOnUiThread(() -> Toast.makeText(this, text, Toast.LENGTH_LONG).show());
+        report("export replays", text);
     }
 
     /**
@@ -343,7 +356,7 @@ public class HaloActivity extends SDLActivity {
             : copied + (copied == 1 ? " replay imported" : " replays imported")
                 + (skipped > 0 ? " (" + skipped + " already there)" : "")
                 + (refused > 0 ? " (" + refused + (refused == 1 ? " is" : " are") + " not a replay)" : "") + ".";
-        runOnUiThread(() -> Toast.makeText(this, text, Toast.LENGTH_LONG).show());
+        report("import replays", text);
     }
 
     /**
@@ -477,7 +490,7 @@ public class HaloActivity extends SDLActivity {
             : copied + (copied == 1 ? " mod imported" : " mods imported")
                 + (skipped > 0 ? " (" + skipped + " already there: delete " + (skipped == 1 ? "it" : "them")
                     + " first to import again)" : "") + ".";
-        runOnUiThread(() -> Toast.makeText(this, text, Toast.LENGTH_LONG).show());
+        report("import mods", text);
     }
 
     /**
@@ -599,7 +612,7 @@ public class HaloActivity extends SDLActivity {
                 + ". Open Video Setup again and choose it as VULKAN DRIVER. ")
             + (skipped > 0 ? skipped + (skipped == 1 ? " archive was" : " archives were") + " already there. " : "")
             + (failed != null ? "The import stopped: " + failed : copied.isEmpty() && skipped == 0 ? "Nothing imported." : "");
-        runOnUiThread(() -> Toast.makeText(this, text.trim(), Toast.LENGTH_LONG).show());
+        report("import driver", text.trim());
     }
 
     /**
@@ -859,7 +872,7 @@ public class HaloActivity extends SDLActivity {
             + (outcome.failed.isEmpty() ? "" : "Not imported: " + String.join("; ", outcome.failed) + ".")
             + (outcome.copied.isEmpty() && outcome.skipped.isEmpty() && outcome.failed.isEmpty()
                 ? "Nothing imported." : "");
-        runOnUiThread(() -> Toast.makeText(this, text.trim(), Toast.LENGTH_LONG).show());
+        report("import maps", text.trim());
     }
 
     /** the documents a picker of several files chose */
