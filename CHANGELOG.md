@@ -1,5 +1,18 @@
 # Changelog
 
+## Build 134: Vulkan runs faster, and long replays play on Switch!
+
+- Custom Edition maps: on phones where Android already uses the memory Custom Edition maps are made for (a Galaxy Z Fold, for one), the maps now load somewhere else and play, instead of never showing up in the map lists. Where they can't run at all, IMPORT says so instead of importing maps you would never see. (thelinkin3000)
+- Vulkan: the renderer now records and presents its frames on its own thread, so the game's thread no longer waits on the graphics driver. A frame's work goes to the GPU before the game waits for a screen image, so the GPU starts sooner. (thelinkin3000)
+- Vulkan: a map's walls and floors are copied to the GPU once when the map loads, instead of being sent again every frame. Small effects (HUD, text, particles) send only what changed. This takes a large share of the CPU's per-frame work off. (thelinkin3000)
+- Vulkan: the GPU waits less between drawing a picture and reading it back, and the finished picture is shown with a draw instead of a copy, which is cheaper on phone GPUs. (thelinkin3000)
+- Android: the on-screen touch controls are redrawn only when something on them changes. Before, they were redrawn every frame, so the game ran faster with them hidden. (thelinkin3000)
+- Maps: on Android, IMPORT on the level lists copies .map files, and the maps inside .zip files, into custom_maps. (thelinkin3000)
+- Theater: long replays play on every platform. A 22-minute match's replay (46 MB, 152 MB unpacked) used to fail with "The replay cannot be read." It's now kept in the app's own memory instead of the game's. (thelinkin3000)
+- Switch: a map's mod textures are read from the SD card ahead of time, so the game no longer pauses to read each one the first time it shows up. In a 48-bot match the slowest 1% of frames went from 19 to 32 fps. (thelinkin3000)
+- Switch: a frame's work goes to the GPU before the game waits for a screen image, as on Vulkan. Looking up cached data now takes the game's thread less time. (thelinkin3000)
+- Benchmark: `debug.benchmark` accepts `replay:<file>:<seconds>` to measure a replay as it plays, and `debug.benchmark_manual` lets you play the benchmark match yourself. (thelinkin3000)
+
 ## Build 133: Vulkan runs faster, and long replays play on Switch!
 
 - Vulkan: the renderer now records and presents its frames on its own thread, so the game's thread no longer waits on the graphics driver. A frame's work goes to the GPU before the game waits for a screen image, so the GPU starts sooner. (thelinkin3000)
