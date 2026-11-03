@@ -222,17 +222,20 @@ static boolean maps_folder_has(
 	return file_path_exists(path);
 }
 
-/* <folder>\<subfolder>\<name><extension>, the first subfolder that has it.
-One level only, the same order the menus scan (custom_edition_maps.c). */
+/* <folder>\<subfolder>\<name><extension>, the first subfolder that has it
+(of a map version's hash, if `version` is not 0: map_share.h). One level
+only, the same order the menus scan (custom_edition_maps.c). */
 static boolean maps_subfolder_has(
 	char const *folder,
 	char const *name,
 	char const *extension,
+	unsigned long version,
 	char *path)
 {
 	char pattern[MAP_PATH_SIZE];
 	WIN32_FIND_DATAA data;
 	HANDLE find;
+	unsigned long found_version;
 
 	if (folder == maps_folder(1) && !custom_edition_install_present())
 		return FALSE;
@@ -253,7 +256,8 @@ static boolean maps_subfolder_has(
 		if (strlen(folder) + strlen(data.cFileName) + 1 + strlen(name) + strlen(extension) >= MAP_PATH_SIZE)
 			continue;
 		sprintf(nested, "%s%s\\", folder, data.cFileName);
-		if (maps_folder_has(nested, name, extension, path))
+		if (maps_folder_has(nested, name, extension, path) &&
+			(!version || (map_share_map_version(path, &found_version) && found_version == version)))
 		{
 			CloseHandle(find);
 			return TRUE;
@@ -324,10 +328,13 @@ static boolean custom_edition_map_named(
 	char hashed[MAP_PATH_SIZE];
 	short folder;
 
+	/* (the copy of the name a player chose, wherever it is: map_share.h) */
+	if (map_share_map_chosen(map_name, path))
+		return TRUE;
 	for (folder = 0; folder < NUMBER_OF_MAPS_FOLDERS; folder++)
 	{
 		if (maps_folder_has(maps_folder(folder), name, MAP_FILE_EXTENSION, path) ||
-			maps_subfolder_has(maps_folder(folder), name, MAP_FILE_EXTENSION, path))
+			maps_subfolder_has(maps_folder(folder), name, MAP_FILE_EXTENSION, 0, path))
 		{
 			return TRUE;
 		}
@@ -955,6 +962,11 @@ boolean custom_edition_map_find_version(
 	boolean found = FALSE;
 	short folder;
 
+	/* (among the hashes kept, every copy's: map_share_files.c) */
+	if (map_share_map_of_version(level_name, version, path))
+		return TRUE;
+	/* (else looked for, each copy of the name hashed until one is that
+	version: a copy the lists have not hashed yet) */
 	for (folder = 0; folder < NUMBER_OF_MAPS_FOLDERS; folder++)
 	{
 		if (maps_folder_has(maps_folder(folder), name, MAP_FILE_EXTENSION, path) &&
@@ -962,11 +974,8 @@ boolean custom_edition_map_find_version(
 		{
 			return TRUE;
 		}
-		if (maps_subfolder_has(maps_folder(folder), name, MAP_FILE_EXTENSION, path) &&
-			map_share_map_version(path, &found_version) && found_version == version)
-		{
+		if (maps_subfolder_has(maps_folder(folder), name, MAP_FILE_EXTENSION, version, path))
 			return TRUE;
-		}
 	}
 	/* (custom_maps' other versions of the name: the one whose name ends in
 	the version's digits, if its hash is that) */

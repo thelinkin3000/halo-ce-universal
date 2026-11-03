@@ -125,6 +125,25 @@ void map_share_map_listed(
 void map_share_maps_listing_end(
 	void);
 
+/* The file of the map a level name names (its folder left out: <name>.map,
+or <name>_<digits>.map) whose hash is of `version`, among the hashes kept,
+in any maps folder or subfolder; FALSE if none is known (one not hashed yet
+is looked for by the caller, custom_edition_cache.c). */
+boolean map_share_map_of_version(
+	char const *level_name,
+	unsigned long version,
+	char *path);
+/* The copy of a map a player chose (in the menus, or a replay's), by its
+hash: the loader takes the file of that name with that hash
+(map_share_map_chosen) over the first of the name it finds, until another
+is chosen; a NULL hash (or level name) chooses none. */
+void map_share_map_choose(
+	char const *level_name,
+	byte const *hash);
+boolean map_share_map_chosen(
+	char const *level_name,
+	char *path);
+
 /* ---------- prototypes/MAP_SHARE.C */
 
 /* A client joining a network game on the level `level_name` (with the

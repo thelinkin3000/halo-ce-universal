@@ -9,7 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from harness import CHECK_FAILED, build, constant, function, mutated, read, run  # noqa: E402
 
-CASES = ["table", "lines", "bad-lines"]
+CASES = ["table", "lines", "bad-lines", "named"]
 
 # a fault in map_share_files.c, the function it is in, and the case that must catch it
 NEGATIVE_CONTROLS = {
@@ -23,6 +23,11 @@ NEGATIVE_CONTROLS = {
     "time-halves-swapped": (("(unsigned long)(entry->time >> 32),\n\t\t(unsigned long)(entry->time & 0xFFFFFFFFUL)",
                              "(unsigned long)(entry->time & 0xFFFFFFFFUL),\n\t\t(unsigned long)(entry->time >> 32)"),
                             "map_hash_line_write", "lines"),
+    "any-name-a-copy": (("if (length == name_length && !_strnicmp(base, name, name_length))",
+                         "if (!_strnicmp(base, name, name_length))"), "map_hash_named", "named"),
+    "versions-not-copies": (("return map_share_name_hashed(base) && ", "return 0 && "), "map_hash_named", "named"),
+    "folder-in-the-name": (("if (*character == '\\\\' || *character == '/')", "if (*character == '/')"),
+                           "map_hash_named", "named"),
     "nibbles-swapped": (("digits[index * 2] = hex[entry->hash[index] >> 4];",
                          "digits[index * 2] = hex[entry->hash[index] & 15];"), "map_hash_line_write", "lines"),
 }
@@ -44,13 +49,13 @@ def generated(fault=None, faulty_function=None):
     header = read("port/linux/game/map_share.h")
     source = read("port/linux/game/map_share_files.c")
     config = ""
-    for name in ("MAP_SHARE_PATH_SIZE", "MAP_SHARE_HASH_BYTES"):
+    for name in ("MAP_SHARE_PATH_SIZE", "MAP_SHARE_HASH_BYTES", "MAP_SHARE_NAME_DIGITS"):
         config += f"#define {name} {constant(header, name)}\n"
     config += f"#define MAP_HASHES_FIRST_ROOM {constant(source, 'MAP_HASHES_FIRST_ROOM')}\n"
     start = source.index("struct map_hash\n{")
     text = source[start:source.index("};", start) + 2] + "\n" + GLOBALS
     for name in ("map_hash_key", "map_hashes_slot", "map_hash_find", "map_hash_add", "hex_value", "map_hash_line_read",
-                 "map_hash_line_write"):
+                 "map_hash_line_write", "hex_digit", "map_share_name_hashed", "map_share_name_base_length", "map_hash_named"):
         code = function(source, name)
         if fault and name == faulty_function:
             code = mutated(code, *fault)

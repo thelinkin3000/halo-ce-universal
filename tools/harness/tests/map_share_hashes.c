@@ -19,6 +19,8 @@ and the code (under_test.inc).
 #define csstrcasecmp(first, second) strcasecmp(first, second)
 #define csmemset(destination, value, size) memset(destination, value, size)
 #define csmemcmp(first, second, size) memcmp(first, second, size)
+#define csmemcpy(destination, source, size) memcpy(destination, source, size)
+#define _strnicmp(first, second, count) strncasecmp(first, second, count)
 
 #include "under_test.inc"
 
@@ -156,6 +158,27 @@ int main(int argc, char **argv)
 		memset(line + strlen(line), 'a', MAP_SHARE_PATH_SIZE);
 		line[strlen(hex) + 20 + MAP_SHARE_PATH_SIZE] = 0;
 		CHECK(!map_hash_line_read(line, hash, &size, &time, path), "a path too long to keep was read");
+		return 0;
+	}
+
+	/* a file of a map's name, wherever it is: <name>.map, or another
+	version's <name>_<digits>.map */
+	CASE("named")
+	{
+		CHECK(map_hash_named("d:\\custom_maps\\foo.map", "foo"), "foo.map is not foo");
+		CHECK(map_hash_named("d:\\custom_maps\\pack A\\FOO.MAP", "foo"), "a subfolder's FOO.MAP is not foo");
+		CHECK(map_hash_named("h:\\maps\\foo_0e2b3ee4.map", "foo"), "another version's foo_0e2b3ee4.map is not foo");
+		CHECK(map_hash_named("d:/custom_maps/foo.map", "foo"), "a path of / is not foo");
+		CHECK(!map_hash_named("d:\\custom_maps\\foobar.map", "foo"), "foobar.map was taken for foo");
+		CHECK(!map_hash_named("d:\\custom_maps\\fo.map", "foo"), "fo.map was taken for foo");
+		CHECK(!map_hash_named("d:\\custom_maps\\foo_bar.map", "foo"), "foo_bar.map was taken for foo");
+		CHECK(!map_hash_named("d:\\foo\\bar.map", "foo"), "a folder foo was taken for the map");
+		CHECK(!map_hash_named("d:\\custom_maps\\foo.txt", "foo"), "foo.txt was taken for a map");
+		CHECK(!map_hash_named("d:\\custom_maps\\.map", "foo"), ".map was taken for foo");
+		CHECK(map_hash_named("d:\\custom_maps\\foo_0e2b3ee4.map", "foo_0e2b3ee4"),
+			"a second version is not of its own name, as the lists name it");
+		CHECK(!map_hash_named("d:\\custom_maps\\foo.map", "foo_0e2b3ee4"),
+			"foo.map was taken for the version foo_0e2b3ee4");
 		return 0;
 	}
 
