@@ -1124,12 +1124,22 @@ folder icons (menu_functions_text_box_drawn); and when */
 static struct
 {
 	struct widget_instance *texts[MAP_KIND_ROWS];
+	/* their icons' frames (_map_row_icon_*) */
+	short frames[MAP_KIND_ROWS];
 	short count;
 	unsigned long updated_at;
 } map_folder_rows;
 
-/* the map lists' folder icon (tools/ce_menus.py: Lucide's, white), drawn
-in its row's text's colour, left of the folder's name */
+/* a map list row's icon: the frame of map_list/folder it draws */
+enum
+{
+	_map_row_icon_folder,
+	_map_row_icon_up,
+};
+
+/* the map lists' folder icons (tools/ce_menus.py: Lucide's, white; a
+folder's, and its way back up's), drawn in its row's text's colour, left of
+its name */
 #define MAP_FOLDER_ICON_BITMAP "pc\\map_list\\folder"
 /* (the folder's name after this, room for the icon left of it as the row
 centres it) */
@@ -1138,10 +1148,10 @@ centres it) */
 
 /* the rows after the chooser: count entries from *first's, scrolled on at
 their ends; the entry focused, NONE when the chooser or the buttons have the
-focus. entry_folder (NULL: none is) says which entries are folders of maps,
-drawn with the folder icon. */
+focus. entry_icon (NULL: none has one) says which entries are drawn with
+an icon, and which (_map_row_icon_*, NONE for none). */
 static short map_kind_rows_update(struct widget_instance *list, short *first, short count,
-	void (*entry_text)(short entry, wchar_t *text), boolean (*entry_folder)(short entry))
+	void (*entry_text)(short entry, wchar_t *text), short (*entry_icon)(short entry))
 {
 	short shown = (short)MIN(count, MAP_KIND_ROWS);
 	short row = focused_row(list), index = 0;
@@ -1175,10 +1185,12 @@ static short map_kind_rows_update(struct widget_instance *list, short *first, sh
 
 			entry_text((short)(*first + index - 1), text);
 			text_set(text_box, text);
-			if (text_box && entry_folder && entry_folder((short)(*first + index - 1)) &&
-				map_folder_rows.count < MAP_KIND_ROWS)
+			short icon = entry_icon ? entry_icon((short)(*first + index - 1)) : NONE;
+
+			if (text_box && icon != NONE && map_folder_rows.count < MAP_KIND_ROWS)
 			{
-				map_folder_rows.texts[map_folder_rows.count++] = text_box;
+				map_folder_rows.texts[map_folder_rows.count] = text_box;
+				map_folder_rows.frames[map_folder_rows.count++] = icon;
 			}
 		}
 		visible_set(named(child, "list_item_arrows", 0), child == list->focused_child);
@@ -1215,6 +1227,8 @@ folder's rows are the maps in it. Rebuilt when the kind or folder changes. */
 struct map_browse_entry
 {
 	boolean folder;
+	/* a folder's first row: back up to the folders (map_browse_up) */
+	boolean up;
 	/* the map's index in custom_edition_maps_count's list; a folder's is
 	one map in that folder, so its name can be read */
 	short flat;
@@ -1232,10 +1246,18 @@ static void map_browse_forget(void)
 	map_browse_valid = FALSE;
 }
 
+/* a folder's row back up to the folders */
+#define MAP_BROWSE_UP_TEXT L"Back"
+
 static void map_browse_entry_text(boolean campaign, struct map_browse_entry const *entry, wchar_t *text)
 {
 	short index;
 
+	if (entry->up)
+	{
+		ustrcpy(text, MAP_BROWSE_UP_TEXT);
+		return;
+	}
 	if (entry->folder)
 	{
 		char const *name = custom_edition_maps_category(campaign, entry->flat);
@@ -1283,6 +1305,11 @@ static void map_browse_build(boolean campaign, char const *category)
 	count = 0;
 	if (open[0])
 	{
+		/* (first, the way back up) */
+		map_browse_entries[count].folder = FALSE;
+		map_browse_entries[count].up = TRUE;
+		map_browse_entries[count].flat = NONE;
+		count++;
 		for (index = 0; index < total && count < CUSTOM_EDITION_MAPS_MAXIMUM; index++)
 		{
 			char const *map_category = custom_edition_maps_category(campaign, index);
@@ -1290,6 +1317,7 @@ static void map_browse_build(boolean campaign, char const *category)
 			if (map_category && !csstrcasecmp(map_category, open))
 			{
 				map_browse_entries[count].folder = FALSE;
+				map_browse_entries[count].up = FALSE;
 				map_browse_entries[count].flat = index;
 				count++;
 			}
@@ -1305,6 +1333,7 @@ static void map_browse_build(boolean campaign, char const *category)
 			if (!map_category || !map_category[0])
 			{
 				map_browse_entries[count].folder = FALSE;
+				map_browse_entries[count].up = FALSE;
 				map_browse_entries[count].flat = index;
 				count++;
 				continue;
@@ -1322,6 +1351,7 @@ static void map_browse_build(boolean campaign, char const *category)
 			if (have == count)
 			{
 				map_browse_entries[count].folder = TRUE;
+				map_browse_entries[count].up = FALSE;
 				map_browse_entries[count].flat = index;
 				count++;
 			}
@@ -1349,12 +1379,32 @@ static boolean map_browse_folder(boolean campaign, char const *category, short e
 	return map_browse_entries[entry].folder;
 }
 
-/* the map's index, or NONE when the row is a folder or past the list */
+/* whether the row is a folder's way back up to the folders */
+static boolean map_browse_up(boolean campaign, char const *category, short entry)
+{
+	map_browse_build(campaign, category);
+	if (entry < 0 || entry >= map_browse_count_cache)
+		return FALSE;
+
+	return map_browse_entries[entry].up;
+}
+
+/* the first map's row in a folder (after the way back up), or the top's */
+static short map_browse_first_map(char const *category)
+{
+	return category && category[0] ? 1 : 0;
+}
+
+/* the map's index, or NONE when the row is a folder, the way back up or
+past the list */
 static short map_browse_flat(boolean campaign, char const *category, short entry)
 {
 	map_browse_build(campaign, category);
-	if (entry < 0 || entry >= map_browse_count_cache || map_browse_entries[entry].folder)
+	if (entry < 0 || entry >= map_browse_count_cache || map_browse_entries[entry].folder ||
+		map_browse_entries[entry].up)
+	{
 		return NONE;
+	}
 
 	return map_browse_entries[entry].flat;
 }
@@ -1399,7 +1449,7 @@ static short map_browse_find(boolean campaign, char const *category, short flat)
 	map_browse_build(campaign, category);
 	for (entry = 0; entry < map_browse_count_cache; entry++)
 	{
-		if (!map_browse_entries[entry].folder && map_browse_entries[entry].flat == flat)
+		if (!map_browse_entries[entry].folder && !map_browse_entries[entry].up && map_browse_entries[entry].flat == flat)
 			return entry;
 	}
 
@@ -1418,7 +1468,7 @@ static void map_browse_text(boolean campaign, char const *category, short entry,
 		text[0] = 0;
 		return;
 	}
-	if (map_browse_entries[entry].folder)
+	if (map_browse_entries[entry].folder || map_browse_entries[entry].up)
 	{
 		lead = (short)(sizeof(MAP_FOLDER_TEXT_LEAD) / sizeof(wchar_t) - 1);
 		ustrcpy(text, MAP_FOLDER_TEXT_LEAD);
@@ -1679,9 +1729,16 @@ static void level_list_custom_text(short entry, wchar_t *text)
 	map_browse_text(level_list.kind == MAP_KIND_CUSTOM_SINGLEPLAYER, level_list.category, entry, text);
 }
 
-static boolean level_list_custom_folder(short entry)
+static short map_browse_icon(boolean campaign, char const *category, short entry)
 {
-	return map_browse_folder(level_list.kind == MAP_KIND_CUSTOM_SINGLEPLAYER, level_list.category, entry);
+	if (map_browse_up(campaign, category, entry))
+		return _map_row_icon_up;
+	return map_browse_folder(campaign, category, entry) ? _map_row_icon_folder : NONE;
+}
+
+static short level_list_custom_icon(short entry)
+{
+	return map_browse_icon(level_list.kind == MAP_KIND_CUSTOM_SINGLEPLAYER, level_list.category, entry);
 }
 
 /* choosing a folder lists its maps; B (level_folder_back) returns */
@@ -1695,9 +1752,11 @@ static void level_folder_open(struct widget_instance *list, short entry)
 	csstrncpy(level_list.category, name, sizeof(level_list.category) - 1);
 	level_list.category[sizeof(level_list.category) - 1] = 0;
 	map_browse_forget();
-	level_list.chosen = 0;
+	/* (on its first map, the way back up above it) */
+	level_list.chosen = (short)MIN(map_browse_first_map(level_list.category),
+		MAX(map_kind_count(level_list.kind, level_list.map_count, level_list.category) - 1, 0));
 	level_list.first = 0;
-	map_kind_focus(list, 0, 0);
+	map_kind_focus(list, 0, level_list.chosen);
 }
 
 static boolean level_folder_back(struct widget_instance *list)
@@ -1746,7 +1805,7 @@ static void level_list_update(struct widget_instance *list)
 	entry = map_kind_rows_update(list, &level_list.first, count,
 		kind == MAP_KIND_SINGLEPLAYER ? level_row_text :
 		kind == MAP_KIND_MULTIPLAYER ? multiplayer_map_text : level_list_custom_text,
-		kind == MAP_KIND_CUSTOM_SINGLEPLAYER || kind == MAP_KIND_CUSTOM_MULTIPLAYER ? level_list_custom_folder : NULL);
+		kind == MAP_KIND_CUSTOM_SINGLEPLAYER || kind == MAP_KIND_CUSTOM_MULTIPLAYER ? level_list_custom_icon : NULL);
 	if (entry != NONE)
 		level_list.chosen = entry;
 	if (kind != MAP_KIND_SINGLEPLAYER)
@@ -1808,6 +1867,12 @@ static boolean level_choose(struct widget_instance *list, short controller)
 	if (custom && map_browse_folder(custom_campaign, level_list.category, level_list.chosen))
 	{
 		level_folder_open(list, level_list.chosen);
+		return FALSE;
+	}
+	if (custom && map_browse_up(custom_campaign, level_list.category, level_list.chosen))
+	{
+		ui_play_audio_feedback_sound(SOUND_BACK);
+		level_folder_back(list);
 		return FALSE;
 	}
 	if (level_list.kind == MAP_KIND_MULTIPLAYER || level_list.kind == MAP_KIND_CUSTOM_MULTIPLAYER)
@@ -4735,9 +4800,9 @@ static void map_list_custom_text(short entry, wchar_t *text)
 	map_browse_text(map_list.kind == MAP_KIND_CUSTOM_SINGLEPLAYER, map_list.category, entry, text);
 }
 
-static boolean map_list_custom_folder(short entry)
+static short map_list_custom_icon(short entry)
 {
-	return map_browse_folder(map_list.kind == MAP_KIND_CUSTOM_SINGLEPLAYER, map_list.category, entry);
+	return map_browse_icon(map_list.kind == MAP_KIND_CUSTOM_SINGLEPLAYER, map_list.category, entry);
 }
 
 static boolean map_list_custom(void)
@@ -4757,9 +4822,10 @@ static void map_folder_open(struct widget_instance *list, short entry)
 	map_list.category[sizeof(map_list.category) - 1] = 0;
 	map_browse_forget();
 	map_list.step = MAP_STEP_MAPS;
-	map_list.chosen = 0;
+	/* (on its first map, the way back up above it) */
+	map_list.chosen = (short)MIN(map_browse_first_map(map_list.category), MAX(map_step_count() - 1, 0));
 	map_list.first = 0;
-	map_kind_focus(list, 0, 0);
+	map_kind_focus(list, 0, map_list.chosen);
 }
 
 /* difficulties, then an open folder, back to the list they were chosen
@@ -4857,7 +4923,7 @@ static void map_list_update(struct widget_instance *list)
 	entry = map_kind_rows_update(list, &map_list.first, count, map_list.step == MAP_STEP_DIFFICULTIES ?
 		map_difficulty_text : kind == MAP_KIND_SINGLEPLAYER ? map_level_text :
 		kind == MAP_KIND_MULTIPLAYER ? multiplayer_map_text : map_list_custom_text,
-		map_list.step == MAP_STEP_MAPS && map_list_custom() ? map_list_custom_folder : NULL);
+		map_list.step == MAP_STEP_MAPS && map_list_custom() ? map_list_custom_icon : NULL);
 	if (entry != NONE)
 		map_list.chosen = entry;
 	/* (the map whose difficulties are listed, else the one chosen) */
@@ -4906,6 +4972,12 @@ static boolean map_list_choose(struct widget_instance *list, boolean *widget_del
 		map_browse_folder(custom_campaign, map_list.category, chosen))
 	{
 		map_folder_open(list, chosen);
+		return FALSE;
+	}
+	if (map_list.step == MAP_STEP_MAPS && map_list_custom() && map_browse_up(custom_campaign, map_list.category, chosen))
+	{
+		ui_play_audio_feedback_sound(SOUND_BACK);
+		map_folder_back(list);
 		return FALSE;
 	}
 	if (map_list_custom())
@@ -8446,7 +8518,7 @@ static boolean map_folder_icon_draw(struct widget_instance *widget, rectangle2d 
 	if (row == map_folder_rows.count)
 		return FALSE;
 	bitmap_index = tag_loaded(BITMAP_GROUP_TAG, MAP_FOLDER_ICON_BITMAP);
-	bitmap = bitmap_index != NONE ? bitmap_group_try_and_get_bitmap(bitmap_index, 0) : NULL;
+	bitmap = bitmap_index != NONE ? bitmap_group_try_and_get_bitmap(bitmap_index, map_folder_rows.frames[row]) : NULL;
 	if (!bitmap || !text || !text[0])
 		return TRUE;
 	while (*name == L' ')
