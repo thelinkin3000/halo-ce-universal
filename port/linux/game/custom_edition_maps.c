@@ -476,6 +476,20 @@ static void custom_edition_map_add(
 	{
 		return;
 	}
+	/* campaign maps go to co-op; anything that isn't multiplayer either is skipped */
+	if (csstrlen(directory) + csstrlen(name) + 1 + csstrlen(extension) > MAXIMUM_FILENAME_LENGTH)
+	{
+		return;
+	}
+	csprintf(path, "%s%s.%s", directory, name, extension);
+	scenario_type = identity_cached(path, size, time);
+	campaign = scenario_type == _scenario_type_solo;
+	if (!campaign && scenario_type != _scenario_type_multiplayer)
+	{
+		return;
+	}
+	/* (its hash found ahead, every copy's: map_share_files.c) */
+	map_share_map_listed(path, size, time);
 	for (map_index = 0; map_index < globals->map_count; map_index++)
 	{
 		if (!csstrcasecmp(globals->maps[map_index].name, name))
@@ -493,18 +507,6 @@ static void custom_edition_map_add(
 				name, root, category[0] ? category : "", category[0] ? "\\" : "");
 			return;
 		}
-	}
-	/* campaign maps go to co-op; anything that isn't multiplayer either is skipped */
-	if (csstrlen(directory) + csstrlen(name) + 1 + csstrlen(extension) > MAXIMUM_FILENAME_LENGTH)
-	{
-		return;
-	}
-	csprintf(path, "%s%s.%s", directory, name, extension);
-	scenario_type = identity_cached(path, size, time);
-	campaign = scenario_type == _scenario_type_solo;
-	if (!campaign && scenario_type != _scenario_type_multiplayer)
-	{
-		return;
 	}
 	if (campaign)
 	{
@@ -782,6 +784,7 @@ static void custom_edition_maps_look_for(
 	}
 
 	/* the game's custom_maps first, so its copy wins */
+	map_share_maps_listing_begin();
 	for (folder_index = 0; folder_index < NUMBEROF(folders); folder_index++)
 	{
 		/* (the install's only when there is one) */
@@ -789,6 +792,7 @@ static void custom_edition_maps_look_for(
 			continue;
 		custom_edition_maps_scan_root(folders[folder_index]);
 	}
+	map_share_maps_listing_end();
 	qsort(globals->maps, globals->map_count, sizeof(globals->maps[0]), custom_edition_map_compare);
 	qsort(globals->campaigns, globals->campaign_count, sizeof(globals->campaigns[0]), custom_edition_map_compare);
 	custom_edition_maps_tell_versions_apart(globals->maps, globals->map_count);

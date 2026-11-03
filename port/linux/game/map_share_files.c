@@ -24,6 +24,7 @@ pieces' hashes any player sends it, and each piece as it arrives.
 #include "custom_edition_maps.h"
 #include "map_share.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +38,8 @@ hashing thread allocates what the game's thread frees) */
 
 /* (p2p_crypto.c's) */
 void p2p_blake2b_256(const void *data, unsigned long size, unsigned char *digest);
+/* (main.c's) */
+boolean main_menu_is_loaded(void);
 
 /* ---------- constants */
 
@@ -49,8 +52,13 @@ enum
 	run (not looked at again) */
 	MAXIMUM_NAMING_QUEUE = 64,
 	MAXIMUM_NAMED = 1024,
-	/* the maps' hashes kept this run (map_share_map_hash) */
-	MAXIMUM_KNOWN_HASHES = 64,
+	/* the maps' hashes kept, every map's (map_share_map_hash): their
+	table's first room, and that of its slots (twice the room at least, a
+	power of 2) */
+	MAP_HASHES_FIRST_ROOM = 256,
+	/* how long after the last hash found the hashes are written, so that a
+	run of them (a folder of maps new) is written once */
+	MAP_HASHES_SAVE_MILLISECONDS = 5000,
 	/* the longest map file name the map lists take (custom_edition_maps.c:
 	the level name, custom_maps\ and it, kept whole by the game engine) */
 	MAXIMUM_MAP_NAME_LENGTH = CUSTOM_EDITION_MAXIMUM_LEVEL_NAME_LENGTH - (sizeof(CUSTOM_EDITION_LEVEL_NAME_PREFIX) - 1),
@@ -64,6 +72,16 @@ and its pieces' hashes */
 static char const file_hash_label[] = "OpenCE map 1";
 #define FILE_HASH_LABEL_BYTES 12
 
+/* The maps' hashes, kept across runs: a line of this header, then a line a
+map, its hash (64 hex digits), its size (decimal), the time it was last
+written (16 hex digits, as the file system says) and its path as the game
+names it (d:\custom_maps\packA\foo.map), each after a space. A line that
+cannot be read is passed over (its map hashed again); one of a file changed
+since is not used. Written whole, to a part file then in its place. */
+#define MAP_HASHES_FILE "d:\\map_hashes.txt"
+#define MAP_HASHES_PART_FILE "d:\\map_hashes.txt.part"
+static char const map_hashes_header[] = "OpenCE map hashes 1";
+
 enum
 {
 	_hash_job_none,
@@ -73,6 +91,8 @@ enum
 	_hash_job_name,
 	/* a download's pieces (map_share_pieces_hash) */
 	_hash_job_pieces,
+	/* a map the lists have whose hash is not known (map_share_map_listed) */
+	_hash_job_map,
 };
 
 /* ---------- structures */
@@ -95,14 +115,19 @@ struct naming
 	char name[MAP_SHARE_PATH_SIZE];
 };
 
-/* a map's hash, found this run: its file by its path, size and time
-written, so that it is read once */
-struct known_hash
+/* a map file's hash, by its path, size and the time it was last written,
+so that it is read once (kept across runs: MAP_HASHES_FILE). Not hashed yet:
+a map the lists have, its hash found on the hashing thread (or failed: not
+tried again until the file changes). */
+struct map_hash
 {
-	boolean used;
 	char path[MAP_SHARE_PATH_SIZE];
 	unsigned long size;
-	unsigned long modified;
+	uint64_t time;
+	boolean hashed;
+	boolean failed;
+	/* in the map lists of the latest scan (map_share_maps_listing_begin) */
+	boolean listed;
 	byte hash[MAP_SHARE_HASH_BYTES];
 };
 
@@ -120,9 +145,19 @@ struct map_share_files_globals
 	long job_owner;
 	struct naming job_naming;
 
-	/* the maps' hashes found, and the next of them to replace */
-	struct known_hash known[MAXIMUM_KNOWN_HASHES];
-	short next_known;
+	/* the maps' hashes (struct map_hash), and their slots by their paths'
+	keys (an index + 1, 0 for none: open addressing); read from
+	MAP_HASHES_FILE once, written again MAP_HASHES_SAVE_MILLISECONDS after
+	they last changed */
+	struct map_hash *hashes;
+	long hash_count;
+	long hash_room;
+	long *hash_slots;
+	long hash_slot_count;
+	boolean hashes_read;
+	boolean hashes_changed;
+	unsigned long hashes_changed_at;
+	unsigned long hashes_written_at;
 	/* the level name a host's game was last given, and its map's version
 	(map_share_level_name_choose) */
 	char chosen_level[MAP_SHARE_PATH_SIZE];
@@ -339,18 +374,33 @@ static boolean hash_job_start(
 	return TRUE;
 }
 
-/* the file's size and when it was last written, as the file system says */
-static boolean file_stamp(
+/* the file's size and when it was last written, as the file system says
+(the time as a map list's listing has it: custom_edition_maps.c) */
+static boolean file_stamp_time(
 	char const *path,
 	unsigned long *size,
-	unsigned long *modified)
+	uint64_t *time)
 {
 	WIN32_FILE_ATTRIBUTE_DATA data;
 
 	if (!GetFileAttributesExA(path, GetFileExInfoStandard, &data) || data.nFileSizeHigh)
 		return FALSE;
 	*size = data.nFileSizeLow;
-	*modified = data.ftLastWriteTime.dwLowDateTime ^ data.ftLastWriteTime.dwHighDateTime;
+	*time = ((uint64_t)data.ftLastWriteTime.dwHighDateTime << 32) | data.ftLastWriteTime.dwLowDateTime;
+	return TRUE;
+}
+
+/* ... the time folded in 32 bits (the catalog's) */
+static boolean file_stamp(
+	char const *path,
+	unsigned long *size,
+	unsigned long *modified)
+{
+	uint64_t time;
+
+	if (!file_stamp_time(path, size, &time))
+		return FALSE;
+	*modified = (unsigned long)(time & 0xFFFFFFFFUL) ^ (unsigned long)(time >> 32);
 	return TRUE;
 }
 
@@ -493,58 +543,313 @@ boolean map_share_pieces_hashed(
 
 /* ---------- maps' hashes */
 
-static struct known_hash *known_hash_find(
-	char const *path,
-	unsigned long size,
-	unsigned long modified)
+/* a path's key, whatever its case (FNV-1a) */
+static uint64_t map_hash_key(
+	char const *path)
+{
+	uint64_t key = 0xcbf29ce484222325ULL;
+
+	for (; *path; path++)
+	{
+		char character = *path;
+
+		if (character >= 'A' && character <= 'Z')
+			character = (char)(character - 'A' + 'a');
+		key ^= (unsigned char)character;
+		key *= 0x100000001b3ULL;
+	}
+	return key;
+}
+
+/* the hashes' slots made again, for `room` of them */
+static boolean map_hashes_slot(
+	long room)
 {
 	struct map_share_files_globals *globals = &map_share_files_globals;
-	short index;
+	long slot_count = MAP_HASHES_FIRST_ROOM * 2;
+	long *slots;
+	long index;
 
-	for (index = 0; index < MAXIMUM_KNOWN_HASHES; index++)
+	while (slot_count < room * 2)
+		slot_count *= 2;
+	slots = calloc((size_t)slot_count, sizeof(*slots));
+	if (!slots)
+		return FALSE;
+	for (index = 0; index < globals->hash_count; index++)
 	{
-		struct known_hash *known = &globals->known[index];
+		long slot = (long)(map_hash_key(globals->hashes[index].path) & (uint64_t)(slot_count - 1));
 
-		if (known->used && known->size == size && known->modified == modified && !csstrcasecmp(known->path, path))
-			return known;
+		while (slots[slot])
+			slot = (slot + 1) & (slot_count - 1);
+		slots[slot] = index + 1;
+	}
+	free(globals->hash_slots);
+	globals->hash_slots = slots;
+	globals->hash_slot_count = slot_count;
+	return TRUE;
+}
+
+/* the hash kept for the file at `path`, whether or not it is of the file
+as it is now; NULL if none */
+static struct map_hash *map_hash_find(
+	char const *path)
+{
+	struct map_share_files_globals *globals = &map_share_files_globals;
+	long slot;
+
+	if (!globals->hash_slot_count)
+		return NULL;
+	slot = (long)(map_hash_key(path) & (uint64_t)(globals->hash_slot_count - 1));
+	while (globals->hash_slots[slot])
+	{
+		struct map_hash *entry = &globals->hashes[globals->hash_slots[slot] - 1];
+
+		if (!csstrcasecmp(entry->path, path))
+			return entry;
+		slot = (slot + 1) & (globals->hash_slot_count - 1);
 	}
 	return NULL;
+}
+
+/* ... or a new one (not hashed) for it; NULL if there is no room */
+static struct map_hash *map_hash_add(
+	char const *path)
+{
+	struct map_share_files_globals *globals = &map_share_files_globals;
+	struct map_hash *entry = map_hash_find(path);
+	long slot;
+
+	if (entry)
+		return entry;
+	if (csstrlen(path) >= MAP_SHARE_PATH_SIZE)
+		return NULL;
+	if (globals->hash_count == globals->hash_room)
+	{
+		long room = globals->hash_room ? globals->hash_room * 2 : MAP_HASHES_FIRST_ROOM;
+		struct map_hash *more = realloc(globals->hashes, (size_t)room * sizeof(*more));
+
+		if (!more)
+			return NULL;
+		globals->hashes = more;
+		globals->hash_room = room;
+	}
+	if (globals->hash_slot_count < (globals->hash_count + 1) * 2 && !map_hashes_slot(globals->hash_count + 1))
+		return NULL;
+	entry = &globals->hashes[globals->hash_count++];
+	csmemset(entry, 0, sizeof(*entry));
+	csstrcpy(entry->path, path);
+	slot = (long)(map_hash_key(path) & (uint64_t)(globals->hash_slot_count - 1));
+	while (globals->hash_slots[slot])
+		slot = (slot + 1) & (globals->hash_slot_count - 1);
+	globals->hash_slots[slot] = globals->hash_count;
+	return entry;
+}
+
+static void map_hashes_change(
+	void)
+{
+	map_share_files_globals.hashes_changed = TRUE;
+	map_share_files_globals.hashes_changed_at = GetTickCount();
+}
+
+static short hex_value(
+	char character)
+{
+	if (character >= '0' && character <= '9')
+		return (short)(character - '0');
+	if (character >= 'a' && character <= 'f')
+		return (short)(character - 'a' + 10);
+	return NONE;
+}
+
+/* a line of MAP_HASHES_FILE read (its line end already cut); FALSE if it
+is not one */
+static boolean map_hash_line_read(
+	char const *line,
+	byte *hash,
+	unsigned long *size,
+	uint64_t *time,
+	char *path)
+{
+	char const *text = line;
+	short index;
+	short digits;
+
+	for (index = 0; index < MAP_SHARE_HASH_BYTES; index++)
+	{
+		short high = hex_value(text[0]);
+		short low = high == NONE ? NONE : hex_value(text[1]);
+
+		if (low == NONE)
+			return FALSE;
+		hash[index] = (byte)(high << 4 | low);
+		text += 2;
+	}
+	if (*text++ != ' ' || *text < '0' || *text > '9')
+		return FALSE;
+	*size = 0;
+	for (digits = 0; *text >= '0' && *text <= '9'; text++, digits++)
+	{
+		if (digits == 10 || *size > (0xFFFFFFFFUL - (unsigned long)(*text - '0')) / 10)
+			return FALSE;
+		*size = *size * 10 + (unsigned long)(*text - '0');
+	}
+	if (*text++ != ' ')
+		return FALSE;
+	*time = 0;
+	for (digits = 0; digits < 16; digits++, text++)
+	{
+		short value = hex_value(*text);
+
+		if (value == NONE)
+			return FALSE;
+		*time = *time << 4 | (uint64_t)value;
+	}
+	if (*text++ != ' ' || !*text || csstrlen(text) >= MAP_SHARE_PATH_SIZE)
+		return FALSE;
+	csstrcpy(path, text);
+	return TRUE;
+}
+
+/* ... and written */
+static void map_hash_line_write(
+	FILE *stream,
+	struct map_hash const *entry)
+{
+	char digits[MAP_SHARE_HASH_BYTES * 2 + 1];
+	static char const hex[] = "0123456789abcdef";
+	short index;
+
+	for (index = 0; index < MAP_SHARE_HASH_BYTES; index++)
+	{
+		digits[index * 2] = hex[entry->hash[index] >> 4];
+		digits[index * 2 + 1] = hex[entry->hash[index] & 15];
+	}
+	digits[MAP_SHARE_HASH_BYTES * 2] = 0;
+	fprintf(stream, "%s %lu %08lx%08lx %s\r\n", digits, entry->size, (unsigned long)(entry->time >> 32),
+		(unsigned long)(entry->time & 0xFFFFFFFFUL), entry->path);
+}
+
+/* MAP_HASHES_FILE read, the first time a hash is asked for */
+static void map_hashes_read(
+	void)
+{
+	struct map_share_files_globals *globals = &map_share_files_globals;
+	char line[MAP_SHARE_HASH_BYTES * 2 + 40 + MAP_SHARE_PATH_SIZE];
+	char path[MAP_SHARE_PATH_SIZE];
+	byte hash[MAP_SHARE_HASH_BYTES];
+	unsigned long size;
+	uint64_t time;
+	long count = 0;
+	FILE *stream;
+
+	if (globals->hashes_read)
+		return;
+	globals->hashes_read = TRUE;
+	stream = fopen(MAP_HASHES_FILE, "rb");
+	if (!stream)
+		return;
+	if (!fgets(line, sizeof(line), stream) || (line[strcspn(line, "\r\n")] = 0, csstrcmp(line, map_hashes_header)))
+	{
+		error(_error_silent, "map hashes: %s is not of this build's kind; the maps are hashed again", MAP_HASHES_FILE);
+		fclose(stream);
+		return;
+	}
+	while (fgets(line, sizeof(line), stream))
+	{
+		struct map_hash *entry;
+
+		line[strcspn(line, "\r\n")] = 0;
+		if (!map_hash_line_read(line, hash, &size, &time, path) || !(entry = map_hash_add(path)))
+			continue;
+		entry->size = size;
+		entry->time = time;
+		entry->hashed = TRUE;
+		entry->failed = FALSE;
+		csmemcpy(entry->hash, hash, MAP_SHARE_HASH_BYTES);
+		count++;
+	}
+	fclose(stream);
+	error(_error_silent, "map hashes: %ld read from %s", count, MAP_HASHES_FILE);
+}
+
+/* ... and written, whole */
+static void map_hashes_write(
+	void)
+{
+	struct map_share_files_globals *globals = &map_share_files_globals;
+	long count = 0;
+	long index;
+	FILE *stream;
+
+	globals->hashes_changed = FALSE;
+	stream = fopen(MAP_HASHES_PART_FILE, "wb");
+	if (!stream)
+	{
+		error(_error_silent, "map hashes: %s could not be written", MAP_HASHES_PART_FILE);
+		return;
+	}
+	fprintf(stream, "%s\r\n", map_hashes_header);
+	for (index = 0; index < globals->hash_count; index++)
+	{
+		if (globals->hashes[index].hashed)
+		{
+			map_hash_line_write(stream, &globals->hashes[index]);
+			count++;
+		}
+	}
+	if (fclose(stream) != 0)
+	{
+		error(_error_silent, "map hashes: %s could not be written", MAP_HASHES_PART_FILE);
+		DeleteFileA(MAP_HASHES_PART_FILE);
+		return;
+	}
+	DeleteFileA(MAP_HASHES_FILE);
+	if (!MoveFileA(MAP_HASHES_PART_FILE, MAP_HASHES_FILE))
+	{
+		error(_error_silent, "map hashes: %s could not be put in the place of %s", MAP_HASHES_PART_FILE,
+			MAP_HASHES_FILE);
+		return;
+	}
+	error(_error_silent, "map hashes: %ld written to %s", count, MAP_HASHES_FILE);
+}
+
+/* the hash of the file at `path`, `size` bytes last written at `time`, as
+it is now */
+static void map_hash_set(
+	char const *path,
+	unsigned long size,
+	uint64_t time,
+	byte const *hash)
+{
+	struct map_hash *entry;
+
+	map_hashes_read();
+	entry = map_hash_add(path);
+	if (!entry)
+		return;
+	if (entry->hashed && entry->size == size && entry->time == time &&
+		!csmemcmp(entry->hash, hash, MAP_SHARE_HASH_BYTES))
+	{
+		return;
+	}
+	entry->size = size;
+	entry->time = time;
+	entry->hashed = TRUE;
+	entry->failed = FALSE;
+	csmemcpy(entry->hash, hash, MAP_SHARE_HASH_BYTES);
+	map_hashes_change();
 }
 
 void map_share_map_hash_remember(
 	char const *path,
 	byte const *hash)
 {
-	struct map_share_files_globals *globals = &map_share_files_globals;
-	struct known_hash *known;
 	unsigned long size;
-	unsigned long modified;
-	short index;
+	uint64_t time;
 
-	if (!file_stamp(path, &size, &modified))
-		return;
-	known = known_hash_find(path, size, modified);
-	if (!known)
-	{
-		/* (the same path's of before, else the next in turn) */
-		for (index = 0; index < MAXIMUM_KNOWN_HASHES; index++)
-		{
-			if (globals->known[index].used && !csstrcasecmp(globals->known[index].path, path))
-				break;
-		}
-		if (index == MAXIMUM_KNOWN_HASHES)
-		{
-			index = globals->next_known;
-			globals->next_known = (short)((index + 1) % MAXIMUM_KNOWN_HASHES);
-		}
-		known = &globals->known[index];
-		csmemset(known, 0, sizeof(*known));
-		known->used = TRUE;
-		csstrncpy(known->path, path, sizeof(known->path) - 1);
-		known->size = size;
-		known->modified = modified;
-	}
-	csmemcpy(known->hash, hash, MAP_SHARE_HASH_BYTES);
+	if (file_stamp_time(path, &size, &time))
+		map_hash_set(path, size, time, hash);
 }
 
 boolean map_share_map_hash(
@@ -552,21 +857,24 @@ boolean map_share_map_hash(
 	byte *hash)
 {
 	struct map_share_files_globals *globals = &map_share_files_globals;
-	struct known_hash const *known;
+	struct map_hash const *entry;
 	struct hash_job job;
 	unsigned long size;
 	unsigned long modified;
+	uint64_t time;
 	short index;
 
-	if (!file_stamp(path, &size, &modified) || size > MAXIMUM_FILE_BYTES)
+	if (!file_stamp_time(path, &size, &time) || size > MAXIMUM_FILE_BYTES)
 		return FALSE;
-	known = known_hash_find(path, size, modified);
-	if (known)
+	map_hashes_read();
+	entry = map_hash_find(path);
+	if (entry && entry->hashed && entry->size == size && entry->time == time)
 	{
-		csmemcpy(hash, known->hash, MAP_SHARE_HASH_BYTES);
+		csmemcpy(hash, entry->hash, MAP_SHARE_HASH_BYTES);
 		return TRUE;
 	}
 	/* (one the catalog hashed for sharing) */
+	modified = (unsigned long)(time & 0xFFFFFFFFUL) ^ (unsigned long)(time >> 32);
 	for (index = 0; index < MAXIMUM_SHARE_FILES; index++)
 	{
 		struct map_share_file const *file = &globals->files[index];
@@ -575,11 +883,13 @@ boolean map_share_map_hash(
 			!csstrcasecmp(file->path, path))
 		{
 			csmemcpy(hash, file->hash, MAP_SHARE_HASH_BYTES);
-			map_share_map_hash_remember(path, hash);
+			map_hash_set(path, size, time, hash);
 			return TRUE;
 		}
 	}
-	/* (read here: a map takes a fraction of a second) */
+	/* (read here: a map takes a fraction of a second, a large one on a
+	phone's storage a second or more; the lists' maps are hashed ahead, on
+	the hashing thread) */
 	csmemset(&job, 0, sizeof(job));
 	csstrncpy(job.path, path, sizeof(job.path) - 1);
 	hash_job_run(&job);
@@ -587,8 +897,120 @@ boolean map_share_map_hash(
 	if (job.failed || job.size != size)
 		return FALSE;
 	csmemcpy(hash, job.hash, MAP_SHARE_HASH_BYTES);
-	map_share_map_hash_remember(path, hash);
+	map_hash_set(path, size, time, hash);
 	return TRUE;
+}
+
+void map_share_maps_listing_begin(
+	void)
+{
+	struct map_share_files_globals *globals = &map_share_files_globals;
+	long index;
+
+	map_hashes_read();
+	for (index = 0; index < globals->hash_count; index++)
+		globals->hashes[index].listed = FALSE;
+}
+
+void map_share_map_listed(
+	char const *path,
+	unsigned long size,
+	uint64_t time)
+{
+	struct map_hash *entry;
+
+	map_hashes_read();
+	entry = map_hash_add(path);
+	if (!entry)
+		return;
+	entry->listed = TRUE;
+	/* (changed since: hashed again) */
+	if ((entry->hashed || entry->failed) && (entry->size != size || entry->time != time))
+	{
+		entry->hashed = FALSE;
+		entry->failed = FALSE;
+		map_hashes_change();
+	}
+	entry->size = size;
+	entry->time = time;
+	/* (too large to hash) */
+	if (!entry->hashed && size > MAXIMUM_FILE_BYTES)
+		entry->failed = TRUE;
+}
+
+void map_share_maps_listing_end(
+	void)
+{
+	struct map_share_files_globals *globals = &map_share_files_globals;
+	long kept = 0;
+	long index;
+
+	/* (a map not listed, its file gone or changed: forgotten; one hashed
+	otherwise, a resource map's, kept) */
+	for (index = 0; index < globals->hash_count; index++)
+	{
+		struct map_hash const *entry = &globals->hashes[index];
+		unsigned long size;
+		uint64_t time;
+
+		if (!entry->listed && (!entry->hashed || !file_stamp_time(entry->path, &size, &time) ||
+			size != entry->size || time != entry->time))
+		{
+			continue;
+		}
+		if (kept != index)
+			globals->hashes[kept] = *entry;
+		kept++;
+	}
+	if (kept != globals->hash_count)
+	{
+		error(_error_silent, "map hashes: %ld of maps no longer there forgotten", globals->hash_count - kept);
+		globals->hash_count = kept;
+		map_hashes_slot(kept);
+		map_hashes_change();
+	}
+}
+
+/* the next map the lists have whose hash is not known, or NONE */
+static long map_hash_next_unknown(
+	void)
+{
+	struct map_share_files_globals *globals = &map_share_files_globals;
+	long index;
+
+	for (index = 0; index < globals->hash_count; index++)
+	{
+		struct map_hash const *entry = &globals->hashes[index];
+
+		if (entry->listed && !entry->hashed && !entry->failed)
+			return index;
+	}
+	return NONE;
+}
+
+/* a map hashed on the hashing thread: its hash kept, if its file has not
+changed meanwhile */
+static void map_hash_job_finish(
+	struct hash_job const *job)
+{
+	struct map_hash *entry = map_hash_find(job->path);
+	unsigned long size;
+	uint64_t time;
+
+	if (!entry || entry->hashed)
+		return;
+	/* (failed, or changed meanwhile: hashed again once a scan finds it
+	changed, map_share_map_listed) */
+	if (job->failed || !file_stamp_time(job->path, &size, &time) || size != entry->size || time != entry->time ||
+		job->size != size)
+	{
+		entry->failed = TRUE;
+		error(_error_silent, "map hashes: '%s' could not be read", job->path);
+		return;
+	}
+	entry->hashed = TRUE;
+	csmemcpy(entry->hash, job->hash, MAP_SHARE_HASH_BYTES);
+	map_hashes_change();
 }
 
 unsigned long map_share_hash_version(
@@ -875,13 +1297,31 @@ void map_share_files_update(
 			globals->pieces_count = globals->job.failed ? 0 : globals->job.piece_count;
 			globals->pieces_size = globals->job.size;
 			break;
+		case _hash_job_map:
+			map_hash_job_finish(&globals->job);
+			free(globals->job.piece_hashes);
+			break;
 		}
 		globals->job.piece_hashes = NULL;
 		globals->job_type = _hash_job_none;
 	}
 
-	/* the next: a download's pieces, a file to share, then a map to give
-	its name back */
+	/* (the hashes written once they have not changed for a while, or a
+	while after they were last, while many are being found) */
+	if (globals->hashes_changed)
+	{
+		unsigned long now = GetTickCount();
+
+		if (now - globals->hashes_changed_at >= MAP_HASHES_SAVE_MILLISECONDS ||
+			now - globals->hashes_written_at >= MAP_HASHES_SAVE_MILLISECONDS * 12)
+		{
+			map_hashes_write();
+			globals->hashes_written_at = now;
+		}
+	}
+
+	/* the next: a download's pieces, a file to share, a map to give its
+	name back, then a map the lists have to hash */
 	if (globals->pieces_wanted)
 	{
 		globals->pieces_wanted = FALSE;
@@ -918,5 +1358,18 @@ void map_share_files_update(
 		csprintf(path, "%s%s.map", globals->job_naming.folder, globals->job_naming.name);
 		if (hash_job_start(_hash_job_name, path, NONE))
 			return;
+	}
+	/* (the lists' maps hashed ahead, in the menus alone: a game's own reads
+	are not slowed) */
+	if (main_menu_is_loaded())
+	{
+		long index = map_hash_next_unknown();
+
+		if (index != NONE)
+		{
+			if (!hash_job_start(_hash_job_map, globals->hashes[index].path, index))
+				globals->hashes[index].failed = TRUE;
+			return;
+		}
 	}
 }

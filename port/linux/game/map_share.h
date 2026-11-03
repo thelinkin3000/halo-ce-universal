@@ -21,6 +21,8 @@ renamed: one a build of before named for its hash has its name given back.
 #ifndef __MAP_SHARE_H
 #define __MAP_SHARE_H
 
+#include <stdint.h>
+
 /* ---------- constants */
 
 enum
@@ -88,9 +90,10 @@ boolean map_share_level_name_version(
 	char const *level_name,
 	unsigned long *version);
 
-/* A map file's hash, read here once (a fraction of a second) and kept for
-the rest of the run, by its path, size and the time it was written. FALSE
-if it cannot be read. */
+/* A map file's hash, read here once (a fraction of a second; a large map
+on a phone's storage, a second or more) and kept, by its path, size and the
+time it was written, for the rest of the run and the runs after
+(d:\map_hashes.txt). FALSE if it cannot be read. */
 boolean map_share_map_hash(
 	char const *path,
 	byte *hash);
@@ -106,6 +109,21 @@ unsigned long map_share_hash_version(
 boolean map_share_map_version(
 	char const *path,
 	unsigned long *version);
+
+/* A map list's scan (custom_edition_maps.c): begun, each map it lists (its
+file's path as the game names it, size and time last written, as the
+listing has them), and ended. A listed map whose hash is not known is
+hashed on the hashing thread while the main menu is loaded, so that a map
+picked or a game joined finds it known; a hash of a map no longer listed is
+forgotten once its file is gone or has changed. */
+void map_share_maps_listing_begin(
+	void);
+void map_share_map_listed(
+	char const *path,
+	unsigned long size,
+	uint64_t time);
+void map_share_maps_listing_end(
+	void);
 
 /* ---------- prototypes/MAP_SHARE.C */
 
