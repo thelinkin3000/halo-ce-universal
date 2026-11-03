@@ -1050,9 +1050,11 @@ void custom_edition_maps_name_given(
 		map_share_map_choose_file(map->level_name, path);
 		return;
 	}
-	/* (another: the copy chosen kept for its own name alone, a network
-	game's or a rotation's of another map choosing none) */
-	if (level_name[0])
+	/* (another Custom Edition map's: the copy chosen kept for its own name
+	alone, a network game's or a rotation's of another map choosing none;
+	the game's own levels, the main menu's as it loads again among them,
+	leave it) */
+	if (custom_edition_level_name(level_name))
 		map_share_map_choose_name(level_name);
 }
 

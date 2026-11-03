@@ -55,8 +55,9 @@ void custom_edition_maps_look_again(
 /* A level name given the game to play (main.c: the multiplayer map's, or a
 campaign's): one of the lists' own (custom_edition_maps_level_list,
 custom_edition_maps_level_name) chooses that row's copy of the map, in its
-folder, over the others of its name (map_share.h); any other keeps the copy
-chosen only if it is of its name. */
+folder, over the others of its name (map_share.h); another Custom Edition
+map's keeps the copy chosen only if it is of its name (the game's own
+levels', the main menu's among them, leave it). */
 void custom_edition_maps_name_given(
 	char const *level_name);
 /* whether one of the lists' own level names is the row of the copy chosen
