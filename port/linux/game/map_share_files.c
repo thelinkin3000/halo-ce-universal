@@ -163,8 +163,11 @@ struct map_share_files_globals
 	char chosen_level[MAP_SHARE_PATH_SIZE];
 	unsigned long chosen_version;
 	/* the copy of a map last chosen (map_share_map_choose): its name (a
-	level name's, without its folder; none if empty) and hash */
+	level name's, without its folder; none if empty), and its file (the
+	menus') or its hash (a replay's; the file's, if known) */
 	char chosen_copy_name[MAP_SHARE_PATH_SIZE];
+	char chosen_copy_path[MAP_SHARE_PATH_SIZE];
+	boolean chosen_copy_hashed;
 	byte chosen_copy_hash[MAP_SHARE_HASH_BYTES];
 	long chosen_copy_index;
 
@@ -1084,6 +1087,34 @@ boolean map_share_map_of_version(
 	return FALSE;
 }
 
+/* the copy chosen chosen again: its name, and its file or hash */
+static void map_choice_set(
+	char const *name,
+	char const *path,
+	byte const *hash)
+{
+	struct map_share_files_globals *globals = &map_share_files_globals;
+
+	csstrcpy(globals->chosen_copy_name, name);
+	csstrcpy(globals->chosen_copy_path, path ? path : "");
+	globals->chosen_copy_hashed = hash != NULL;
+	if (hash)
+		csmemcpy(globals->chosen_copy_hash, hash, MAP_SHARE_HASH_BYTES);
+	globals->chosen_copy_index = NONE;
+}
+
+static void map_choice_forget(
+	void)
+{
+	struct map_share_files_globals *globals = &map_share_files_globals;
+
+	if (globals->chosen_copy_name[0])
+		error(_error_silent, "map hashes: no copy of %s chosen now", globals->chosen_copy_name);
+	globals->chosen_copy_name[0] = 0;
+	globals->chosen_copy_path[0] = 0;
+	globals->chosen_copy_hashed = FALSE;
+}
+
 void map_share_map_choose(
 	char const *level_name,
 	byte const *hash)
@@ -1093,19 +1124,51 @@ void map_share_map_choose(
 
 	if (!hash || !name[0] || csstrlen(name) >= sizeof(globals->chosen_copy_name))
 	{
-		if (globals->chosen_copy_name[0])
-			error(_error_silent, "map hashes: no copy of %s chosen now", globals->chosen_copy_name);
-		globals->chosen_copy_name[0] = 0;
+		map_choice_forget();
 		return;
 	}
-	if (!csstrcasecmp(globals->chosen_copy_name, name) &&
-		!csmemcmp(globals->chosen_copy_hash, hash, MAP_SHARE_HASH_BYTES))
+	if (!csstrcasecmp(globals->chosen_copy_name, name) && !globals->chosen_copy_path[0] &&
+		globals->chosen_copy_hashed && !csmemcmp(globals->chosen_copy_hash, hash, MAP_SHARE_HASH_BYTES))
 	{
 		return;
 	}
-	csstrcpy(globals->chosen_copy_name, name);
-	csmemcpy(globals->chosen_copy_hash, hash, MAP_SHARE_HASH_BYTES);
+	map_choice_set(name, NULL, hash);
 	error(_error_silent, "map hashes: the copy of %s chosen is version %08lx", name, map_share_hash_version(hash));
+}
+
+void map_share_map_choose_file(
+	char const *level_name,
+	char const *path)
+{
+	struct map_share_files_globals *globals = &map_share_files_globals;
+	char const *name = level_name ? tag_name_strip_path(level_name) : "";
+	struct map_hash const *entry;
+
+	if (!path || !name[0] || csstrlen(name) >= sizeof(globals->chosen_copy_name) ||
+		csstrlen(path) >= sizeof(globals->chosen_copy_path))
+	{
+		map_choice_forget();
+		return;
+	}
+	if (!csstrcasecmp(globals->chosen_copy_name, name) && !csstrcasecmp(globals->chosen_copy_path, path))
+		return;
+	/* (its hash, if known: the copy found by it if the file moves) */
+	map_hashes_read();
+	entry = map_hash_find(path);
+	map_choice_set(name, path, entry && map_hash_current(entry) ? entry->hash : NULL);
+	error(_error_silent, "map hashes: the copy of %s chosen is %s", name, path);
+}
+
+void map_share_map_choose_name(
+	char const *level_name)
+{
+	struct map_share_files_globals *globals = &map_share_files_globals;
+
+	if (globals->chosen_copy_name[0] &&
+		(!level_name || csstrcasecmp(globals->chosen_copy_name, tag_name_strip_path(level_name))))
+	{
+		map_choice_forget();
+	}
 }
 
 boolean map_share_map_chosen(
@@ -1118,8 +1181,17 @@ boolean map_share_map_chosen(
 
 	if (!globals->chosen_copy_name[0] || csstrcasecmp(globals->chosen_copy_name, name))
 		return FALSE;
+	/* (its file, while it is there) */
+	if (globals->chosen_copy_path[0] && GetFileAttributesA(globals->chosen_copy_path) != (unsigned long)-1)
+	{
+		csstrcpy(path, globals->chosen_copy_path);
+		return TRUE;
+	}
+	if (!globals->chosen_copy_hashed)
+		return FALSE;
 	map_hashes_read();
-	/* (the one found last first: the loader asks many times a frame) */
+	/* (else the file of its name with its hash; the one found last first:
+	the loader asks many times a frame) */
 	for (index = -1; index < globals->hash_count; index++)
 	{
 		long found = index < 0 ? globals->chosen_copy_index : index;
@@ -1137,6 +1209,23 @@ boolean map_share_map_chosen(
 		}
 	}
 	return FALSE;
+}
+
+boolean map_share_map_chosen_hash(
+	char const *level_name,
+	byte *hash)
+{
+	struct map_share_files_globals *globals = &map_share_files_globals;
+	char path[MAP_SHARE_PATH_SIZE];
+
+	if (!map_share_map_chosen(level_name, path))
+		return FALSE;
+	if (globals->chosen_copy_hashed && !globals->chosen_copy_path[0])
+	{
+		csmemcpy(hash, globals->chosen_copy_hash, MAP_SHARE_HASH_BYTES);
+		return TRUE;
+	}
+	return map_share_map_hash(path, hash);
 }
 
 unsigned long map_share_hash_version(

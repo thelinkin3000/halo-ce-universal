@@ -52,6 +52,18 @@ which shows maps added since). */
 void custom_edition_maps_look_again(
 	void);
 
+/* A level name given the game to play (main.c: the multiplayer map's, or a
+campaign's): one of the lists' own (custom_edition_maps_level_list,
+custom_edition_maps_level_name) chooses that row's copy of the map, in its
+folder, over the others of its name (map_share.h); any other keeps the copy
+chosen only if it is of its name. */
+void custom_edition_maps_name_given(
+	char const *level_name);
+/* whether one of the lists' own level names is the row of the copy chosen
+(the row a list opens on, of the map used last) */
+boolean custom_edition_maps_row_chosen(
+	char const *level_name);
+
 /* the display index of an entry in the latest level list */
 short custom_edition_maps_level_display_index(
 	short level_index);

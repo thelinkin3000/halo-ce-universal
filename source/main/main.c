@@ -1584,9 +1584,14 @@ static void main_change_map_name(
 	return;
 }
 
+/* port: the copy of a Custom Edition map a menu's row names, chosen over the
+others of its name (port/linux/game/custom_edition_maps.c) */
+void custom_edition_maps_name_given(char const *level_name);
+
 void main_set_multiplayer_map_name(
 	char const *map_name)
 {
+	custom_edition_maps_name_given(map_name);
 	csstrncpy(main_globals.multiplayer_map_name, map_name, NUMBEROF(main_globals.multiplayer_map_name) - 1);
 	main_globals.multiplayer_map_name[NUMBEROF(main_globals.multiplayer_map_name) - 1] = 0;
 	cache_files_give_time_to_precache(main_globals.multiplayer_map_name);
@@ -2461,6 +2466,7 @@ void main_set_map_name(
 	char const *map_name)
 {
 	main_globals.want_to_be_at_main_menu = FALSE;
+	custom_edition_maps_name_given(map_name);
 	csstrncpy(main_globals.soloplayer_map_name, map_name, NUMBEROF(main_globals.soloplayer_map_name) - 1);
 	main_globals.soloplayer_map_name[NUMBEROF(main_globals.soloplayer_map_name) - 1] = 0;
 	main_globals.allow_persistent_storage = TRUE;

@@ -133,16 +133,29 @@ boolean map_share_map_of_version(
 	char const *level_name,
 	unsigned long version,
 	char *path);
-/* The copy of a map a player chose (in the menus, or a replay's), by its
-hash: the loader takes the file of that name with that hash
-(map_share_map_chosen) over the first of the name it finds, until another
-is chosen; a NULL hash (or level name) chooses none. */
+/* The copy of a map a player chose: the loader takes it (map_share_map_chosen)
+over the first file of its name it finds, until another is chosen.
+- map_share_map_choose: a replay's, by its hash (the file of the name with
+  that hash, in any folder); a NULL hash or level name chooses none.
+- map_share_map_choose_file: a row of the menus', by its file (and, if it
+  moves, by its hash, if known).
+- map_share_map_choose_name: a level name given otherwise (a rotation's, a
+  network game's): the copy chosen kept if it is of that name, else none.
+map_share_map_chosen_hash is the chosen copy's hash (a replay records it). */
 void map_share_map_choose(
 	char const *level_name,
 	byte const *hash);
+void map_share_map_choose_file(
+	char const *level_name,
+	char const *path);
+void map_share_map_choose_name(
+	char const *level_name);
 boolean map_share_map_chosen(
 	char const *level_name,
 	char *path);
+boolean map_share_map_chosen_hash(
+	char const *level_name,
+	byte *hash);
 
 /* ---------- prototypes/MAP_SHARE.C */
 

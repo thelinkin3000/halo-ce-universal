@@ -3047,6 +3047,17 @@ static boolean multiplayer_level_list_initialize(
 		}
 		if (widget->data3C.selected_index == level_count)
 			widget->data3C.selected_index = 0;
+		/* port: of copies of the name, the one chosen
+		(port/linux/game/custom_edition_maps.c) */
+		{
+			short level_index;
+
+			for (level_index = widget->data3C.selected_index; level_index < level_count; level_index++)
+			{
+				if (!_stricmp(map_name, levels[level_index]) && custom_edition_maps_row_chosen(levels[level_index]))
+					widget->data3C.selected_index = level_index;
+			}
+		}
 	}
 	return TRUE;
 }
@@ -6005,10 +6016,16 @@ short ui_widget_port_multiplayer_maps(
 	*last_used = 0;
 	if (saved_game_file_retrieve_last_used_multiplayer_map(map_name))
 	{
-		for (level_index = 0; level_index < level_count; level_index++)
+		boolean chosen_found = FALSE;
+
+		/* (of copies of the name, the one chosen: port/linux/game/custom_edition_maps.c) */
+		for (level_index = 0; level_index < level_count && !chosen_found; level_index++)
 		{
 			if (!_stricmp(map_name, levels[level_index]))
+			{
 				*last_used = level_index;
+				chosen_found = custom_edition_maps_row_chosen(levels[level_index]);
+			}
 		}
 	}
 	return level_count;

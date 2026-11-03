@@ -26,8 +26,10 @@ test_map_share_names.py takes the constants (config.inc) and the code
 struct custom_edition_map
 {
 	char name[64];
-	wchar_t display_name[64 + 8];
+	char category[64];
+	wchar_t display_name[64 + 8 + 64 + 3];
 };
+#define csstrcasecmp(first, second) strcasecmp(first, second)
 
 #include "under_test.inc"
 
@@ -191,6 +193,40 @@ int main(int argc, char **argv)
 			wide_text(fake_maps[0].display_name));
 		CHECK(!strcmp(wide_text(fake_maps[1].display_name), "Hugeass (2)"), "the second: %s",
 			wide_text(fake_maps[1].display_name));
+		return 0;
+	}
+	/* copies of a name in subfolders: told apart by their folders, the maps
+	folder's own by its name alone; a map of a name of its own not */
+	CASE("folders")
+	{
+		static char const *const names[] = { "hugeass", "hugeass", "hugeass", "wizard", "wizard" };
+		static char const *const categories[] = { "", "Pack A", "zz", "Pack B", "" };
+		short index;
+
+		fake_list(names, NUMBEROF(names));
+		for (index = 0; index < NUMBEROF(names); index++)
+			strcpy(fake_maps[index].category, categories[index]);
+		custom_edition_maps_tell_folders_apart(fake_maps, NUMBEROF(names));
+		CHECK(!strcmp(wide_text(fake_maps[0].display_name), "Hugeass"), "the maps folder's: %s",
+			wide_text(fake_maps[0].display_name));
+		CHECK(!strcmp(wide_text(fake_maps[1].display_name), "Hugeass (Pack A)"), "a subfolder's: %s",
+			wide_text(fake_maps[1].display_name));
+		CHECK(!strcmp(wide_text(fake_maps[2].display_name), "Hugeass (zz)"), "the last copy: %s",
+			wide_text(fake_maps[2].display_name));
+		CHECK(!strcmp(wide_text(fake_maps[3].display_name), "Wizard (Pack B)"), "a copy before the folder's: %s",
+			wide_text(fake_maps[3].display_name));
+		CHECK(!strcmp(wide_text(fake_maps[4].display_name), "Wizard"), "the folder's after a copy: %s",
+			wide_text(fake_maps[4].display_name));
+		/* (one in a subfolder, no other of its name) */
+		{
+			static char const *const alone[] = { "ratrace" };
+
+			fake_list(alone, 1);
+			strcpy(fake_maps[0].category, "Pack A");
+			custom_edition_maps_tell_folders_apart(fake_maps, 1);
+			CHECK(!strcmp(wide_text(fake_maps[0].display_name), "Ratrace"), "a map alone in a subfolder: %s",
+				wide_text(fake_maps[0].display_name));
+		}
 		return 0;
 	}
 	/* a map's version, a game record's, is the number its digits are (the

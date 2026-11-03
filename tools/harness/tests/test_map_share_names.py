@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from harness import CHECK_FAILED, build, constant, function, mutated, read, run  # noqa: E402
 
 CASES = ["hashed-names", "safe-names", "base-length", "digits", "pieces", "display-names", "versions-numbered",
-         "versions-without-the-first", "versions"]
+         "versions-without-the-first", "versions", "folders"]
 
 # a fault in map_share_files.c, the function it is in, and the case that must catch it
 NEGATIVE_CONTROLS = {
@@ -41,6 +41,11 @@ NEGATIVE_CONTROLS = {
     "version-bytes-swapped": (("(unsigned long)hash[0] << 24 | (unsigned long)hash[1] << 16",
                                "(unsigned long)hash[1] << 24 | (unsigned long)hash[0] << 16"),
                               "map_share_hash_version", "versions"),
+    "every-copy-labelled": (("if (!map->category[0])\n\t\t\tcontinue;", ""), "custom_edition_maps_tell_folders_apart",
+                            "folders"),
+    "copies-before-missed": (("for (other = index - 1; other >= 0", "for (other = -1; other >= 0"),
+                             "custom_edition_maps_tell_folders_apart", "folders"),
+    "alone-labelled": (("if (copied)", "if (1)"), "custom_edition_maps_tell_folders_apart", "folders"),
     "version-zero": (("return version ? version : 1;", "return version;"), "map_share_hash_version", "versions"),
 }
 
@@ -63,7 +68,8 @@ def generated(fault=None, faulty_function=None):
     maps = read("port/linux/game/custom_edition_maps.c")
     start = maps.index("static struct\n{\n\tchar const *file;")
     text += maps[start:maps.index("};", start) + 2] + "\n"
-    for name in ("stock_map_index", "display_name_make", "custom_edition_maps_tell_versions_apart"):
+    for name in ("stock_map_index", "display_name_make", "custom_edition_maps_tell_versions_apart",
+                 "custom_edition_maps_tell_folders_apart"):
         code = function(maps, name)
         if fault and name == faulty_function:
             code = mutated(code, *fault)

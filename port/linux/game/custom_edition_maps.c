@@ -140,8 +140,8 @@ struct custom_edition_map
 	/* saved_game_file_remember_last_used_multiplayer_map writes
 	MAXIMUM_FILENAME_LENGTH+1 characters of a level name */
 	char level_name[MAXIMUM_FILENAME_LENGTH + 1];
-	/* (and room for a version's number, " (2)") */
-	wchar_t display_name[MAXIMUM_MAP_NAME_LENGTH + 8];
+	/* (and room for a version's number, " (2)", and a copy's folder, " (packA)") */
+	wchar_t display_name[MAXIMUM_MAP_NAME_LENGTH + 8 + CUSTOM_EDITION_MAP_CATEGORY_LENGTH + 3];
 	wchar_t description[MAXIMUM_DESCRIPTION_LENGTH + 1];
 	boolean picture_read;
 	struct bitmap_data *picture;
@@ -490,9 +490,12 @@ static void custom_edition_map_add(
 	}
 	/* (its hash found ahead, every copy's: map_share_files.c) */
 	map_share_map_listed(path, size, time);
+	/* (a copy of a name in another subfolder is listed too, told apart by
+	its folder; one in the same folder of the install, not) */
 	for (map_index = 0; map_index < globals->map_count; map_index++)
 	{
-		if (!csstrcasecmp(globals->maps[map_index].name, name))
+		if (!csstrcasecmp(globals->maps[map_index].name, name) &&
+			!csstrcasecmp(globals->maps[map_index].category, category))
 		{
 			error(_error_silent, "custom edition: the map '%s' is already listed; the copy in '%s%s%s' is skipped",
 				name, root, category[0] ? category : "", category[0] ? "\\" : "");
@@ -501,7 +504,8 @@ static void custom_edition_map_add(
 	}
 	for (map_index = 0; map_index < globals->campaign_count; map_index++)
 	{
-		if (!csstrcasecmp(globals->campaigns[map_index].name, name))
+		if (!csstrcasecmp(globals->campaigns[map_index].name, name) &&
+			!csstrcasecmp(globals->campaigns[map_index].category, category))
 		{
 			error(_error_silent, "custom edition: the map '%s' is already listed; the copy in '%s%s%s' is skipped",
 				name, root, category[0] ? category : "", category[0] ? "\\" : "");
@@ -555,13 +559,21 @@ static void custom_edition_map_add(
 	return;
 }
 
+/* by name, then a name's copies by folder (the maps folder's own first),
+then the custom_maps folder's before the install's */
 static int custom_edition_map_compare(
 	void const *first,
 	void const *second)
 {
-	return (int)csstrcasecmp(
-		((struct custom_edition_map const *)first)->name,
-		((struct custom_edition_map const *)second)->name);
+	struct custom_edition_map const *one = first;
+	struct custom_edition_map const *other = second;
+	int order = (int)csstrcasecmp(one->name, other->name);
+
+	if (!order)
+		order = (int)csstrcasecmp(one->category, other->category);
+	if (!order)
+		order = (int)csstrcasecmp(one->folder, other->folder);
+	return order;
 }
 
 /* The files in `directory` (the maps folder, or one subfolder of it).
@@ -768,6 +780,48 @@ static void custom_edition_maps_tell_versions_apart(
 	}
 }
 
+/* Copies of a name listed, each in its own subfolder: shown with their
+folder after the name, "Foo (packA)", the maps folder's own by its name
+alone. */
+static void custom_edition_maps_tell_folders_apart(
+	struct custom_edition_map *maps,
+	short count)
+{
+	short index;
+
+	for (index = 0; index < count; index++)
+	{
+		struct custom_edition_map *map = &maps[index];
+		boolean copied = FALSE;
+		short other;
+
+		if (!map->category[0])
+			continue;
+		/* (sorted by name: a copy is beside it) */
+		for (other = index - 1; other >= 0 && !csstrcasecmp(maps[other].name, map->name) && !copied; other--)
+			copied = TRUE;
+		for (other = index + 1; other < count && !csstrcasecmp(maps[other].name, map->name) && !copied; other++)
+			copied = TRUE;
+		if (copied)
+		{
+			short end = 0;
+			short character;
+
+			while (map->display_name[end])
+				end++;
+			if (end + 3 < NUMBEROF(map->display_name))
+			{
+				map->display_name[end++] = ' ';
+				map->display_name[end++] = '(';
+				for (character = 0; map->category[character] && end + 2 < NUMBEROF(map->display_name); character++)
+					map->display_name[end++] = (wchar_t)(unsigned char)map->category[character];
+				map->display_name[end++] = ')';
+			}
+			map->display_name[end] = 0;
+		}
+	}
+}
+
 static void custom_edition_maps_look_for(
 	void)
 {
@@ -797,6 +851,8 @@ static void custom_edition_maps_look_for(
 	qsort(globals->campaigns, globals->campaign_count, sizeof(globals->campaigns[0]), custom_edition_map_compare);
 	custom_edition_maps_tell_versions_apart(globals->maps, globals->map_count);
 	custom_edition_maps_tell_versions_apart(globals->campaigns, globals->campaign_count);
+	custom_edition_maps_tell_folders_apart(globals->maps, globals->map_count);
+	custom_edition_maps_tell_folders_apart(globals->campaigns, globals->campaign_count);
 	error(_error_silent, "custom edition: %d multiplayer maps for the level list, %d campaign maps (%lu ms)",
 		globals->map_count, globals->campaign_count, GetTickCount() - started);
 
@@ -951,6 +1007,60 @@ char **custom_edition_maps_level_list(
 	return globals->levels;
 }
 
+/* the map of one of the lists' own level names (its row's), or NULL */
+static struct custom_edition_map const *custom_edition_map_of_row(
+	char const *level_name)
+{
+	struct custom_edition_maps_globals *globals = &custom_edition_maps_globals;
+	struct custom_edition_map const *map = NULL;
+
+	if (!level_name)
+		return NULL;
+	if (level_name >= globals->maps[0].level_name &&
+		level_name < (char const *)(globals->maps + globals->map_count))
+	{
+		map = &globals->maps[((char const *)level_name - (char const *)globals->maps) / (long)sizeof(globals->maps[0])];
+	}
+	else if (level_name >= globals->campaigns[0].level_name &&
+		level_name < (char const *)(globals->campaigns + globals->campaign_count))
+	{
+		map = &globals->campaigns[((char const *)level_name - (char const *)globals->campaigns) /
+			(long)sizeof(globals->campaigns[0])];
+	}
+	return map && level_name == map->level_name ? map : NULL;
+}
+
+void custom_edition_maps_name_given(
+	char const *level_name)
+{
+	struct custom_edition_map const *map = custom_edition_map_of_row(level_name);
+	char path[MAP_SHARE_PATH_SIZE];
+
+	if (!level_name)
+		return;
+	/* (one of the lists' own names: the copy of that row) */
+	if (map && custom_edition_map_beside(map, ".map", path, sizeof(path)))
+	{
+		map_share_map_choose_file(map->level_name, path);
+		return;
+	}
+	/* (another: the copy chosen kept for its own name alone, a network
+	game's or a rotation's of another map choosing none) */
+	if (level_name[0])
+		map_share_map_choose_name(level_name);
+}
+
+boolean custom_edition_maps_row_chosen(
+	char const *level_name)
+{
+	struct custom_edition_map const *map = custom_edition_map_of_row(level_name);
+	char path[MAP_SHARE_PATH_SIZE];
+	char chosen[MAP_SHARE_PATH_SIZE];
+
+	return map && custom_edition_map_beside(map, ".map", path, sizeof(path)) &&
+		map_share_map_chosen(map->level_name, chosen) && !csstrcasecmp(path, chosen);
+}
+
 void custom_edition_maps_look_again(
 	void)
 {
@@ -991,10 +1101,29 @@ short custom_edition_maps_display_index(
 		custom_edition_maps_look_for();
 	}
 	/* (the map by its file: a network game's of its version, which may be
-	one of another name, <name>_<hash>.map, shown with its number) */
+	one of another name, <name>_<hash>.map, shown with its number; the copy
+	a player chose, in its folder) */
 	if (custom_edition_map_file_path(level_name, path))
 	{
 		char const *file_name = tag_name_strip_path(path);
+		char listed[MAP_SHARE_PATH_SIZE];
+
+		for (map_index = 0; map_index < globals->map_count; map_index++)
+		{
+			if (custom_edition_map_beside(&globals->maps[map_index], ".map", listed, sizeof(listed)) &&
+				!csstrcasecmp(listed, path))
+			{
+				return FIRST_DISPLAY_INDEX + map_index;
+			}
+		}
+		for (map_index = 0; map_index < globals->campaign_count; map_index++)
+		{
+			if (custom_edition_map_beside(&globals->campaigns[map_index], ".map", listed, sizeof(listed)) &&
+				!csstrcasecmp(listed, path))
+			{
+				return FIRST_CUSTOM_CAMPAIGN_DISPLAY_INDEX + map_index;
+			}
+		}
 		short length = (short)csstrlen(file_name) - (short)(sizeof(".map") - 1);
 
 		for (map_index = 0; length > 0 && map_index < globals->map_count; map_index++)
