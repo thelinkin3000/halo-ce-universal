@@ -283,7 +283,8 @@ but its GL context is a stand-in. Set once, before the guest starts. */
 extern int host_renderer_vulkan;
 
 /* config.toml's debug.gpu_stats: under Vulkan, host_gl.c reports the GL calls the
-shared files still make (host_gl_resolve) every 10 seconds */
+shared files still make (host_gl_resolve) every 10 seconds, and host_vk_render.c
+its counts every 60 frames */
 extern int host_gl_statistics;
 /* once per frame, under Vulkan (host_gl.c): the report of the GL calls still made */
 void host_gl_frame(void);

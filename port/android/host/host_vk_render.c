@@ -1666,10 +1666,23 @@ done:
 		host_vk_data_frame_end();
 }
 
+/* every 60 frames: the counts in full with debug.gpu_stats (host_gl_statistics), and otherwise a line only for 60 frames
+in which draws were skipped or drawn without a texture (two lines a second of counts were most of a log sent in) */
 static void log_statistics(void)
 {
 	struct host_vk_counts *c = &B.counts;
+	unsigned skipped = c->draws_skipped_shader + c->draws_skipped_pipeline + c->draws_skipped_target +
+		c->draws_skipped_data + c->draws_skipped_other;
 
+	if (!host_gl_statistics)
+	{
+		if (skipped || c->draws_texture_missing)
+			host_logf(HOST_LOG_INFO, "vk: in %u frames, of %u draws: skipped %u for a shader, %u for a pipeline, %u no target, "
+				"%u data missing, %u other; %u with a texture missing (debug.gpu_stats for every count)", c->frames,
+				c->draws_made + skipped, c->draws_skipped_shader, c->draws_skipped_pipeline, c->draws_skipped_target,
+				c->draws_skipped_data, c->draws_skipped_other, c->draws_texture_missing);
+		goto reset;
+	}
 	host_logf(HOST_LOG_INFO, "vk: %u frames: %u hand-overs; commands: %u targets, %u clears, %u presents; clears: %u drawn, "
 		"%u by vkCmdClearAttachments; %u target changes; %u renderings ended to read a target, %u targets made readable "
 		"as they were left; %u clears made by a rendering's load (%u alone); %u images; submissions %llu, retired %u; %u swapchain "
@@ -1693,6 +1706,7 @@ static void log_statistics(void)
 		if (services[0] && lines++ % 10 == 0)
 			host_logf(HOST_LOG_INFO, "vk: services: %s", services);
 	}
+reset:
 	c->draws_ready = c->draws_skipped_shader = c->draws_skipped_pipeline = 0;
 	c->draws_made = c->draws_skipped_target = c->draws_skipped_data = c->draws_skipped_other = c->draws_texture_missing = 0;
 	c->textures_skipped = c->texture_bytes = 0;
