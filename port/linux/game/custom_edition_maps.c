@@ -7,7 +7,10 @@ Whenever a map list opens, the custom_maps folder and then the Halo Custom
 Edition install's maps folder are scanned for CE caches (.map; OpenSauce
 caches are refused by the loader, so not listed). One level of subfolders
 is scanned too: a map there is still named custom_maps\<file>, and the
-menus list the subfolder as its own row. A folder inside a folder is not
+menus list the subfolder as its own row. Copies of a name in different
+subfolders are each listed, "Foo (packA)", and the row picked chooses its
+copy, by its file and hash (map_share.h), which the loader then takes over
+the others of the name. A folder inside a folder is not
 listed. Multiplayer maps join the level list after the Xbox levels, and
 the map lists' CUSTOM MULTIPLAYER; campaign maps (solo scenarios) are the
 map lists' CUSTOM SINGLEPLAYER, played alone or as network co-op. The stock
@@ -449,9 +452,12 @@ static void custom_edition_map_description_read(
 }
 
 /* Adds the file `name`.`extension` in `directory` (`root`, or its subfolder
-`category`) if it is a CE map that isn't listed yet. The copy in
-custom_maps itself is scanned first, so it wins over a subfolder and over
-the install. The file is identified where the listing found it, once (by
+`category`) if it is a CE map that isn't listed yet in that folder: a copy
+of its name in another subfolder is listed too (shown with its folder,
+custom_edition_maps_tell_folders_apart), and the one a row picks is the one
+played (custom_edition_maps_name_given). custom_maps is scanned before the
+install, so its copy in a folder wins over the install's in the same
+folder. The file is identified where the listing found it, once (by
 name, as the loader finds a map, it was looked for twice, a campaign's
 then a multiplayer map's, each search a lookup in the folder and the
 file's opening). */
