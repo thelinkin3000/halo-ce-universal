@@ -62,6 +62,13 @@ MUSL_VERSION = "1.2.5"
 MUSL_DIR = THIRD_PARTY / f"musl-{MUSL_VERSION}"
 MUSL_URL = f"https://musl.libc.org/releases/musl-{MUSL_VERSION}.tar.gz"
 MUSL_SHA256 = "a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4"
+# (the same archive, byte for byte, where musl.libc.org does not answer: it was
+# down on 2026-11-03 and failed a branch's Switch build, whose cache is only the
+# tags'; download checks each against MUSL_SHA256)
+MUSL_MIRRORS = [
+    f"https://deb.debian.org/debian/pool/main/m/musl/musl_{MUSL_VERSION}.orig.tar.gz",
+    f"https://sources.buildroot.net/musl/musl-{MUSL_VERSION}.tar.gz",
+]
 # (as tools/windows_build.py's and tools/linux_sysroot.py's SDL_VERSION)
 # (the download's SHA-256, and the tag's commit, when they were pinned)
 MUSL_SHA256 = "a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4"
@@ -233,7 +240,7 @@ def fetch_third_party(third_party: Path = THIRD_PARTY) -> None:
     if not musl_dir.is_dir():
         print(f"Downloading {MUSL_URL}")
         archive = third_party / f"musl-{MUSL_VERSION}.tar.gz"
-        archive.write_bytes(download([MUSL_URL], MUSL_SHA256))
+        archive.write_bytes(download([MUSL_URL] + MUSL_MIRRORS, MUSL_SHA256))
         # (unpacked beside it and then moved, so that an interrupted unpacking
         # leaves no folder that a later configure would take as complete)
         unpacked = third_party / f"musl-{MUSL_VERSION}.unpacked"
