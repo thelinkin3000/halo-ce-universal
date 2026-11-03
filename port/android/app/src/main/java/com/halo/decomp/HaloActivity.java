@@ -361,9 +361,10 @@ public class HaloActivity extends SDLActivity {
 
     /**
      * The Mods screen's IMPORT (port/linux/game/menu_functions.c, through host_android_import_mods): the system's
-     * file picker, several .zip files at once, then each one taken into a folder of its own name in folder, the mods
-     * folder, where the Mods screen finds it. A mod's .zip holds its folder's files as they are laid out there
-     * (mod.toml and tags/ at its top). Called on the game's thread; no storage permission.
+     * file picker, several .zip files at once, then the mods in each taken into folder, the mods folder, where the
+     * Mods screen finds them (copyModsIn). A mod's .zip holds its folder's files as they are laid out there (mod.toml
+     * and tags/ at its top), and a pack's any number of mods, each in a folder of its own at the .zip's top. Called on the game's
+     * thread; no storage permission.
      */
     public void importMods(String folder) {
         runOnUiThread(() -> {
@@ -450,47 +451,75 @@ public class HaloActivity extends SDLActivity {
     }
 
     /**
-     * the .zip files chosen taken into the mods folder, on a thread of their own; a Toast says how it went. Each is
-     * written into .import/<name> (the game passes over a folder whose name begins with a dot), which becomes the mod
-     * only once it is whole and has a mod.toml at its top; a name the folder has already is left as it is.
+     * the mods a .zip unpacked into folder holds, by the name each is kept under: folder itself, named as the .zip
+     * (zipName), when its mod.toml is at the top; else each folder at the top with a mod.toml at its own top (a pack
+     * of mods), named as that folder. Mods further down are not looked for.
+     */
+    private static java.util.Map<String, File> modsIn(File folder, String zipName) {
+        java.util.Map<String, File> found = new java.util.LinkedHashMap<>();
+        if (new File(folder, "mod.toml").isFile()) {
+            found.put(zipName, folder);
+            return found;
+        }
+        File[] children = folder.listFiles(File::isDirectory);
+        if (children == null)
+            return found;
+        java.util.Arrays.sort(children);
+        for (File child : children) {
+            if (new File(child, "mod.toml").isFile())
+                found.putIfAbsent(modFolderName(child.getName()), child);
+        }
+        return found;
+    }
+
+    /**
+     * the .zip files chosen taken into the mods folder, on a thread of their own; a Toast (and the log) says how it
+     * went. Each is unpacked into .import/<name> (the game passes over a folder whose name begins with a dot), and
+     * each mod in it (modsIn: one at its top, or one in each folder at its top) moved into the mods folder under its
+     * name; a mod whose name the folder has already is left as it is, and a .zip that cannot be taken does not stop
+     * the others.
      */
     private void copyModsIn(List<Uri> documents, String folder) {
         File mods = new File(folder);
         File staging = new File(mods, ".import");
-        int copied = 0, skipped = 0;
-        String failed = null;
+        List<String> copied = new ArrayList<>();
+        List<String> skipped = new ArrayList<>();
+        List<String> failed = new ArrayList<>();
         runOnUiThread(() -> Toast.makeText(this, "Importing...", Toast.LENGTH_SHORT).show());
         for (Uri document : documents) {
-            String name = modFolderName(documentName(document));
-            File mod = new File(mods, name);
+            String chosen = documentName(document);
+            String name = modFolderName(chosen);
             File part = new File(staging, name);
-            if (mod.exists()) {
-                skipped++;
-                continue;
-            }
             try {
                 deleteTree(part);
                 if (!part.mkdirs())
                     throw new IOException("its folder cannot be made");
                 unzipInto(document, part);
-                if (!new File(part, "mod.toml").isFile())
-                    throw new IOException("it has no mod.toml at its top");
-                if (!part.renameTo(mod))
-                    throw new IOException("its folder cannot be kept");
-                copied++;
+                java.util.Map<String, File> found = modsIn(part, name);
+                if (found.isEmpty())
+                    throw new IOException("it has no mod.toml at its top, nor folders at its top with one each");
+                for (java.util.Map.Entry<String, File> mod : found.entrySet()) {
+                    File target = new File(mods, mod.getKey());
+                    if (target.exists())
+                        skipped.add(mod.getKey());
+                    else if (mod.getValue().renameTo(target))
+                        copied.add(mod.getKey());
+                    else
+                        failed.add(mod.getKey() + ": its folder cannot be kept");
+                }
             } catch (Exception e) {
-                failed = name + ": " + e.getMessage();
-                break;
+                failed.add((chosen != null ? chosen : name) + ": " + e.getMessage());
             } finally {
                 deleteTree(part);
             }
         }
         deleteTree(staging);
-        String text = failed != null ? (copied > 0 ? copied + " imported; then " : "") + "the import stopped: " + failed
-            : copied + (copied == 1 ? " mod imported" : " mods imported")
-                + (skipped > 0 ? " (" + skipped + " already there: delete " + (skipped == 1 ? "it" : "them")
-                    + " first to import again)" : "") + ".";
-        report("import mods", text);
+        String text = (copied.isEmpty() ? "" : "Imported " + String.join(", ", copied) + ". ")
+            + (skipped.isEmpty() ? "" : String.join(", ", skipped) + (skipped.size() == 1 ? " was" : " were")
+                + " already there (delete " + (skipped.size() == 1 ? "it" : "them") + " first to import again). ")
+            + (failed.isEmpty() ? "" : "Not imported: " + String.join("; ", failed) + ".")
+            + (copied.isEmpty() && skipped.isEmpty() && failed.isEmpty() ? "Nothing imported." : "");
+        report("import mods", text.trim());
     }
 
     /**
