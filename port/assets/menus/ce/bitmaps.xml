@@ -375,6 +375,9 @@
 		<frame png="ce/port/pause/objectives_right__0.png" width="16" height="256"/>
 		<frame png="ce/port/pause/objectives_right__1.png" width="16" height="256"/>
 	</bitmap>
+	<bitmap name="map_list/folder">
+		<frame png="ce/port/map_list/folder__0.png" width="24" height="24"/>
+	</bitmap>
 	<bitmap name="voice/speaker">
 		<frame png="ce/port/voice/speaker__0.png" width="24" height="24"/>
 		<frame png="ce/port/voice/speaker__1.png" width="24" height="24"/>

@@ -79,6 +79,8 @@ their handlers open opens.
 #include "interface/ui_widget.h"
 #include "bitmaps/bitmap_group.h"
 #include "bitmaps/bitmaps.h"
+#include "bitmaps/bitmap_color_conversion.h"
+#include "bitmaps/bitmap_group_lookup.h"
 #include "rasterizer/xbox/rasterizer_xbox_hardware_bitmaps.h"
 #include "interface/ui_widget_event_handler_functions.h"
 #include "main/main.h"
@@ -1117,15 +1119,36 @@ static void map_kind_focus(struct widget_instance *list, short first, short chos
 	focus_row(list, (short)(1 + chosen - first));
 }
 
+/* the map lists' rows that are folders of maps, as last updated, for their
+folder icons (menu_functions_text_box_drawn); and when */
+static struct
+{
+	struct widget_instance *texts[MAP_KIND_ROWS];
+	short count;
+	unsigned long updated_at;
+} map_folder_rows;
+
+/* the map lists' folder icon (tools/ce_menus.py: Lucide's, white), drawn
+in its row's text's colour, left of the folder's name */
+#define MAP_FOLDER_ICON_BITMAP "pc\\map_list\\folder"
+/* (the folder's name after this, room for the icon left of it as the row
+centres it) */
+#define MAP_FOLDER_TEXT_LEAD L"   "
+#define MAP_FOLDER_ICON_GAP 6
+
 /* the rows after the chooser: count entries from *first's, scrolled on at
 their ends; the entry focused, NONE when the chooser or the buttons have the
-focus */
+focus. entry_folder (NULL: none is) says which entries are folders of maps,
+drawn with the folder icon. */
 static short map_kind_rows_update(struct widget_instance *list, short *first, short count,
-	void (*entry_text)(short entry, wchar_t *text))
+	void (*entry_text)(short entry, wchar_t *text), boolean (*entry_folder)(short entry))
 {
 	short shown = (short)MIN(count, MAP_KIND_ROWS);
 	short row = focused_row(list), index = 0;
 	struct widget_instance *child;
+
+	map_folder_rows.count = 0;
+	map_folder_rows.updated_at = system_milliseconds();
 
 	if (row != NONE && row >= 1 && row == shown && *first + shown < count && list_scrolls_at_end())
 	{
@@ -1148,8 +1171,15 @@ static short map_kind_rows_update(struct widget_instance *list, short *first, sh
 		child->visible = index - 1 < shown;
 		if (index - 1 < shown)
 		{
+			struct widget_instance *text_box = named(child, "list_item_text", 0);
+
 			entry_text((short)(*first + index - 1), text);
-			text_set(named(child, "list_item_text", 0), text);
+			text_set(text_box, text);
+			if (text_box && entry_folder && entry_folder((short)(*first + index - 1)) &&
+				map_folder_rows.count < MAP_KIND_ROWS)
+			{
+				map_folder_rows.texts[map_folder_rows.count++] = text_box;
+			}
 		}
 		visible_set(named(child, "list_item_arrows", 0), child == list->focused_child);
 		visible_set(named(child, "scroll_up_button", 0), FALSE);
@@ -1376,15 +1406,24 @@ static short map_browse_find(boolean campaign, char const *category, short flat)
 	return NONE;
 }
 
+/* a row's text: a map's name, or a folder's after room for its icon
+(menu_functions_text_box_drawn) */
 static void map_browse_text(boolean campaign, char const *category, short entry, wchar_t *text)
 {
+	short lead = 0;
+
 	map_browse_build(campaign, category);
 	if (entry < 0 || entry >= map_browse_count_cache)
 	{
 		text[0] = 0;
 		return;
 	}
-	map_browse_entry_text(campaign, &map_browse_entries[entry], text);
+	if (map_browse_entries[entry].folder)
+	{
+		lead = (short)(sizeof(MAP_FOLDER_TEXT_LEAD) / sizeof(wchar_t) - 1);
+		ustrcpy(text, MAP_FOLDER_TEXT_LEAD);
+	}
+	map_browse_entry_text(campaign, &map_browse_entries[entry], text + lead);
 }
 
 /* the description's map (each list's has both kinds' widgets): a campaign
@@ -1640,6 +1679,11 @@ static void level_list_custom_text(short entry, wchar_t *text)
 	map_browse_text(level_list.kind == MAP_KIND_CUSTOM_SINGLEPLAYER, level_list.category, entry, text);
 }
 
+static boolean level_list_custom_folder(short entry)
+{
+	return map_browse_folder(level_list.kind == MAP_KIND_CUSTOM_SINGLEPLAYER, level_list.category, entry);
+}
+
 /* choosing a folder lists its maps; B (level_folder_back) returns */
 static void level_folder_open(struct widget_instance *list, short entry)
 {
@@ -1701,7 +1745,8 @@ static void level_list_update(struct widget_instance *list)
 	count = map_kind_count(kind, level_list.map_count, level_list.category);
 	entry = map_kind_rows_update(list, &level_list.first, count,
 		kind == MAP_KIND_SINGLEPLAYER ? level_row_text :
-		kind == MAP_KIND_MULTIPLAYER ? multiplayer_map_text : level_list_custom_text);
+		kind == MAP_KIND_MULTIPLAYER ? multiplayer_map_text : level_list_custom_text,
+		kind == MAP_KIND_CUSTOM_SINGLEPLAYER || kind == MAP_KIND_CUSTOM_MULTIPLAYER ? level_list_custom_folder : NULL);
 	if (entry != NONE)
 		level_list.chosen = entry;
 	if (kind != MAP_KIND_SINGLEPLAYER)
@@ -4690,6 +4735,11 @@ static void map_list_custom_text(short entry, wchar_t *text)
 	map_browse_text(map_list.kind == MAP_KIND_CUSTOM_SINGLEPLAYER, map_list.category, entry, text);
 }
 
+static boolean map_list_custom_folder(short entry)
+{
+	return map_browse_folder(map_list.kind == MAP_KIND_CUSTOM_SINGLEPLAYER, map_list.category, entry);
+}
+
 static boolean map_list_custom(void)
 {
 	return map_list.kind == MAP_KIND_CUSTOM_SINGLEPLAYER || map_list.kind == MAP_KIND_CUSTOM_MULTIPLAYER;
@@ -4806,7 +4856,8 @@ static void map_list_update(struct widget_instance *list)
 	count = map_step_count();
 	entry = map_kind_rows_update(list, &map_list.first, count, map_list.step == MAP_STEP_DIFFICULTIES ?
 		map_difficulty_text : kind == MAP_KIND_SINGLEPLAYER ? map_level_text :
-		kind == MAP_KIND_MULTIPLAYER ? multiplayer_map_text : map_list_custom_text);
+		kind == MAP_KIND_MULTIPLAYER ? multiplayer_map_text : map_list_custom_text,
+		map_list.step == MAP_STEP_MAPS && map_list_custom() ? map_list_custom_folder : NULL);
 	if (entry != NONE)
 		map_list.chosen = entry;
 	/* (the map whose difficulties are listed, else the one chosen) */
@@ -8375,9 +8426,53 @@ static boolean news_close(struct widget_instance *widget, boolean *widget_delete
 (its font and justification still set): a lobby row's player talking in
 voice chat (or muted) has a speaker just left of their name
 (port/linux/game/network_voice.c) */
+/* a map list's folder row's icon: left of the folder's name, the gap
+between, centred on its capitals, in the colour its text was drawn in;
+FALSE if the text box is not one */
+static boolean map_folder_icon_draw(struct widget_instance *widget, rectangle2d const *bounds)
+{
+	wchar_t const *text = widget->parameters.text_box.text;
+	wchar_t const *name = text;
+	long bitmap_index;
+	struct bitmap_data *bitmap;
+	real_argb_color color;
+	rectangle2d full, alone, cursor, icon;
+	short row, size, middle;
+
+	if (!map_folder_rows.count || system_milliseconds() - map_folder_rows.updated_at > 250)
+		return FALSE;
+	for (row = 0; row < map_folder_rows.count && map_folder_rows.texts[row] != widget; row++)
+		;
+	if (row == map_folder_rows.count)
+		return FALSE;
+	bitmap_index = tag_loaded(BITMAP_GROUP_TAG, MAP_FOLDER_ICON_BITMAP);
+	bitmap = bitmap_index != NONE ? bitmap_group_try_and_get_bitmap(bitmap_index, 0) : NULL;
+	if (!bitmap || !text || !text[0])
+		return TRUE;
+	while (*name == L' ')
+		name++;
+	if (!*name)
+		return TRUE;
+	/* (the name's ink: its right as the row drew it, less its width) */
+	draw_unicode_string_compute_bounds(bounds, text, &full, &cursor);
+	draw_unicode_string_compute_bounds(bounds, name, &alone, &cursor);
+	middle = draw_unicode_string_capital_middle(bounds, text);
+	size = (short)MIN(16, bounds->y1 - bounds->y0);
+	icon.x1 = (short)(full.x1 - (alone.x1 - alone.x0) - MAP_FOLDER_ICON_GAP);
+	icon.x0 = (short)(icon.x1 - size);
+	icon.y0 = (short)(middle - size / 2);
+	icon.y1 = (short)(icon.y0 + size);
+	draw_string_get_color(&color);
+	draw_bitmap_in_rect(bitmap, &icon, NULL, NULL, real_argb_color_to_pixel32(&color), NULL, TRUE);
+	return TRUE;
+}
+
 void menu_functions_text_box_drawn(struct widget_instance *widget, rectangle2d const *bounds)
 {
 	short row;
+
+	if (map_folder_icon_draw(widget, bounds))
+		return;
 
 #ifdef LINK_PAGE
 	if (widget->name && !strcmp(widget->name, "ticker_player_info"))

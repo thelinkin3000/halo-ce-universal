@@ -700,6 +700,11 @@ def main() -> None:
     # (and its THEATER: port_settings._theater)
     lines.append(art.port_picture("main_menu/menu_theater", port_settings.menu_item_frames("THEATER", art.redraws)))
     lines.append(art.port_picture("mods/status", port_settings.mod_status_frames(ROOT / "port/assets/icons/lucide")))
+    # (a folder of maps in the map lists: Lucide's folder, white for
+    # menu_functions.c to tint as its row's text)
+    lines.append(art.port_picture("map_list/folder", [
+        ((ROOT / "port/assets/icons/lucide/folder.svg").read_text().replace('stroke="currentColor"',
+                                                                         'stroke="#FFFFFF"'), 24, 24)]))
     lines.append(art.port_picture("mods/status_small",
                                   port_settings.mod_status_frames(ROOT / "port/assets/icons/lucide", 16)))
     # (the button-layout overlay's controllers, AL2009man's Gamepad Asset
