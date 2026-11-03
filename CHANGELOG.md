@@ -1,5 +1,12 @@
 # Changelog
 
+## Build 135: Hotfix for the Turnip crash, and mod packs import!
+
+- Vulkan: on some phones with the Turnip driver (an Adreno 750 phone, for one), the game crashed a moment after it started drawing at the screen's size. It was a bug in the driver, which the game no longer runs into. (thelinkin3000)
+- Mods: on Android, IMPORT takes a .zip with a whole pack of mods, each in a folder of its own at the .zip's top, as well as a .zip of one mod. Mods you already have are skipped and named, and a .zip that can't be imported no longer stops the others. (thelinkin3000)
+- Android: how an import or an export went (maps, mods, drivers, replays) is written to the log as well as shown on screen, so a log you send in says what happened. (thelinkin3000)
+- Vulkan: the renderer's counts, two long lines every second, are only written with `debug.gpu_stats`. Without it, a line is written only when draws were skipped. They were most of the log. (thelinkin3000)
+
 ## Build 134: Vulkan runs faster, and long replays play on Switch!
 
 - Custom Edition maps: on phones where Android already uses the memory Custom Edition maps are made for (a Galaxy Z Fold, for one), the maps now load somewhere else and play, instead of never showing up in the map lists. Where they can't run at all, IMPORT says so instead of importing maps you would never see. (thelinkin3000)
