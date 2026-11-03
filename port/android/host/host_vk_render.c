@@ -248,11 +248,22 @@ static int frame_submit_split(struct host_vk_target *back_buffer, uint32_t *imag
 	host_vk_profile_frame_end((unsigned)(frame - B.frames), frame->present_command, image != UINT32_MAX);
 	if (!HOST_VK_CHECK(vkEndCommandBuffer(frame->present_command)))
 		return 0;
-	/* (the frame's commands whatever the stage; the image at the transfer stage, as frame_submit waits for it) */
-	waits[0] = frame->drawn;
-	stages[0] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-	waits[1] = frame->acquired;
-	stages[1] = VK_PIPELINE_STAGE_TRANSFER_BIT;
+	/* (the frame's commands whatever the stage; the image at the transfer stage, as frame_submit waits for it. The
+	image's semaphore comes first: Turnip's KGSL backend (Mesa 26.0, kgsl_syncobj_merge) merges a sync file after a
+	GPU timestamp by converting the sync file as if it were the timestamp, and reads through its null queue; a
+	timestamp after a sync file is merged correctly) */
+	if (image != UINT32_MAX)
+	{
+		waits[0] = frame->acquired;
+		stages[0] = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		waits[1] = frame->drawn;
+		stages[1] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+	}
+	else
+	{
+		waits[0] = frame->drawn;
+		stages[0] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+	}
 	memset(&submit, 0, sizeof(submit));
 	submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	submit.waitSemaphoreCount = image != UINT32_MAX ? 2 : 1;
