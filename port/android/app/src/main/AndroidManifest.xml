@@ -80,6 +80,13 @@
             </intent-filter>
         </activity>
 
+        <!-- the old package's bridge's notice, all it runs (LauncherActivity) -->
+        <activity
+            android:name=".BridgeActivity"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode" />
+
         <!-- in a process of its own, with a fresh Java heap (HaloApplication) -->
         <activity
             android:name=".HaloActivity"

@@ -66,6 +66,12 @@ public class LauncherActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // (the old package's bridge has no game: only its notice)
+        if (BuildConfig.HALO_BRIDGE) {
+            startActivity(new Intent(this, BridgeActivity.class));
+            finish();
+            return;
+        }
         dataRoot = getExternalFilesDir(null);
         // created by the app, so that files pushed into it with adb stay
         // readable (a directory adb creates there belongs to the shell user)

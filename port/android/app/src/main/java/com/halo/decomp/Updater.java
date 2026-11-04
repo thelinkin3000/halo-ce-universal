@@ -73,11 +73,6 @@ final class Updater {
     static void start(Activity activity) {
         File config = configFile(activity);
 
-        // (the bridge never updates itself: its one way on is the new app. A player who said not to be asked never got it)
-        if (BuildConfig.HALO_BRIDGE && BuildConfig.HALO_BUILD_NUMBER > 0) {
-            Migration.bridgeStart(activity);
-            return;
-        }
         if (BuildConfig.HALO_BUILD_NUMBER <= 0 || config == null || !autoUpdate(config))
             return;
         new Thread(() -> {
@@ -501,12 +496,18 @@ final class Updater {
     /* ---------- updating */
 
     /** The bridge's way on: the latest release's new app, downloaded and handed to the installer. */
-    static void downloadNewApp(Activity activity) {
+    static void downloadNewApp(Activity activity, Runnable failed) {
         new Thread(() -> {
             int latest = latestRelease();
 
-            if (latest > 0 && !activity.isFinishing())
-                activity.runOnUiThread(() -> update(activity, latest));
+            if (activity.isFinishing())
+                return;
+            activity.runOnUiThread(() -> {
+                if (latest > 0)
+                    update(activity, latest);
+                else
+                    failed.run();
+            });
         }, "new app check").start();
     }
 

@@ -975,10 +975,11 @@ sides (`Migration.java`, `MigrationProvider.java`, `MigrationFiles.java`):
 - **The bridge**, the old package's last builds (`HALO_ANDROID_BRIDGE=1`), is
   every release's `halo-android-release.zip`, the file every installed build's
   updater asks for, so that a phone that comes back at any time reaches it. It
-  does not update itself. At each start it downloads the release's
-  `slipstreamce-android-release.zip` and hands it to the installer, or, once the
-  new app is installed, offers to open it. It answers only the new package of
-  its own signing key for the player's files.
+  has no game (`BridgeActivity`): a notice of the rebranding, which downloads the
+  release's `slipstreamce-android-release.zip`, hands it to the installer and,
+  once it is installed, offers to open it. The player's files stay where they are
+  through the update to it, and it answers only the new package of its own
+  signing key for them.
 - **The new app**, at its first start with the old app installed, copies those
   files (`MigrationFiles.java` says which: saves, settings, mods, maps, the touch
   layouts) and only then offers to remove the old app. The old app's data is not

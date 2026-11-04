@@ -11,7 +11,6 @@ import android.util.TypedValue;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
-import android.widget.Toast;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -27,9 +26,9 @@ import java.util.List;
  * apps with nothing in common.
  *
  * The old side is the bridge, the app built with HALO_ANDROID_BRIDGE=1: every release's halo-android-release.zip, the
- * file every installed build's updater asks for, so that a phone that comes back at any time reaches it. It does not
- * update itself: on each start it downloads and offers the new app (Updater.start), and offers to open it once
- * installed. Its MigrationProvider hands over the player's files.
+ * file every installed build's updater asks for, so that a phone that comes back at any time reaches it. It has no
+ * game: only a notice (BridgeActivity), which downloads the new app and hands it to the installer, then offers to
+ * open it. Its MigrationProvider hands over the player's files, which stay where they are through the update to it.
  *
  * The new side: at its first start with the old app installed (LauncherActivity), the files are copied here, each to a
  * .part then into place, and only once all have arrived is .migrated written and the old app's removal offered. The
@@ -254,30 +253,5 @@ final class Migration {
                 new Intent(Intent.ACTION_DELETE, Uri.parse("package:" + BuildConfig.HALO_OLD_PACKAGE)), UNINSTALL_OLD))
             .setNegativeButton("Later", (dialog, which) -> done.run())
             .show();
-    }
-
-    /* ---------- the bridge's side */
-
-    /** At the bridge's start: the new app opened if it is there, else downloaded and offered. */
-    static void bridgeStart(Activity activity) {
-        if (installed(activity, BuildConfig.HALO_NEW_PACKAGE)) {
-            Intent open = activity.getPackageManager().getLaunchIntentForPackage(BuildConfig.HALO_NEW_PACKAGE);
-
-            if (open == null)
-                return;
-            new AlertDialog.Builder(activity)
-                .setTitle("This game has moved")
-                .setMessage("The game now lives in its new app, which is installed and brings your saves and settings "
-                    + "with it. This one gets no more updates.")
-                .setPositiveButton("Open the new app", (dialog, which) -> {
-                    activity.startActivity(open);
-                    activity.finish();
-                })
-                .setNegativeButton("Later", null)
-                .show();
-            return;
-        }
-        Toast.makeText(activity, "This game is moving to a new app: downloading it...", Toast.LENGTH_LONG).show();
-        Updater.downloadNewApp(activity);
     }
 }
