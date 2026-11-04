@@ -58,8 +58,8 @@ MENU_LIST = MENU_ASSETS / "menus.json"
 SMAA_ASSETS = Path("port/third_party/smaa")
 SMAA_FILES = (("SMAA.hlsl", "xgpu_smaa_shader"), ("area_tex.zlib", "xgpu_smaa_area_texture"),
               ("search_tex.zlib", "xgpu_smaa_search_texture"))
-# the desktop windows' icon (tools/app_icon.py; port/linux/src/sdl_platform.c)
-WINDOW_ICON = Path("port/assets/icon/opence-icon-256.png")
+# the desktop windows' icon (tools/slipstream_icon.py; port/linux/src/sdl_platform.c)
+WINDOW_ICON = Path("port/assets/icon/slipstream-icon-256.png")
 # the pointer the menus show in place of the system's (port/linux/src/sdl_platform.c)
 MENU_CURSOR = Path("port/assets/cursor/menu_cursor.png")
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"

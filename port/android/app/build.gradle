@@ -54,6 +54,9 @@ android {
             java.srcDirs += new File(staged, "third_party/SDL3/android-project/app/src/main/java")
             jniLibs.srcDirs = [new File(staged, "jniLibs")]
             assets.srcDirs = [new File(staged, "assets")]
+            // the launcher icon: the bridge keeps upstream's (tools/app_icon.py), the new app has its logo
+            // (tools/slipstream_icon.py)
+            res.srcDirs += bridge ? "src/bridge/res" : "src/slipstreamce/res"
         }
     }
 

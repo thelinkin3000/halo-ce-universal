@@ -804,10 +804,7 @@ def _generate(n: Writer, sln: Any, config_path: Path) -> None:
     n.rule(name="ps5_copy", command="mkdir -p $$(dirname $out) && cp $in $out", description="PS5 COPY $out")
     param = title / "sce_sys" / "param.json"
     icon = title / "sce_sys" / "icon0.png"
-    # The icon is made once from the Android master, and committed, as the
-    # Switch's icon.jpg is:
-    #   python3 -c "from PIL import Image; Image.open('port/assets/icon/opence-icon.png').convert('RGBA')
-    #       .resize((512, 512), Image.LANCZOS).save('port/ps5/sce_sys/icon0.png', optimize=True)"
+    # The icon is committed, as the Switch's icon.jpg is: tools/slipstream_icon.py makes them
     check_content_version(PORT_DIR / "sce_sys" / "param.json", os.environ.get("HALO_BUILD_NUMBER", "0"))
     n.build(outputs=param, rule="ps5_copy", inputs=root / PORT_DIR / "sce_sys" / "param.json")
     n.build(outputs=icon, rule="ps5_copy", inputs=root / PORT_DIR / "sce_sys" / "icon0.png")

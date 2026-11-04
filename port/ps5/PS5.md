@@ -615,7 +615,7 @@ end of this phase.
 | `port/ps5/host/host_main.c` | the title's entry point, written to stay: `ps5_fp_ieee()`, the log (a file and the kernel log), the data folder, the build's identity logged, then the bootstrap (this phase) or the Android host's start-up (phase 2) |
 | `port/ps5/host/host_bootstrap.c`, `host_bootstrap.S` | **temporary**: the guest's ranges as direct memory, `/app0/halo_guest.elf` loaded where it is linked, every import a thunk into `import_dispatch`, the probe's trivial answers, a stop at the first import not answered. The probe's code, moved and trimmed; the header comment says phase 2 deletes both files |
 | `port/ps5/sce_sys/param.json` | the title: `titleId` **PPSA99500**, `contentId` `UP9000-PPSA99500_00-HALOCOMBATEVOLVE`, `titleName` "Halo: Combat Evolved", the other fields as the probes' (`downloadDataSize` 256 kept) |
-| `port/ps5/sce_sys/icon0.png` | 512x512, made once from `port/assets/icon/opence-icon.png` with Pillow (the command in a comment in `ps5_build.py`), committed as the Switch's `icon.jpg` is |
+| `port/ps5/sce_sys/icon0.png` | 512x512, the logo (`tools/slipstream_icon.py`) |
 | `port/ps5/README.md` | first version: requirements, building, installing, running a build, where the log is; grows with each phase |
 
 ### The build (`ninja ps5`)
