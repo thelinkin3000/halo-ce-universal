@@ -1506,11 +1506,14 @@ WIDGET_PATCHES = {
         # a PS5 - opens the news, the latest release's notes: _news_screen;
         # on the main menu alone)
         "handlers": ['<on event="down"/>', f'<on event="x" open="{NEWS}/news_screen"/>']},
+    # (the build number in the menus' blue, on the right edge the hint and the renderer's line share)
+    "main_menu/build_number": {"set": {"width": 180, "color": "#FF2896FF", "align": "right"}},
     # (and the hint that X opens it, over the build number: a tap or a click
     # on it presses X, its picture a key's icon to the pointer, x_butn_news)
     "main_menu/main_menu": {"insert_before": {"main_menu/build_number": [
-        f'<child widget="{NEWS}/x_butn_news" x="450" y="380"/>',
-        f'<child widget="{NEWS}/news_hint" x="450" y="380"/>']}},
+        # (left-aligned, as a line with a button's picture cannot be otherwise, and placed so that it ends on that edge)
+        f'<child widget="{NEWS}/x_butn_news" x="572" y="380"/>',
+        f'<child widget="{NEWS}/news_hint" x="572" y="380"/>']}},
     f"{PLAYER_EDIT}/player_options_menu": {"insert_before": {
         f"{PLAYER_EDIT}/player_button_bar": [
             f'<child widget="{PLAYER_EDIT}/op_aim_assist" x="54" y="289"/>',
@@ -2790,7 +2793,7 @@ def _news_screen() -> list:
     # ui_mouse_key_button; nothing of it drawn, the hint's own picture is)
     lines += _widget(f"{base}/x_butn_news", [("width", 16), ("height", 20)], [])
     lines += _widget(f"{base}/b_butn_news_back", [("width", 16), ("height", 20)], [])
-    lines += _widget(f"{base}/news_hint", [("type", "text"), ("controller", 1), ("width", 150), ("height", 20),
+    lines += _widget(f"{base}/news_hint", [("type", "text"), ("controller", 1), ("width", 60), ("height", 20),
                                           ("text", "%x-button NEWS"), ("font", "ui\\small_ui"),
                                           ("color", "#FFCCCCCC"), ("text_flags", "no_focus_test")], [])
     return lines

@@ -2024,8 +2024,19 @@ static void set_textbox_to_build_number(
 
 	if (!build_number_string[0])
 	{
+		/* port: this build's name and number, for the Xbox's "01.01.14.2342" (a local build has no number) */
+		void main_build_identity(long *number, char *flavor, size_t flavor_size, char *repository,
+			size_t repository_size, char *version, size_t version_size);
+		char flavor[32], repository[64], version[96], text[64];
+		long number = 0;
+
+		main_build_identity(&number, flavor, sizeof(flavor), repository, sizeof(repository), version, sizeof(version));
+		if (number > 0)
+			snprintf(text, sizeof(text), "SlipstreamCE - v%ld", number);
+		else
+			snprintf(text, sizeof(text), "SlipstreamCE - dev");
 		ascii_to_wide(
-			"01.01.14.2342",
+			text,
 			build_number_string,
 			sizeof(build_number_string));
 	}

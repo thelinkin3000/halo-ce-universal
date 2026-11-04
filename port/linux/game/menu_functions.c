@@ -10058,11 +10058,36 @@ __attribute__((weak)) char const *d3d8_renderer_description(void)
 	return NULL;
 }
 
+/* The main menu's corner, its news hint, version and renderer: on the screen's right edge, past the 640 columns the menus
+are laid out in and centred by (their places in them: main_menu.xml), rather than those columns' */
+static void main_menu_corner_to_screen_edge(struct widget_instance *text_box)
+{
+	static struct
+	{
+		char const *name;
+		short x;
+	} const corner[] = { { "x_butn_news", 572 }, { "news_hint", 572 }, { "build_number", 450 }, { "renderer", 450 } };
+	struct widget_instance *parent = text_box->parent;
+	short margin = (short)halo_screen_ui_offset_current();
+	short index;
+
+	if (!parent)
+		return;
+	for (index = 0; index < (short)NUMBEROF(corner); index++)
+	{
+		struct widget_instance *widget = named(parent, corner[index].name, 0);
+
+		if (widget)
+			widget->horizontal_offset = (short)(parent->horizontal_offset + corner[index].x + margin);
+	}
+}
+
 static void renderer_text_update(struct widget_instance *text_box)
 {
 	char const *description = d3d8_renderer_description();
 	wchar_t text[ROW_TEXT_LENGTH];
 
+	main_menu_corner_to_screen_edge(text_box);
 	if (!description || !ascii_to_wide(description, text, sizeof(text)))
 		return;
 	text_set(text_box, text);

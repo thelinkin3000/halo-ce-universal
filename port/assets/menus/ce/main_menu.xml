@@ -3,10 +3,10 @@
 <menus root="main_menu/main_menu">
 	<widget name="main_menu/blueline" controller="1" width="192" height="2" bitmap="bitmaps/blue">
 	</widget>
-	<widget name="main_menu/build_number" type="text" controller="1" width="150" height="20" font="ui\small_ui" color="#FFFF8000">
+	<widget name="main_menu/build_number" type="text" controller="1" width="180" height="20" font="ui\small_ui" color="#FF2896FF" align="right">
 		<data input="build number textbox only"/>
 	</widget>
-	<widget name="main_menu/renderer" type="text" controller="1" width="190" height="60" font="ui\small_ui" color="#FFFF8000">
+	<widget name="main_menu/renderer" type="text" controller="1" width="180" height="60" font="ui\small_ui" color="#FF2896FF" align="right">
 		<data input="port renderer textbox"/>
 	</widget>
 	<widget name="main_menu/current_profile_name" type="text" controller="1" left="10" top="446" width="340" height="34" font="ui\large_ui" color="#FFCCCCCC">
@@ -19,8 +19,8 @@
 		<on event="b" open="main_menu/quit_select/quit_screen" platform="desktop android web"/>
 		<child widget="main_menu/halo_logo" y="28"/>
 		<child widget="main_menu/main_menu_select_list"/>
-		<child widget="main_menu/news/x_butn_news" x="450" y="380"/>
-		<child widget="main_menu/news/news_hint" x="450" y="380"/>
+		<child widget="main_menu/news/x_butn_news" x="572" y="380"/>
+		<child widget="main_menu/news/news_hint" x="572" y="380"/>
 		<child widget="main_menu/build_number" x="450" y="400"/>
 		<child widget="main_menu/renderer" x="450" y="420"/>
 	</widget>

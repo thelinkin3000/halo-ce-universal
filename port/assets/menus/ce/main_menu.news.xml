@@ -53,6 +53,6 @@
 	</widget>
 	<widget name="main_menu/news/b_butn_news_back" width="16" height="20">
 	</widget>
-	<widget name="main_menu/news/news_hint" type="text" controller="1" width="150" height="20" text="%x-button NEWS" font="ui\small_ui" color="#FFCCCCCC" text_flags="no_focus_test">
+	<widget name="main_menu/news/news_hint" type="text" controller="1" width="60" height="20" text="%x-button NEWS" font="ui\small_ui" color="#FFCCCCCC" text_flags="no_focus_test">
 	</widget>
 </menus>
