@@ -42,6 +42,8 @@ android {
         buildConfigField "String", "HALO_NEW_PACKAGE", "\"${newPackage}\""
         buildConfigField "String", "HALO_OLD_PACKAGE", "\"${oldPackage}\""
         manifestPlaceholders = [migrationProvider: bridge ? "true" : "false"]
+        // (the bridge keeps the name its players know it by, and Migration.java's "your old Halo app" names)
+        resValue "string", "app_name", bridge ? "Halo" : "SlipstreamCE"
         ndk {
             abiFilters "arm64-v8a"
         }
@@ -68,6 +70,7 @@ android {
 
     buildFeatures {
         buildConfig true
+        resValues true
     }
 
     signingConfigs {

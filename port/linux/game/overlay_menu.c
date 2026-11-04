@@ -3,7 +3,7 @@ OVERLAY_MENU.C
 
 The game's own overlay menu, on every build alike (the Switch, the PS5,
 Android): a panel down the left 30% of the screen, black at 40%, titled
-"OpenCE for <the platform>", with a list of entries. An entry is a toggle
+"SlipstreamCE", with a list of entries. An entry is a toggle
 (a cheat, a setting: on or off, as the game has it now), a command run once
 (spawn the weapons, a checkpoint), a choice among several (the game's
 speed, the bots' difficulty), or a folder of more entries. They began as
@@ -102,15 +102,8 @@ enum
 	_overlay_text_right = 1,
 };
 
-#if defined(HALO_SWITCH)
-#define OVERLAY_TITLE "OpenCE for Switch"
-#elif defined(HALO_PS5)
-#define OVERLAY_TITLE "OpenCE for PS5"
-#elif defined(HALO_ANDROID)
-#define OVERLAY_TITLE "OpenCE for Android"
-#else
-#define OVERLAY_TITLE "OpenCE"
-#endif
+/* (the platform's name would not fit beside it in the panel) */
+#define OVERLAY_TITLE "SlipstreamCE"
 /* the foot's buttons, as the platform's pictures (the menus' icons in text:
 ui_widget.c's draw_string_and_hack_in_icons; the Switch's and the PS5's are
 their own) */
