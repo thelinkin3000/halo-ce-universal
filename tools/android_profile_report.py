@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Reads profile.bin (debug.profile_hz; port/android/host/host_debug.c) and prints where the time went.
 
-    adb pull /sdcard/Android/data/com.halo.decomp/files/profile.bin
+    adb pull /sdcard/Android/data/ar.com.slipstreamce/files/profile.bin
     tools/android_profile_report.py profile.bin [--logcat log.txt] [--elf build/android/halo_guest.elf]
 
 or a profiled run's folder (debug.profile_run: Download/halo_profiles/DDMMYYYY_HHMMSS on the phone, sent as it is):

@@ -158,8 +158,8 @@ game.
   once it is whole and has a `mod.toml`; a `.zip` whose name the mods
   folder has already is passed over (delete that mod first). Or put the
   folder in `mods/` in the app's data folder,
-  `/sdcard/Android/data/com.halo.decomp/files/mods`, for example with
-  `adb push hd_audio /sdcard/Android/data/com.halo.decomp/files/mods/`.
+  `/sdcard/Android/data/ar.com.slipstreamce/files/mods`, for example with
+  `adb push hd_audio /sdcard/Android/data/ar.com.slipstreamce/files/mods/`.
 - **Web**: on the page, **Mods**, **Add a mod folder…** copies a mod's
   `mod.toml` and `tags` folder into the browser's storage for the site.
   **Remove** deletes it again.

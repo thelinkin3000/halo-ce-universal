@@ -73,6 +73,15 @@ public class LauncherActivity extends Activity {
             new File(dataRoot, "maps").mkdirs();
         passOnHardwareId();
         passOnInvite(getIntent());
+        // (the old app's data first: the moved settings and maps change what comes next)
+        if (Migration.importWanted(this, dataRoot)) {
+            Migration.begin(this, dataRoot, this::startAfterMigration);
+            return;
+        }
+        startAfterMigration();
+    }
+
+    private void startAfterMigration() {
         Updater.moveToVulkanDefault(dataRoot);
         if (haveData()) {
             startGameAfterDriver();
@@ -379,6 +388,11 @@ public class LauncherActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        // (the old app removed, or left: on with the game)
+        if (requestCode == Migration.UNINSTALL_OLD) {
+            startAfterMigration();
+            return;
+        }
         if (requestCode != PICK_IMAGE || resultCode != RESULT_OK || data == null || data.getData() == null)
             return;
         Uri image = data.getData();

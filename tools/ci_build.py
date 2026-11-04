@@ -164,6 +164,12 @@ def main() -> int:
         run(["ninja", "android"])
         gradlew = "gradlew.bat" if os.name == "nt" else "./gradlew"
         variant = "release" if args.config == "release" else "debug"
+        # (the old package's bridge first, put aside: Migration.java; then the game itself)
+        bridge_environment = {**os.environ, "HALO_ANDROID_BRIDGE": "1"}
+        subprocess.run([gradlew, "--console=plain", "-q", f"assemble{variant.capitalize()}"],
+                       cwd=ROOT / "port/android", check=True, env=bridge_environment)
+        bridge_apk = ROOT / "build/android" / f"bridge-{variant}.apk"
+        shutil.copy2(ROOT / APKS[variant], bridge_apk)
         run([gradlew, "--console=plain", "-q", f"assemble{variant.capitalize()}"], cwd=ROOT / "port/android")
         outputs = [APKS[variant]]
     else:
@@ -172,7 +178,10 @@ def main() -> int:
 
     # (halo-linux-arm64-release and halo-linux-x86_64-release, the names the
     # self-updater asks for: the target's first underscore only)
-    dist = ROOT / "dist" / f"halo-{args.platform.replace('_', '-', 1)}-{args.config}"
+    # (Android's game has a file of its own, its new package's: halo-android-*, the file every installed build's updater
+    # asks for, is the bridge to it, made from this below)
+    product = "slipstreamce" if args.platform == "android" else "halo"
+    dist = ROOT / "dist" / f"{product}-{args.platform.replace('_', '-', 1)}-{args.config}"
     if dist.exists():
         shutil.rmtree(dist)
     dist.mkdir(parents=True)
@@ -258,6 +267,14 @@ def main() -> int:
         # (deploy/: systemd, Docker, Pterodactyl, Kubernetes, other panels)
         shutil.copy2(ROOT / "deploy/halo-server", dist / "halo-server")
         shutil.copytree(ROOT / "deploy", dist / "deploy", ignore=shutil.ignore_patterns("*.zip", "__pycache__"))
+    if args.platform == "android":
+        # the bridge's own, with what goes beside the app: every installed build's updater asks for this file by name
+        bridge_dist = ROOT / "dist" / f"halo-android-{args.config}"
+        if bridge_dist.exists():
+            shutil.rmtree(bridge_dist)
+        shutil.copytree(dist, bridge_dist)
+        shutil.copy2(bridge_apk, bridge_dist / Path(APKS[variant]).name)
+        print(f"{bridge_apk.relative_to(ROOT)} -> {bridge_dist.relative_to(ROOT)}", flush=True)
     return 0
 
 

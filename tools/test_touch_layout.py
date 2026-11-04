@@ -10,8 +10,11 @@ subprocess.run([
     "javac", "--release", "17", "-d", str(classes),
     str(root / "port/android/app/src/main/java/com/halo/decomp/TouchLayout.java"),
     str(root / "port/android/app/src/main/java/com/halo/decomp/GyroscopeAim.java"),
+    str(root / "port/android/app/src/main/java/com/halo/decomp/MigrationFiles.java"),
+    str(root / "tools/tests/MigrationFilesTest.java"),
     str(root / "tools/tests/GyroscopeAimTest.java"),
     str(root / "tools/tests/TouchLayoutTest.java")
 ], check=True)
 subprocess.run(["java", "-cp", str(classes), "com.halo.decomp.TouchLayoutTest"], check=True)
 subprocess.run(["java", "-cp", str(classes), "com.halo.decomp.GyroscopeAimTest"], check=True)
+subprocess.run(["java", "-cp", str(classes), "com.halo.decomp.MigrationFilesTest"], check=True)

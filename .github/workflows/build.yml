@@ -340,10 +340,23 @@ jobs:
       - name: Compile cache
         run: ccache --show-stats
 
+      # (the bridge from the old package name, the file every installed build's updater asks for: Migration.java)
       - uses: actions/upload-artifact@v4
         with:
           name: halo-android-debug
           path: dist/halo-android-debug
+          retention-days: 3
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slipstreamce-android-debug
+          path: dist/slipstreamce-android-debug
+          retention-days: 3
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slipstreamce-android-release
+          path: dist/slipstreamce-android-release
           retention-days: 3
 
       - uses: actions/upload-artifact@v4
@@ -999,7 +1012,7 @@ jobs:
             title="Build failed"; color=15548997
           fi
           latest="$SERVER/$REPOSITORY/releases/latest"
-          downloads="[Android]($latest/download/halo-android-release.zip) · [Switch]($latest/download/halo-switch-release.zip) · [PS5]($latest/download/halo-ps5-release.zip) ([all builds]($latest))"
+          downloads="[Android]($latest/download/slipstreamce-android-release.zip) · [Switch]($latest/download/halo-switch-release.zip) · [PS5]($latest/download/halo-ps5-release.zip) ([all builds]($latest))"
           if [ -n "$RELEASE_TAG" ]; then
             release="[$RELEASE_TAG]($SERVER/$REPOSITORY/releases/tag/$RELEASE_TAG)"
             if [ "$PAGES" = success ]; then

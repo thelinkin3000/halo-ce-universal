@@ -55,9 +55,9 @@ Your own builds all have the same signature (the debug key of WSL,
 (`adb install -r`).
 
 To keep the saved games before you remove the app, enter
-`adb pull /sdcard/Android/data/com.halo.decomp/files/save/u` (the profiles).
+`adb pull /sdcard/Android/data/ar.com.slipstreamce/files/save/u` (the profiles).
 After the new install, before the first start of the app, enter
-`adb push u /sdcard/Android/data/com.halo.decomp/files/save/u`. The app reads
+`adb push u /sdcard/Android/data/ar.com.slipstreamce/files/save/u`. The app reads
 and overwrites what adb pushes. adb cannot add files to `save/u` or `save/z` once the app made them, or
 change files that the app wrote, so push before the first start. adb cannot read
 some files that the app writes (the `blam.lst` files of `save/z`), so `adb pull`
@@ -77,7 +77,7 @@ of the whole `save` folder stops there.
 
 The game needs the `maps/` folder from an Xbox disc image (`.xiso` or
 `.iso`) of any version of the game. The app extracts `maps/` from the disc
-image. The app keeps the data in `/sdcard/Android/data/com.halo.decomp/files`.
+image. The app keeps the data in `/sdcard/Android/data/ar.com.slipstreamce/files`.
 
 To install the data with the app:
 
@@ -92,17 +92,17 @@ To install the data with the app:
 To install the data from a computer:
 
 1. Start the app one time. The app makes its folders.
-2. Enter `adb push <folder>/. /sdcard/Android/data/com.halo.decomp/files/`.
+2. Enter `adb push <folder>/. /sdcard/Android/data/ar.com.slipstreamce/files/`.
 
-| Item | Location in `/sdcard/Android/data/com.halo.decomp/files` |
+| Item | Location in `/sdcard/Android/data/ar.com.slipstreamce/files` |
 | --- | --- |
 | Saved games (`z:\` and `u:\`) | `save` |
-| Mods (`docs/mods.md`) | `mods`: `adb push <mod folder> /sdcard/Android/data/com.halo.decomp/files/mods/`; the main menu's Mods orders them and turns them off |
+| Mods (`docs/mods.md`) | `mods`: `adb push <mod folder> /sdcard/Android/data/ar.com.slipstreamce/files/mods/`; the main menu's Mods orders them and turns them off |
 | Log | `debug.txt`, the log of the game, and `halo.log`, the log of the app (`log_files = false` and `halo_log = false` in `[debug]` turn them off) |
 | Settings | `config.toml` |
 
 To make a copy of the saved games, enter
-`adb pull /sdcard/Android/data/com.halo.decomp/files/save/u` (the profiles).
+`adb pull /sdcard/Android/data/ar.com.slipstreamce/files/save/u` (the profiles).
 An `adb pull` of the whole `save` folder stops at the `blam.lst` files of
 `save/z`, which adb cannot read.
 
@@ -248,9 +248,9 @@ Removing the app's data or the app removes the layout.
 The settings are in `config.toml` in the data folder of the app. To change
 them:
 
-1. Enter `adb pull /sdcard/Android/data/com.halo.decomp/files/config.toml`.
+1. Enter `adb pull /sdcard/Android/data/ar.com.slipstreamce/files/config.toml`.
 2. Change the file.
-3. Enter `adb push config.toml /sdcard/Android/data/com.halo.decomp/files/`.
+3. Enter `adb push config.toml /sdcard/Android/data/ar.com.slipstreamce/files/`.
 
 At the first start, the game writes the file with the default values. To
 get the default values again, delete the file.
@@ -347,19 +347,19 @@ refer to "Make sure that it operates").
 ### Get to the settings file
 
 The settings file (`config.toml`) and the driver archives are in the data
-folder: `/sdcard/Android/data/com.halo.decomp/files`. Start the game one
+folder: `/sdcard/Android/data/ar.com.slipstreamce/files`. Start the game one
 time first; the game then writes `config.toml`.
 
 Since Android 11, most file manager apps on the phone cannot open
 `Android/data`. Use a computer:
 
 - With a USB cable: set the phone to "File transfer", and open
-  `Internal storage/Android/data/com.halo.decomp/files` on the computer.
+  `Internal storage/Android/data/ar.com.slipstreamce/files` on the computer.
   Copy `config.toml` to the computer, change it with a text editor, and
   copy it back.
-- With adb: `adb pull /sdcard/Android/data/com.halo.decomp/files/config.toml`,
+- With adb: `adb pull /sdcard/Android/data/ar.com.slipstreamce/files/config.toml`,
   change the file, then
-  `adb push config.toml /sdcard/Android/data/com.halo.decomp/files/`.
+  `adb push config.toml /sdcard/Android/data/ar.com.slipstreamce/files/`.
 
 Close the game before you change `config.toml`: the game writes the file
 when it starts and when you change a setting in its menus. Change only the
@@ -442,7 +442,7 @@ To turn Turnip off, set **VULKAN DRIVER** to `STOCK` (or
    `meta.json` naming a library that is in the zip, 256 MB at most); a
    name the folder has already is left as it is. Leave Video Setup and open
    it again to see it listed. Or copy the `.zip` file into that folder
-   yourself (`/sdcard/Android/data/com.halo.decomp/files/freedreno_drivers/`;
+   yourself (`/sdcard/Android/data/ar.com.slipstreamce/files/freedreno_drivers/`;
    the app makes the folder when it looks for its own download).
 3. In **VIDEO SETUP**, set **VULKAN DRIVER** to the archive: every `.zip`
    in `freedreno_drivers` is listed after `STOCK`, by its file
@@ -918,7 +918,7 @@ and reload, address reuse and allocation failure.
 - To install a debug build beside the app from GitHub Actions (another
   signing key stops it from replacing that app), set
   `HALO_APPLICATION_ID_SUFFIX=.vk` when you run `ninja android_apk`. The
-  package is then `com.halo.decomp.vk`, with a data folder of its own, which
+  package is then `ar.com.slipstreamce.vk`, with a data folder of its own, which
   needs a copy of `maps/`.
 
 ## Limits
@@ -965,3 +965,26 @@ an unload summary and the first allocation failure per cache lifetime in the
 normal platform log. No test log files, per-frame reports, texture fingerprints
 or uniform readbacks run in the permanent build. The cache can still exhaust
 its limit or system memory; normal fallback handling remains available.
+
+## The package name
+
+The game's package is `ar.com.slipstreamce`; it was `com.halo.decomp`. Android
+treats the two as different apps, with nothing in common, so the move has two
+sides (`Migration.java`, `MigrationProvider.java`, `MigrationFiles.java`):
+
+- **The bridge**, the old package's last builds (`HALO_ANDROID_BRIDGE=1`), is
+  every release's `halo-android-release.zip`, the file every installed build's
+  updater asks for, so that a phone that comes back at any time reaches it. It
+  does not update itself. At each start it downloads the release's
+  `slipstreamce-android-release.zip` and hands it to the installer, or, once the
+  new app is installed, offers to open it. It answers only the new package of
+  its own signing key for the player's files.
+- **The new app**, at its first start with the old app installed, copies those
+  files (`MigrationFiles.java` says which: saves, settings, mods, maps, the touch
+  layouts) and only then offers to remove the old app. The old app's data is not
+  touched, so a failure loses nothing. Where there is no room, the game's maps are
+  left out first (the ISO makes them again), then custom maps, and the player is
+  told. `.migrated` in the data folder says it is done.
+
+Android asks the player to allow each install and each removal. Both sides need
+the same signing key: a local debug build cannot take data from a CI build.

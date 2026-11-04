@@ -414,7 +414,7 @@ static struct overlay_source overlay_root = OVERLAY_FOLDER_OF(OVERLAY_TITLE, ove
 Entries of one's own, beside the built-in ones: files in the overlay folder
 of the data root (the folder with maps/ and config.toml: the Switch's
 sdmc:/switch/halo/overlay, the PS5's /data/halo/overlay, Android's
-Android/data/com.halo.decomp/files/overlay). Each folder in it is a folder of
+Android/data/ar.com.slipstreamce/files/overlay). Each folder in it is a folder of
 the overlay, and each folder in one of those a folder in that, by its name;
 one of a built-in folder's name (Cheats, in any case) adds to it. Each .toml
 file is an entry:

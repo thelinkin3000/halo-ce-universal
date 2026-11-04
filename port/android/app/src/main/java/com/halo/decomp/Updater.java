@@ -46,8 +46,8 @@ import java.util.zip.ZipInputStream;
  * the latest release when it starts, on a thread of its own, and if it is
  * newer asks the player whether to update:
  *
- * - Yes: the release's app (halo-android-release.zip or -debug.zip) is
- *   downloaded and handed to Android's package installer, which replaces the
+ * - Yes: the release's app (slipstreamce-android-release.zip or -debug.zip; the old
+ *   package's are the bridge: Migration.java) is downloaded and handed to Android's package installer, which replaces the
  *   game (closing it) and offers to open the new version.
  * - No: nothing, until the next start.
  * - Do not ask again: after the player confirms it, update.auto = false is
@@ -73,6 +73,11 @@ final class Updater {
     static void start(Activity activity) {
         File config = configFile(activity);
 
+        // (the bridge never updates itself: its one way on is the new app. A player who said not to be asked never got it)
+        if (BuildConfig.HALO_BRIDGE && BuildConfig.HALO_BUILD_NUMBER > 0) {
+            Migration.bridgeStart(activity);
+            return;
+        }
         if (BuildConfig.HALO_BUILD_NUMBER <= 0 || config == null || !autoUpdate(config))
             return;
         new Thread(() -> {
@@ -495,9 +500,25 @@ final class Updater {
 
     /* ---------- updating */
 
+    /** The bridge's way on: the latest release's new app, downloaded and handed to the installer. */
+    static void downloadNewApp(Activity activity) {
+        new Thread(() -> {
+            int latest = latestRelease();
+
+            if (latest > 0 && !activity.isFinishing())
+                activity.runOnUiThread(() -> update(activity, latest));
+        }, "new app check").start();
+    }
+
     private static void update(Activity activity, int latest) {
-        String asset = "halo-android-" + (BuildConfig.DEBUG ? "debug" : "release") + ".zip";
+        String asset = "slipstreamce-android-" + (BuildConfig.DEBUG ? "debug" : "release") + ".zip";
         File directory = new File(activity.getCacheDir(), UpdateProvider.DIRECTORY);
+        // (a bridge whose player said no at the installer has it already, and is not to download it at each start)
+        File kept = new File(directory, "build-" + latest);
+        if (BuildConfig.HALO_BRIDGE && kept.exists() && new File(directory, UpdateProvider.APK).length() > 0) {
+            install(activity);
+            return;
+        }
         LinearLayout layout = new LinearLayout(activity);
         TextView status = new TextView(activity);
         ProgressBar bar = new ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal);
@@ -530,6 +551,7 @@ final class Updater {
                     }));
                 extractApk(zip, apk);
                 zip.delete();
+                kept.createNewFile();
                 activity.runOnUiThread(() -> {
                     progress.dismiss();
                     install(activity);

@@ -22,6 +22,14 @@
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <!-- installing a new version of the game (Updater) -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- offering to remove the old app, once its data has been moved (Migration); Android still asks the player -->
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+
+    <!-- the old package and the new, which must see each other for the move (Migration) -->
+    <queries>
+        <package android:name="com.halo.decomp" />
+        <package android:name="ar.com.slipstreamce" />
+    </queries>
 
     <!-- enableOnBackInvokedCallback: the back button and the back gesture
          stay KEYCODE_BACK, which SDL passes to the game as B; with
@@ -89,6 +97,14 @@
         </activity>
 
         <!-- the downloaded new version, for the package installer (Updater) -->
+        <!-- the old package's data for the new one, the bridge's alone; it answers only the new package of this app's
+             own key (MigrationProvider) -->
+        <provider
+            android:name=".MigrationProvider"
+            android:authorities="${applicationId}.migration"
+            android:enabled="${migrationProvider}"
+            android:exported="true" />
+
         <provider
             android:name=".UpdateProvider"
             android:authorities="${applicationId}.update"
