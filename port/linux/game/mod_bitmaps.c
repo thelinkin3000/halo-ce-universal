@@ -1346,7 +1346,12 @@ boolean mod_bitmaps_read(
 		another: an Xbox map's bitmap where a mod's was has the Xbox's) */
 		if (mod_bitmaps_globals.orders_found && !custom_edition_cache_tags_loaded())
 			halo_custom_edition_texels_channels(buffer, _custom_edition_channels_xbox);
-		return FALSE;
+		/* (or the menus' Spartan's, kept from another map: menu_chief.c) */
+		{
+			extern boolean menu_chief_bitmap_read(struct bitmap_data const *bitmap, void *buffer);
+
+			return menu_chief_bitmap_read(bitmap, buffer);
+		}
 	}
 	/* (the file as it was when the bitmap was made, at the map's load: it is
 	not looked at again for a change at each read - a bitmap is read each time

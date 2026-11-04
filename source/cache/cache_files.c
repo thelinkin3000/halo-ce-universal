@@ -695,6 +695,13 @@ void scenario_tags_unload(
 
 		mods_tags_unloaded();
 	}
+	/* port: the menus' Spartan goes, before the menus' table it extends
+	(port/linux/game/menu_chief.c) */
+	{
+		extern void menu_chief_tags_unloaded(void);
+
+		menu_chief_tags_unloaded();
+	}
 	/* port: the menus' tags go, and the map's own table comes back
 	(port/linux/game/menu_tags.c): after the texture cache, which writes to
 	the bitmaps it has loaded as it closes, theirs among them */
@@ -1495,6 +1502,12 @@ long scenario_tags_load(
 				extern void menu_tags_loaded(char const *map_name);
 
 				menu_tags_loaded(cache_file_globals.header.name);
+			}
+			/* port: the menus' Spartan, from another map (port/linux/game/menu_chief.c) */
+			{
+				extern void menu_chief_tags_loaded(char const *map_name);
+
+				menu_chief_tags_loaded(cache_file_globals.header.name);
 			}
 			/* port: the bitmaps the high-res HUD stands for (port/linux/game/hud_hires_tags.c) */
 			{

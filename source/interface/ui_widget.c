@@ -7235,6 +7235,22 @@ static void widget_instance_render_recursive(
 		definition->background_bitmap.index,
 		0,
 		frame_index);
+	/* port: the color screen's Spartan, the model and not its picture
+	(port/linux/game/menu_chief.c) */
+	if (bitmap && widget->name && !strcmp(widget->name, "color_right_pic"))
+	{
+		extern boolean menu_chief_draw(short x0, short y0, short x1, short y1, short color_index);
+		short chief_left = (short)(definition->bounds.x0 + offset.x + halo_screen_ui_offset_current());
+		short chief_top = (short)(definition->bounds.y0 + offset.y);
+
+		if (menu_chief_draw(chief_left, chief_top,
+				(short)(chief_left + definition->bounds.x1 - definition->bounds.x0),
+				(short)(chief_top + definition->bounds.y1 - definition->bounds.y0),
+				frame_index))
+		{
+			bitmap = NULL;
+		}
+	}
 	if (bitmap)
 	{
 		real alpha = alpha_modifier;
