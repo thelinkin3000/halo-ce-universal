@@ -35,7 +35,7 @@ public class BridgeActivity extends Activity {
         layout.setGravity(Gravity.CENTER);
         layout.setPadding(dp(32), dp(16), dp(32), dp(16));
         layout.setBackgroundColor(Color.BLACK);
-        title.setText("Halo is now SlipstreamCE");
+        title.setText("thelinkin3000's OpenCE fork is now SlipstreamCE");
         title.setTextColor(Color.WHITE);
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26);
         title.setGravity(Gravity.CENTER);
