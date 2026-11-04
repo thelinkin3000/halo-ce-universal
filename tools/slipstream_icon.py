@@ -6,6 +6,7 @@
 - the Switch's (port/switch/art/icon.jpg, 256x256) and the PS5's (port/ps5/sce_sys/icon0.png, 512x512);
 - the desktop builds' window icon (port/assets/icon/slipstream-icon-256.png), the Windows executable's
   (port/windows/slipstream-icon.ico) and the web page's (port/web/site/icons): each the logo whole;
+- Settings' About picture (the logo's artwork alone, white);
 - the launcher icon of the Android app of the new package name (ar.com.slipstreamce):
 
 The logo is white artwork on a flat colour, so that colour is the adaptive icon's background layer, and the artwork,
@@ -31,6 +32,14 @@ WINDOWS_ICON = ROOT / "port/windows/slipstream-icon.ico"
 WINDOWS_SIZES = [16, 20, 24, 32, 40, 48, 64, 128, 256]
 WEB_ICONS = ROOT / "port/web/site/icons"
 WEB_SIZES = [32, 180, 192, 512]
+# Settings' About: its picture's frame (its frames' place in the panel kept: ce_menus.py made the others so), and in it
+# the square the logo fills
+ABOUT_PICTURE = ROOT / "port/assets/menus/ce/shell/main_menu/settings_select/player_setup/player_profile_edit/profile_options__8.png"
+# (x, y, side) in the frame: the middle of the panel it is drawn in, across
+# and between the panel's top and the description's text
+ABOUT_SQUARE = (92, 15, 380)
+# the Gameplay row's frame: nothing, so it shows no one else's picture
+GAMEPLAY_PICTURE = ABOUT_PICTURE.with_name("profile_options__9.png")
 LAYER_DP = 108
 SAFE_DP = 66
 DENSITIES = {"mdpi": 1.0, "hdpi": 1.5, "xhdpi": 2.0, "xxhdpi": 3.0, "xxxhdpi": 4.0}
@@ -88,6 +97,17 @@ def main() -> None:
         '    <foreground android:drawable="@mipmap/ic_launcher_foreground" />\n'
         '    <monochrome android:drawable="@mipmap/ic_launcher_monochrome" />\n'
         "</adaptive-icon>\n", encoding="utf-8", newline="\n")
+    # (the artwork alone, in its own square: the same layer, without the launcher's margin)
+    about = Image.open(ABOUT_PICTURE).size
+    x, y, side = ABOUT_SQUARE
+    box = round(radius * 2)
+    left, top = round(centre_x - radius), round(centre_y - radius)
+    fitted = art.crop((left, top, left + box, top + box)).resize((side, side), Image.LANCZOS)
+    alpha = Image.new("L", about, 0)
+    alpha.paste(fitted, (x, y))
+    white = Image.new("L", about, 255)
+    Image.merge("RGBA", (white, white, white, alpha)).save(ABOUT_PICTURE, optimize=True)
+    Image.new("RGBA", about, (255, 255, 255, 0)).save(GAMEPLAY_PICTURE, optimize=True)
     print(f"background {colour}; artwork radius {radius:.0f} px of the logo, scaled {scale:.3f}")
 
 
