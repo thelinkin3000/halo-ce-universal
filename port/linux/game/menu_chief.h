@@ -1,7 +1,7 @@
 /*
 MENU_CHIEF.H
 
-The Multiplayer Color screen's Spartan, the model the game plays
+The Multiplayer Color and Select Profile screens' Spartan, the model the game plays
 (menu_chief.c).
 */
 

@@ -7235,12 +7235,19 @@ static void widget_instance_render_recursive(
 		definition->background_bitmap.index,
 		0,
 		frame_index);
-	/* port: the color screen's Spartan, the model and not its picture
-	(port/linux/game/menu_chief.c) */
-	if (bitmap && widget->name && !strcmp(widget->name, "color_right_pic"))
+	/* port: the color and profile screens' Spartan, the model and not its
+	picture (port/linux/game/menu_chief.c; the profile screen's picture is
+	also the split-screen lobby's, which keeps it) */
+	if (bitmap && widget->name &&
+		(!strcmp(widget->name, "color_right_pic") ||
+			(!strcmp(widget->name, "qtr_screen_profile_color_pic") && widget->parent && widget->parent->name &&
+				!strcmp(widget->parent->name, "player_profile_right_item"))))
 	{
 		extern boolean menu_chief_draw(short x0, short y0, short x1, short y1, short color_index);
-		short chief_left = (short)(definition->bounds.x0 + offset.x + halo_screen_ui_offset_current());
+		/* (the profile screen's picture is not in the middle of its panel, as
+		he, with what he holds out to one side, must be) */
+		short chief_left = (short)(definition->bounds.x0 + offset.x + halo_screen_ui_offset_current() -
+			(widget->name[0] == 'q' ? 20 : 0));
 		short chief_top = (short)(definition->bounds.y0 + offset.y);
 
 		if (menu_chief_draw(chief_left, chief_top,

@@ -1,7 +1,7 @@
 /*
 MENU_CHIEF.C
 
-The Multiplayer Color screen's Spartan, drawn from the model the game plays
+The Multiplayer Color and Select Profile screens' Spartan, drawn from the model the game plays
 rather than a flat picture. ui.map has none of him: his model, its shaders and
 their bitmaps are read from a multiplayer map (wizard.map, the smallest) on a
 thread of their own while ui.map is loaded, and added to its tag table the
@@ -43,11 +43,17 @@ wizard.map or with one this cannot read, the screen keeps its picture.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
+
+/* (the C library's allocator, not the game's tracked one (cseries.h), which
+is not to be called from another thread: the map is read on one, and what it
+allocates is freed on the game's) */
+#undef malloc
+#undef free
 
 void platform_log(char const *format, ...);
 void rasterizer_port_set_viewport(rectangle2d const *bounds);
 void halo_screen_ui_offset(unsigned char centered);
+void platform_translate_path(char const *xbox_path, char *host_path, unsigned long host_path_size);
 real_rgb_color player_profile_get_rgb_color(long color_index);
 extern D3DDevice *global_d3d_device;
 
@@ -502,6 +508,43 @@ boolean menu_chief_bitmap_read(struct bitmap_data const *bitmap, void *buffer)
 
 /* ---------- the map */
 
+/* zlib's own allocator is the game's tracked one too (zutil.c's zcalloc) */
+static voidpf inflate_allocate(voidpf opaque, uInt items, uInt size)
+{
+	void *memory = malloc((size_t)items * size);
+
+	(void)opaque;
+	if (memory)
+		memset(memory, 0, (size_t)items * size);
+	return memory;
+}
+
+static void inflate_free(voidpf opaque, voidpf memory)
+{
+	(void)opaque;
+	free(memory);
+}
+
+static boolean map_inflate(byte *to, unsigned long to_size, byte *from, unsigned long from_size)
+{
+	z_stream stream;
+	boolean inflated = FALSE;
+
+	memset(&stream, 0, sizeof(stream));
+	stream.next_in = from;
+	stream.avail_in = from_size;
+	stream.next_out = to;
+	stream.avail_out = to_size;
+	stream.zalloc = inflate_allocate;
+	stream.zfree = inflate_free;
+	if (inflateInit(&stream) == Z_OK)
+	{
+		inflated = inflate(&stream, Z_FINISH) == Z_STREAM_END && stream.total_out == to_size;
+		inflateEnd(&stream);
+	}
+	return inflated;
+}
+
 static byte *map_read(long *size)
 {
 	char path[256];
@@ -510,10 +553,17 @@ static byte *map_read(long *size)
 	byte *packed = NULL;
 	byte *file = NULL;
 	long packed_size;
-	uLongf file_size;
 
 	snprintf(path, sizeof(path), "%s%s", cache_files_map_directory(), SOURCE_MAP);
 	stream = fopen(path, "rb");
+	/* (a build whose fopen takes only the host's paths) */
+	if (!stream)
+	{
+		char host_path[512];
+
+		platform_translate_path(path, host_path, sizeof(host_path));
+		stream = fopen(host_path, "rb");
+	}
 	if (!stream)
 	{
 		platform_log("menu chief: no %s", path);
@@ -532,13 +582,11 @@ static byte *map_read(long *size)
 			*size = packed_size;
 			return packed;
 		}
-		file_size = header.file_length - MAP_HEADER_BYTES;
 		if (header.file_length > MAP_HEADER_BYTES && (file = malloc(header.file_length)) != NULL)
 		{
 			memcpy(file, packed, MAP_HEADER_BYTES);
-			if (uncompress(file + MAP_HEADER_BYTES, &file_size, packed + MAP_HEADER_BYTES,
-					packed_size - MAP_HEADER_BYTES) != Z_OK ||
-				file_size != (uLongf)(header.file_length - MAP_HEADER_BYTES))
+			if (!map_inflate(file + MAP_HEADER_BYTES, header.file_length - MAP_HEADER_BYTES,
+					packed + MAP_HEADER_BYTES, packed_size - MAP_HEADER_BYTES))
 			{
 				free(file);
 				file = NULL;
