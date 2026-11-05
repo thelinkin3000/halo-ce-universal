@@ -1041,15 +1041,9 @@ void hud_render_timer(
 		}
 	}
 
-	if (time_code_time != NONE)
-	{
-		long stop_time = time_code_stop_time;
-
-		if (stop_time == NONE)
-			stop_time = game_time_get();
-		sprintf(temporary, "%d", stop_time - time_code_time);
-		render_debug_string(TRUE, temporary);
-	}
+	/* port: time_code_show's counter isn't drawn. c20's and d40's last
+	cutscenes turn it on and nothing turns it off: a tool for timing cutscenes,
+	it stayed at the top left, over the HUD, until the game was closed */
 
 	return;
 }
