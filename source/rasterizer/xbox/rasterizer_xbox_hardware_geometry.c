@@ -328,6 +328,62 @@ boolean rasterizer_triangle_buffer_new(
 	return success;
 }
 
+#ifdef HALO_SWITCH
+HRESULT d3d8_vertex_buffer_borrow(const void *vertices, D3DVertexBuffer **result);
+HRESULT d3d8_index_buffer_borrow(const void *indices, D3DIndexBuffer **result);
+
+boolean rasterizer_vertex_buffer_new_kept(
+	struct vertex_buffer *vertex_buffer,
+	long vertex_type,
+	long count,
+	void const *vertices,
+	long buffer_size)
+{
+	D3DVertexBuffer *d3d_vertex_buffer = NULL;
+
+	csmemset(vertex_buffer, 0, sizeof(*vertex_buffer));
+	if (!global_d3d_device || !count || !vertices ||
+		d3d8_vertex_buffer_borrow(vertices, &d3d_vertex_buffer) < 0)
+	{
+		error(_error_silent, "### ERROR failed to create vertex buffer hardware format");
+		return FALSE;
+	}
+	xgpu_static_buffer_add(d3d_vertex_buffer, (unsigned long)buffer_size, 0);
+	vertex_buffer->count = count;
+	vertex_buffer->offset = 0;
+	vertex_buffer->base_address = (void *)vertices;
+	vertex_buffer->type = (short)vertex_type;
+	vertex_buffer->hardware_format = d3d_vertex_buffer;
+
+	return TRUE;
+}
+
+boolean rasterizer_triangle_buffer_new_kept(
+	struct triangle_buffer *triangle_buffer,
+	short triangle_type,
+	long count,
+	void const *triangles)
+{
+	D3DIndexBuffer *d3d_index_buffer = NULL;
+	long buffer_size = triangle_type == 0 ? 6 * count : 2 * count + 4;
+
+	csmemset(triangle_buffer, 0, sizeof(*triangle_buffer));
+	if (!global_d3d_device || count <= 0 || !triangles || (triangle_type != 0 && triangle_type != 1) ||
+		d3d8_index_buffer_borrow(triangles, &d3d_index_buffer) < 0)
+	{
+		error(_error_silent, "### ERROR failed to create triangle buffer hardware format");
+		return FALSE;
+	}
+	xgpu_static_buffer_add(d3d_index_buffer, (unsigned long)buffer_size, 1);
+	triangle_buffer->type = triangle_type;
+	triangle_buffer->count = count;
+	triangle_buffer->base_address = (void *)triangles;
+	triangle_buffer->hardware_format = d3d_index_buffer;
+
+	return TRUE;
+}
+#endif
+
 void rasterizer_triangle_buffer_delete(
 	struct triangle_buffer *triangle_buffer)
 {

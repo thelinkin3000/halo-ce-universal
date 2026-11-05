@@ -827,7 +827,12 @@ For each, the log's draw statistics (`gpu_stats`, every 60 frames) and the
    `CreateIndexBuffer` is in ordinary guest memory, and copied too. Watch the
    log for "a frame needs more than ... bytes of uploads": the upload slice
    is 4 MB a frame (`UPLOAD_SLICE_SIZE`), and a draw whose data does not fit
-   is skipped.
+   is skipped. The line of uploads a second says what fills it. Geometry written
+   once does not go through it: a mod model in the window draws from its block
+   there (`rasterizer_vertex_buffer_new_kept`), and one past the budget, or an
+   index buffer `rasterizer_triangle_buffer_new` made, is copied once into blocks
+   of the host's (`DK_COMMAND_STATIC_MAKE`). `debug.mod_models_in_heap` tries that
+   path with any mod.
 5. **Command memory: a full frame ends the program.** The host records a
    frame's commands into one 8 MB slice (`COMMAND_MEMORY_SIZE`), every
    mid-frame submission continuing in it, and when it is full

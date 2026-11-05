@@ -46,6 +46,8 @@ enum
 	DK_COMMAND_HUD_IMAGE,
 	DK_COMMAND_HUD_FORGET,
 	DK_COMMAND_BLIT,
+	DK_COMMAND_STATIC_MAKE,
+	DK_COMMAND_STATIC_FREE,
 };
 
 /* a surface's kind, as the host makes its image */
@@ -554,6 +556,18 @@ the second view's lists of a level's visible triangles where the first's
 were - so indices the game may write again are read when the draw is made,
 not when the host or the GPU get to it */
 #define DK_INDEX_INLINE 1u
+
+/* geometry written once and kept outside the window (a model past the mods'
+budget, an index buffer of the game's own): the host copies [address, address +
+size) into GPU memory of its own, before the first draw that reads it, and draws
+reading there read the copy, until the free. In the stream, so a freed address
+made again means the new bytes for the draws after it */
+struct dk_command_static
+{
+	struct dk_command_header header;
+	uint32_t address;
+	uint32_t size;
+};
 
 struct dk_command_draw
 {

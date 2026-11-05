@@ -129,6 +129,21 @@ boolean rasterizer_triangle_buffer_new(
 	short triangle_type,
 	long count,
 	void const *triangles);
+#ifdef HALO_SWITCH
+/* port: as the two above, drawing from the memory given, which the caller
+keeps unchanged until it has deleted the buffer */
+boolean rasterizer_vertex_buffer_new_kept(
+	struct vertex_buffer *vertex_buffer,
+	long vertex_type,
+	long count,
+	void const *vertices,
+	long buffer_size);
+boolean rasterizer_triangle_buffer_new_kept(
+	struct triangle_buffer *triangle_buffer,
+	short triangle_type,
+	long count,
+	void const *triangles);
+#endif
 void rasterizer_triangle_buffer_delete(
 	struct triangle_buffer *triangle_buffer);
 

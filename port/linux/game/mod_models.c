@@ -35,7 +35,9 @@ is made as the tool makes it: each part's centroid nodes and weights (its
 two most weighted nodes). A part's vertices are compressed as a Custom
 Edition map's are, by the game's own rasterizer_geometry_compress_vertices,
 into the Xbox's contiguous memory, and given buffers by the game's own
-rasterizer_vertex_buffer_new and rasterizer_triangle_buffer_new; a model of
+rasterizer_vertex_buffer_new and rasterizer_triangle_buffer_new (on the Switch
+their _kept forms, drawing from the block where it is, so a model in the window
+takes no more of it, and one past the budget is copied once by the host); a model of
 more nodes than the renderer skins at once has each part drawn its own nodes
 at a time (custom_edition_part_palette asks mod_models_part_palette).
 
@@ -1198,13 +1200,19 @@ static void *geometry_allocate(
 {
 	void *geometry = NULL;
 
-	if (size <= MAXIMUM_CONTIGUOUS_GEOMETRY_BYTES - mod_models_globals.contiguous_bytes)
+	if (size <= MAXIMUM_CONTIGUOUS_GEOMETRY_BYTES - mod_models_globals.contiguous_bytes &&
+		!config_boolean("debug.mod_models_in_heap"))
+	{
 		geometry = XPhysicalAlloc(size, (unsigned long)-1, 0, PAGE_READWRITE);
+	}
 	*contiguous = geometry != NULL;
 	if (geometry)
 		mod_models_globals.contiguous_bytes += size;
 	else
+	{
+		error(_error_silent, "mods: 0x%lX bytes of a model's geometry are outside the contiguous memory", size);
 		geometry = system_malloc(size);
+	}
 
 	return geometry;
 }
@@ -1543,10 +1551,17 @@ static boolean geometries_make(
 			}
 			made->part_count = first + part_index + 1;
 			*reason = "the renderer cannot make its buffers";
+#ifdef HALO_SWITCH
+			if (!rasterizer_vertex_buffer_new_kept(&part->vertex_buffer, _rasterizer_vertex_type_model_compressed,
+					source->vertex_count, vertices, source->vertex_count * vertex_size) ||
+				!rasterizer_triangle_buffer_new_kept(&part->triangle_buffer, _triangle_buffer_type_precompiled_strip,
+					source->strip_index_count - 2, strips))
+#else
 			if (!rasterizer_vertex_buffer_new(&part->vertex_buffer, _rasterizer_vertex_type_model_compressed,
 					source->vertex_count, vertices, source->vertex_count * vertex_size) ||
 				!rasterizer_triangle_buffer_new(&part->triangle_buffer, _triangle_buffer_type_precompiled_strip,
 					source->strip_index_count - 2, strips))
+#endif
 			{
 				free(uncompressed);
 				return FALSE;

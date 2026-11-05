@@ -1646,6 +1646,10 @@ static const struct config_setting config_settings[] =
 		"Draw the zoom's blur as the game does, in passes over the whole screen,\n"
 		"rather than on a small copy blended over it once (about 3.7 ms less of\n"
 		"the GPU's frame at 720p). Takes effect the next start." },
+	{ "debug.mod_models_in_heap", _config_boolean, "false", "HALO_MOD_MODELS_IN_HEAP", _environment_value,
+		_platform_android,
+		"Keep the mods' models outside the Xbox's contiguous memory, as a model past\n"
+		"their budget is, to try that path with any mod. Takes effect the next map." },
 	{ "debug.gpu_blend_discard", _config_boolean, "true", "HALO_GPU_BLEND_DISCARD", _environment_value,
 		_platform_android,
 		"Let a blended draw's pixels go where they would leave the screen as it was\n"

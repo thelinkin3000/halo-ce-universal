@@ -348,16 +348,9 @@ void halo_hdr_calibration_show(int pattern, int paper_white, int peak_brightness
 	(void)peak_brightness;
 }
 
-/* the OpenGL renderer's static geometry (d3d8_gl.c's static buffers, an
-Android fix): here the game's vertices and indices are drawn as before
+/* the OpenGL renderer's other static geometry (d3d8_gl.c's static buffers, an
+Android fix): here what is in the window is drawn where it is
 (d3d8_resources.c forgets a renamed buffer's copy itself) */
-void xgpu_static_buffer_add(const void *resource, unsigned long size, int indices)
-{
-	(void)resource;
-	(void)size;
-	(void)indices;
-}
-
 void xgpu_static_buffers_add(const void *buffers, long count, unsigned long stride, int indices, const void *end)
 {
 	(void)buffers;
@@ -1587,6 +1580,61 @@ static void resource_used(void *resource)
 {
 	if (resource)
 		((D3DResource *)resource)->Lock = submission;
+}
+
+void halo_resource_wait(D3DResource *resource);
+
+/* A buffer written once and kept outside the window, whose bytes would go
+through the frame's upload buffer at every draw (and a model's are many: 42
+draws of a 95 KB list of indices filled it, and the draws after them were lost:
+the world without its textures, no HUD). The host copies it once instead
+(DK_COMMAND_STATIC_MAKE), at its first draw: this may be called off the game's
+thread, the stream's own. Its size is behind the buffer (d3d8_resources.c). */
+void xgpu_static_buffer_add(const void *resource, unsigned long size, int indices)
+{
+	DWORD *fields = (DWORD *)resource;
+
+	if (!size || (indices ? platform_is_contiguous((const void *)(uintptr_t)fields[1]) :
+		!(fields[0] & D3DCOMMON_HEAP_VERTICES)))
+	{
+		return;
+	}
+	fields[3] = (DWORD)size;
+	fields[0] |= D3DCOMMON_HOST_COPY_WANTED;
+}
+
+static void host_copy_make(void *resource)
+{
+	DWORD *fields = (DWORD *)resource;
+
+	/* (a map's buffers' Common is the map's: only ours says these) */
+	if ((fields[0] & (D3DCOMMON_D3DCREATED | D3DCOMMON_HOST_COPY_WANTED)) ==
+		(D3DCOMMON_D3DCREATED | D3DCOMMON_HOST_COPY_WANTED))
+	{
+		struct dk_command_static *command = stream_command(DK_COMMAND_STATIC_MAKE, sizeof(*command));
+
+		command->address = fields[1];
+		command->size = fields[3];
+		fields[0] = (fields[0] & ~(DWORD)D3DCOMMON_HOST_COPY_WANTED) | D3DCOMMON_HOST_COPIED;
+	}
+}
+
+/* from its release: the draws that read it past (a copy the host could not
+make is read from this memory, which goes next), and the host's copy let go */
+void xgpu_static_buffer_remove(const void *resource, int indices)
+{
+	DWORD *fields = (DWORD *)resource;
+
+	(void)indices;
+	if ((fields[0] & D3DCOMMON_D3DCREATED) && (fields[0] & D3DCOMMON_HOST_COPIED))
+	{
+		struct dk_command_static *command;
+
+		halo_resource_wait((D3DResource *)resource);
+		command = stream_command(DK_COMMAND_STATIC_FREE, sizeof(*command));
+		command->address = fields[1];
+		command->size = fields[3];
+	}
 }
 
 /* the resources the current state reads or writes: the bound render
@@ -3133,16 +3181,35 @@ static BOOL indices_fixed(const WORD *indices, unsigned long count)
 	return custom && start >= custom && end <= custom + CUSTOM_EDITION_TAG_CACHE_BYTES;
 }
 
+/* whether a draw's indices are in the index buffer SetIndices selected, the
+host's copy of which it reads */
+static BOOL index_buffer_host_copy(const WORD *indices, unsigned long count)
+{
+	const DWORD *fields = (const DWORD *)device.index_buffer;
+	unsigned long at = (unsigned long)(uintptr_t)indices;
+
+	return fields && (fields[0] & D3DCOMMON_D3DCREATED) &&
+		(fields[0] & (D3DCOMMON_HOST_COPY_WANTED | D3DCOMMON_HOST_COPIED)) && at >= fields[1] &&
+		at + count * sizeof(WORD) <= (unsigned long)fields[1] + fields[3];
+}
+
 static void draw_write(D3DPRIMITIVETYPE type, unsigned long count, unsigned long first, unsigned long vertex_count,
 	const WORD *indices, long vertex_offset)
 {
 	struct dk_command_draw *command;
 	unsigned long stream, streams = 0, slot = 0;
-	unsigned long index_bytes = indices && count * sizeof(WORD) <= INLINE_INDEX_LIMIT && !indices_fixed(indices, count) ?
-		(count * sizeof(WORD) + 3) & ~3UL : 0;
+	BOOL copied = indices && index_buffer_host_copy(indices, count);
+	unsigned long index_bytes = indices && !copied && count * sizeof(WORD) <= INLINE_INDEX_LIMIT &&
+		!indices_fixed(indices, count) ? (count * sizeof(WORD) + 3) & ~3UL : 0;
 
+	if (copied)
+		host_copy_make(device.index_buffer);
 	for (stream = 0; stream < DK_STREAM_COUNT; stream++)
+	{
 		streams += (format_told.stream_mask >> stream) & 1;
+		if (((format_told.stream_mask >> stream) & 1) && device.streams[stream].buffer)
+			host_copy_make(device.streams[stream].buffer);
+	}
 	command = stream_command(DK_COMMAND_DRAW, sizeof(*command) + streams * 2 * sizeof(uint32_t) + index_bytes);
 	command->primitive = primitive_of(type);
 	command->count = (uint32_t)count;
@@ -3158,7 +3225,12 @@ static void draw_write(D3DPRIMITIVETYPE type, unsigned long count, unsigned long
 
 		if (!((format_told.stream_mask >> stream) & 1))
 			continue;
-		command->streams[slot][0] = (uint32_t)(uintptr_t)PLATFORM_PHYSICAL_TO_VIRTUAL(device.streams[stream].data) +
+		/* (a model past the budget's are at their address: d3d8_resources.c) */
+		command->streams[slot][0] = (device.streams[stream].buffer &&
+			(device.streams[stream].buffer->Common & (D3DCOMMON_D3DCREATED | D3DCOMMON_HEAP_VERTICES)) ==
+			(D3DCOMMON_D3DCREATED | D3DCOMMON_HEAP_VERTICES) ?
+			(uint32_t)device.streams[stream].data :
+			(uint32_t)(uintptr_t)PLATFORM_PHYSICAL_TO_VIRTUAL(device.streams[stream].data)) +
 			(uint32_t)(first * stride);
 		command->streams[slot][1] = (uint32_t)(stride ? stride * vertex_count : STRIDELESS_STREAM_BYTES);
 		slot++;

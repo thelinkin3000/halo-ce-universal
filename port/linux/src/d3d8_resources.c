@@ -21,6 +21,14 @@ static void *resource_data(DWORD data)
 	return data ? PLATFORM_PHYSICAL_TO_VIRTUAL(data) : NULL;
 }
 
+/* (a buffer this file makes has room behind it for its size, which
+xgpu_static_buffer_add writes where the renderer wants it: d3d8_dk.c) */
+#ifdef HALO_SWITCH
+#define D3D8_BUFFER_BYTES(buffer) (sizeof(buffer) + sizeof(DWORD))
+#else
+#define D3D8_BUFFER_BYTES(buffer) sizeof(buffer)
+#endif
+
 static void *allocate_resource_memory(unsigned long size)
 {
 	void *memory = platform_contiguous_alloc(size, D3DTEXTURE_ALIGNMENT,
@@ -124,6 +132,18 @@ ULONG WINAPI D3DResource_Release(D3DResource *resource)
 #ifdef HALO_SWITCH
 		if ((fields[0] & D3DCOMMON_TYPE_MASK) == D3DCOMMON_TYPE_VERTEXBUFFER)
 			vertex_buffer_rename_forget((const D3DVertexBuffer *)resource);
+		/* (the host's copy let go, once the draws that read this memory are
+		past: port/switch/guest/d3d8_dk.c) */
+		if ((fields[0] & D3DCOMMON_TYPE_MASK) == D3DCOMMON_TYPE_INDEXBUFFER ||
+			(fields[0] & D3DCOMMON_TYPE_MASK) == D3DCOMMON_TYPE_VERTEXBUFFER)
+		{
+			xgpu_static_buffer_remove(resource, (fields[0] & D3DCOMMON_TYPE_MASK) == D3DCOMMON_TYPE_INDEXBUFFER);
+		}
+		if (fields[0] & D3DCOMMON_BORROWED)
+		{
+			free(resource);
+			return count;
+		}
 #elif defined(HALO_ANDROID)
 		/* (no longer drawn from its GL buffer, before its memory is reused;
 		the Vulkan image's is a no-op: port/android/guest/d3d8_vk.c) */
@@ -537,7 +557,7 @@ void WINAPI D3DSurface_LockRect(D3DSurface *surface, D3DLOCKED_RECT *locked, CON
 
 HRESULT WINAPI D3DDevice_CreateVertexBuffer(UINT length, DWORD usage, DWORD fvf, D3DPOOL pool, D3DVertexBuffer **result)
 {
-	D3DVertexBuffer *buffer = calloc(1, sizeof(*buffer));
+	D3DVertexBuffer *buffer = calloc(1, D3D8_BUFFER_BYTES(*buffer));
 	void *memory;
 
 	(void)usage;
@@ -560,6 +580,13 @@ HRESULT WINAPI D3DDevice_CreateVertexBuffer(UINT length, DWORD usage, DWORD fvf,
 void WINAPI D3DVertexBuffer_Lock(D3DVertexBuffer *buffer, UINT offset, UINT size, BYTE **data, DWORD flags)
 {
 #ifdef HALO_SWITCH
+	/* (written once, before it was given to this buffer; only ever read) */
+	if ((buffer->Common & (D3DCOMMON_D3DCREATED | D3DCOMMON_BORROWED)) == (D3DCOMMON_D3DCREATED | D3DCOMMON_BORROWED))
+	{
+		*data = (buffer->Common & D3DCOMMON_HEAP_VERTICES ? (BYTE *)buffer->Data : (BYTE *)resource_data(buffer->Data)) +
+			offset;
+		return;
+	}
 	/* (a buffer the GPU still reads gets other storage, if it can) */
 	if (!(flags & (D3DLOCK_NOOVERWRITE | D3DLOCK_READONLY)) && (buffer->Common & D3DCOMMON_D3DCREATED) &&
 		halo_resource_busy((D3DResource *)buffer) && !vertex_buffer_rename(buffer))
@@ -606,7 +633,7 @@ void WINAPI D3DVertexBuffer_Lock(D3DVertexBuffer *buffer, UINT offset, UINT size
 
 HRESULT WINAPI D3DDevice_CreateIndexBuffer(UINT length, DWORD usage, D3DFORMAT format, D3DPOOL pool, D3DIndexBuffer **result)
 {
-	D3DIndexBuffer *buffer = calloc(1, sizeof(*buffer));
+	D3DIndexBuffer *buffer = calloc(1, D3D8_BUFFER_BYTES(*buffer));
 	void *memory;
 
 	(void)usage;
@@ -626,6 +653,44 @@ HRESULT WINAPI D3DDevice_CreateIndexBuffer(UINT length, DWORD usage, D3DFORMAT f
 	*result = buffer;
 	return S_OK;
 }
+
+#ifdef HALO_SWITCH
+/* A buffer over memory its maker keeps, written and never written again, that
+the maker frees after the buffer's release (a mod model's block, mod_models.c):
+nothing is copied, so a model in the window takes no more of it, and every draw
+reads it where it is. A vertex buffer's Data is the window's offset there, and
+otherwise (the model past its budget) the address itself, which only
+D3DVertexBuffer_Lock and the draw (d3d8_dk.c) read. */
+HRESULT d3d8_vertex_buffer_borrow(const void *vertices, D3DVertexBuffer **result)
+{
+	D3DVertexBuffer *buffer = calloc(1, D3D8_BUFFER_BYTES(*buffer));
+
+	if (!buffer)
+		return E_OUTOFMEMORY;
+	buffer->Common = D3DCOMMON_TYPE_VERTEXBUFFER | D3DCOMMON_D3DCREATED | D3DCOMMON_BORROWED | 1;
+	if (platform_is_contiguous(vertices))
+		buffer->Data = PLATFORM_VIRTUAL_TO_PHYSICAL(vertices);
+	else
+	{
+		buffer->Common |= D3DCOMMON_HEAP_VERTICES;
+		buffer->Data = (DWORD)(uintptr_t)vertices;
+	}
+	*result = buffer;
+	return S_OK;
+}
+
+HRESULT d3d8_index_buffer_borrow(const void *indices, D3DIndexBuffer **result)
+{
+	D3DIndexBuffer *buffer = calloc(1, D3D8_BUFFER_BYTES(*buffer));
+
+	if (!buffer)
+		return E_OUTOFMEMORY;
+	buffer->Common = D3DCOMMON_TYPE_INDEXBUFFER | D3DCOMMON_D3DCREATED | D3DCOMMON_BORROWED | 1;
+	buffer->Data = (DWORD)(uintptr_t)indices;
+	*result = buffer;
+	return S_OK;
+}
+#endif
 
 /* ---------- palettes */
 

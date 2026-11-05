@@ -139,6 +139,56 @@ struct target
 
 /* one committed 16 MB chunk of the window, GPU-mapped on the game thread
 once deko3d is up; block NULL and gpu 0 until then */
+/* what a frame's upload slice was filled with (upload_copy): the log's line
+of them a second says which of these a map's frames need room for */
+enum upload_kind
+{
+	_upload_window_crossing, /* a range crossing from one chunk of the window into the next */
+	_upload_outside_window,
+	_upload_inline_vertices,
+	_upload_inline_indices,
+	_upload_constants,
+	NUMBER_OF_UPLOAD_KINDS
+};
+
+struct upload_tally
+{
+	uint32_t bytes[NUMBER_OF_UPLOAD_KINDS];
+	uint32_t copies[NUMBER_OF_UPLOAD_KINDS];
+	uint32_t refused_bytes, refused_copies;
+	/* the largest range copied for crossing a chunk */
+	uint32_t crossing_largest;
+	uint64_t crossing_largest_address;
+	uint32_t used;
+};
+
+/* the host's copies of geometry written once and kept outside the window
+(DK_COMMAND_STATIC_MAKE), on the render thread, in the commands' order. Blocks
+of them, each let go a few frames after the last copy in it goes; memory the
+heap gives first, because deko3d ends the program when it cannot make a block */
+#define STATIC_ARENA_SIZE (32u * 1024 * 1024)
+#define STATIC_ARENAS 64
+
+struct static_arena
+{
+	DkMemBlock block;
+	void *storage;
+	char *cpu;
+	DkGpuAddr gpu;
+	uint32_t used;
+	uint32_t live;
+	/* 0, or the presented frame after which nothing reads it */
+	uint64_t retire_after;
+};
+
+struct static_copy
+{
+	uint32_t address;
+	uint32_t size;
+	DkGpuAddr gpu;
+	int arena;
+};
+
 struct window_chunk
 {
 	uint64_t address;
@@ -207,6 +257,18 @@ static struct
 	DkGpuAddr upload_gpu;
 	uint32_t upload_used;
 	int upload_overflowed;
+	/* this frame's copies; the frame of the last 60 that wanted the most;
+	how many of those 60 did not fit, and what they were refused */
+	struct upload_tally upload_frame, upload_peak;
+	uint32_t upload_frames_overflowed, upload_refused_copies;
+	uint64_t upload_refused_bytes;
+	/* the geometry copied once, sorted by address */
+	struct static_arena static_arenas[STATIC_ARENAS];
+	int static_arena_current;
+	struct static_copy *static_copies;
+	uint32_t static_count, static_capacity;
+	uint64_t static_bytes;
+	int static_said_failed;
 
 	/* the window ranges cleaned for the submission being recorded */
 	struct
@@ -1078,6 +1140,9 @@ static uint32_t gpu_timing_region(int frame)
 
 /* (frame_begin, once the slot's fence has passed) the slot's last frame
 counted, and its command memory given back for this one */
+static void upload_frame_end(void);
+static void static_arenas_retire(void);
+
 static void gpu_timing_frame_begin(void)
 {
 	const uint64_t *reports;
@@ -1175,6 +1240,8 @@ static void frame_begin(void)
 	command_memory_begin();
 	capture_frame_begin();
 	/* the upload slice is reused the same way, behind the same fence */
+	upload_frame_end();
+	static_arenas_retire();
 	dk.upload_used = 0;
 	dk.upload_generation++;
 	textures_frame_begin();
@@ -1356,7 +1423,7 @@ static DkGpuAddr window_read(uint64_t address, uint64_t size)
 /* the per-frame upload buffer, for vertex and index data outside the
 window; the draw is skipped if a frame's copies do not fit, which a frame's
 size is not expected to reach */
-static DkGpuAddr upload_copy(const void *data, uint32_t size)
+static DkGpuAddr upload_copy(const void *data, uint32_t size, enum upload_kind kind)
 {
 	uint32_t offset = (dk.upload_used + UPLOAD_ALIGNMENT - 1) & ~(UPLOAD_ALIGNMENT - 1);
 
@@ -1364,6 +1431,8 @@ static DkGpuAddr upload_copy(const void *data, uint32_t size)
 		return 0;
 	if (offset + size > UPLOAD_SLICE_SIZE)
 	{
+		dk.upload_frame.refused_bytes += size;
+		dk.upload_frame.refused_copies++;
 		if (!dk.upload_overflowed)
 		{
 			host_logf(HOST_LOG_ERROR, "deko3d: a frame needs more than %u bytes of uploads; some draws will "
@@ -1374,7 +1443,64 @@ static DkGpuAddr upload_copy(const void *data, uint32_t size)
 	}
 	memcpy((char *)dk.upload_cpu + dk.frame * UPLOAD_SLICE_SIZE + offset, data, size);
 	dk.upload_used = offset + size;
+	dk.upload_frame.bytes[kind] += size;
+	dk.upload_frame.copies[kind]++;
+	if (kind == _upload_window_crossing && size > dk.upload_frame.crossing_largest)
+	{
+		dk.upload_frame.crossing_largest = size;
+		dk.upload_frame.crossing_largest_address = (uint64_t)(uintptr_t)data;
+	}
 	return dk.upload_gpu + dk.frame * UPLOAD_SLICE_SIZE + offset;
+}
+
+/* a frame's copies, kept if it wanted the most of the last 60 (what it used
+and what it was refused; a draw refused one copy asks for no more, so what a
+frame wanted is at least this) */
+static void upload_frame_end(void)
+{
+	struct upload_tally *frame = &dk.upload_frame;
+
+	frame->used = dk.upload_used;
+	if (frame->refused_copies)
+	{
+		dk.upload_frames_overflowed++;
+		dk.upload_refused_copies += frame->refused_copies;
+		dk.upload_refused_bytes += frame->refused_bytes;
+	}
+	if ((uint64_t)frame->used + frame->refused_bytes >= (uint64_t)dk.upload_peak.used + dk.upload_peak.refused_bytes)
+		dk.upload_peak = *frame;
+	memset(frame, 0, sizeof(*frame));
+}
+
+/* the line of them a second, and whether any frame did not fit: a frame that
+does not fit loses its draws from there on, whatever has been said already */
+static void upload_report(void)
+{
+	const struct upload_tally *peak = &dk.upload_peak;
+	uint32_t copied = 0;
+	int kind;
+
+	for (kind = 0; kind < NUMBER_OF_UPLOAD_KINDS; kind++)
+		copied += peak->bytes[kind];
+	host_logf(HOST_LOG_INFO, "deko3d: uploads, the frame of the last 60 that wanted the most: %u KB of %u KB, %u KB "
+		"refused; crossing a window chunk %u KB in %u copies (the largest %u KB at %08llx), outside the window %u KB "
+		"in %u, inline vertices %u KB in %u, inline indices %u KB in %u, constants %u KB in %u, alignment %u KB; "
+		"geometry copied once %u KB in %u",
+		(unsigned)(peak->used / 1024), (unsigned)(UPLOAD_SLICE_SIZE / 1024), (unsigned)(peak->refused_bytes / 1024),
+		(unsigned)(peak->bytes[_upload_window_crossing] / 1024), (unsigned)peak->copies[_upload_window_crossing],
+		(unsigned)(peak->crossing_largest / 1024), (unsigned long long)peak->crossing_largest_address,
+		(unsigned)(peak->bytes[_upload_outside_window] / 1024), (unsigned)peak->copies[_upload_outside_window],
+		(unsigned)(peak->bytes[_upload_inline_vertices] / 1024), (unsigned)peak->copies[_upload_inline_vertices],
+		(unsigned)(peak->bytes[_upload_inline_indices] / 1024), (unsigned)peak->copies[_upload_inline_indices],
+		(unsigned)(peak->bytes[_upload_constants] / 1024), (unsigned)peak->copies[_upload_constants],
+		(unsigned)((peak->used - copied) / 1024), (unsigned)(dk.static_bytes / 1024), (unsigned)dk.static_count);
+	if (dk.upload_frames_overflowed)
+		host_logf(HOST_LOG_ERROR, "deko3d: uploads: %u of the last 60 frames did not fit, %u copies refused (%llu KB), "
+			"their draws skipped", (unsigned)dk.upload_frames_overflowed, (unsigned)dk.upload_refused_copies,
+			(unsigned long long)(dk.upload_refused_bytes / 1024));
+	memset(&dk.upload_peak, 0, sizeof(dk.upload_peak));
+	dk.upload_frames_overflowed = dk.upload_refused_copies = 0;
+	dk.upload_refused_bytes = 0;
 }
 
 /* ---------- submissions and which of them the GPU has finished */
@@ -1940,6 +2066,7 @@ static void present(const struct dk_command_present *command)
 		dk.gpu_busy_total_ns = dk.gpu_busy_peak_ns = 0;
 		dk.gpu_frames = 0;
 		dk.command_peak_bytes = 0;
+		upload_report();
 		if (trace.events && dk.frames_presented % 600 == 0)
 			trace_held();
 	}
@@ -3933,14 +4060,172 @@ static int shaders_apply(void)
 	return 1;
 }
 
+/* the first copy whose address is above address */
+static uint32_t static_upper(uint32_t address)
+{
+	uint32_t low = 0, high = dk.static_count;
+
+	while (low < high)
+	{
+		uint32_t middle = (low + high) / 2;
+
+		if (dk.static_copies[middle].address <= address)
+			low = middle + 1;
+		else
+			high = middle;
+	}
+	return low;
+}
+
+/* room in the current block, or a new one; -1 if there is none */
+static int static_arena_for(uint32_t size)
+{
+	int index;
+	void *storage;
+
+	index = dk.static_arena_current - 1;
+	if (index >= 0 && dk.static_arenas[index].block && !dk.static_arenas[index].retire_after &&
+		((dk.static_arenas[index].used + UPLOAD_ALIGNMENT - 1) & ~(UPLOAD_ALIGNMENT - 1)) + size <= STATIC_ARENA_SIZE)
+	{
+		return index;
+	}
+	for (index = 0; index < STATIC_ARENAS && dk.static_arenas[index].block; index++)
+		;
+	if (index == STATIC_ARENAS || !(storage = aligned_alloc(DK_MEMBLOCK_ALIGNMENT, STATIC_ARENA_SIZE)))
+		return -1;
+	memset(&dk.static_arenas[index], 0, sizeof(dk.static_arenas[index]));
+	dk.static_arenas[index].storage = storage;
+	dk.static_arenas[index].block = memory_block(STATIC_ARENA_SIZE, DkMemBlockFlags_CpuCached | DkMemBlockFlags_GpuCached,
+		storage);
+	dk.static_arenas[index].cpu = dkMemBlockGetCpuAddr(dk.static_arenas[index].block);
+	dk.static_arenas[index].gpu = dkMemBlockGetGpuAddr(dk.static_arenas[index].block);
+	dk.static_arena_current = index + 1;
+	host_logf(HOST_LOG_INFO, "deko3d: a block of %u MB for geometry outside the window", STATIC_ARENA_SIZE / (1024 * 1024));
+	return index;
+}
+
+static void static_make_receive(const struct dk_command_static *command)
+{
+	uint32_t place;
+	int index;
+	struct static_arena *arena;
+	uint32_t offset;
+
+	/* (none: its draws put their bytes in the upload buffer, as they did) */
+	index = command->size && command->size <= STATIC_ARENA_SIZE ? static_arena_for(command->size) : -1;
+	if (dk.static_count == dk.static_capacity && index >= 0)
+	{
+		uint32_t capacity = dk.static_capacity ? dk.static_capacity * 2 : 256;
+		struct static_copy *copies = realloc(dk.static_copies, capacity * sizeof(*copies));
+
+		if (copies)
+		{
+			dk.static_copies = copies;
+			dk.static_capacity = capacity;
+		}
+		else
+			index = -1;
+	}
+	if (index < 0)
+	{
+		if (!dk.static_said_failed)
+			host_logf(HOST_LOG_ERROR, "deko3d: no room for a copy of %u bytes of geometry; it is copied at each draw",
+				(unsigned)command->size);
+		dk.static_said_failed = 1;
+		return;
+	}
+	arena = &dk.static_arenas[index];
+	offset = (arena->used + UPLOAD_ALIGNMENT - 1) & ~(UPLOAD_ALIGNMENT - 1);
+	memcpy(arena->cpu + offset, (const void *)(uintptr_t)command->address, command->size);
+	armDCacheClean(arena->cpu + offset, command->size);
+	arena->used = offset + command->size;
+	arena->live++;
+	place = static_upper(command->address);
+	memmove(&dk.static_copies[place + 1], &dk.static_copies[place], (dk.static_count - place) * sizeof(*dk.static_copies));
+	dk.static_copies[place].address = command->address;
+	dk.static_copies[place].size = command->size;
+	dk.static_copies[place].gpu = arena->gpu + offset;
+	dk.static_copies[place].arena = index;
+	dk.static_count++;
+	dk.static_bytes += command->size;
+}
+
+static void static_free_receive(const struct dk_command_static *command)
+{
+	uint32_t place = static_upper(command->address);
+	struct static_arena *arena;
+
+	if (!place || dk.static_copies[place - 1].address != command->address)
+		return;
+	place--;
+	arena = &dk.static_arenas[dk.static_copies[place].arena];
+	dk.static_bytes -= dk.static_copies[place].size;
+	memmove(&dk.static_copies[place], &dk.static_copies[place + 1],
+		(dk.static_count - place - 1) * sizeof(*dk.static_copies));
+	dk.static_count--;
+	if (!--arena->live)
+		arena->retire_after = dk.frames_presented + FRAMES + 1;
+}
+
+/* the blocks nothing is in, once the frames that may have read them are done */
+static void static_arenas_retire(void)
+{
+	int index;
+
+	for (index = 0; index < STATIC_ARENAS; index++)
+	{
+		struct static_arena *arena = &dk.static_arenas[index];
+
+		if (arena->block && arena->retire_after && dk.frames_presented > arena->retire_after)
+		{
+			dkMemBlockDestroy(arena->block);
+			free(arena->storage);
+			memset(arena, 0, sizeof(*arena));
+		}
+	}
+}
+
+/* where the host's copy of a range is for the GPU, if it has one */
+static DkGpuAddr static_read(uint64_t address, uint32_t size)
+{
+	uint32_t place;
+	const struct static_copy *copy;
+
+	if (!dk.static_count || address >> 32)
+		return 0;
+	place = static_upper((uint32_t)address);
+	if (!place)
+		return 0;
+	copy = &dk.static_copies[place - 1];
+	if (address - copy->address > copy->size || size > copy->size - (address - copy->address))
+		return 0;
+	return copy->gpu + (address - copy->address);
+}
+
 /* where a range a draw reads is for the GPU: in the window, where the game
-keeps it, or (if it is somewhere else, or crosses from one chunk of the window
+keeps it; in the host's copy of it, if it is written once and outside the
+window; or (if it is somewhere else, or crosses from one chunk of the window
 into the next) copied into the upload buffer */
 static DkGpuAddr range_read(const void *data, uint32_t size)
 {
-	DkGpuAddr gpu = window_read((uint64_t)(uintptr_t)data, size);
+	uint64_t address = (uint64_t)(uintptr_t)data;
+	DkGpuAddr gpu = window_read(address, size);
+	int index;
+	int first_in = 0, last_in = 0;
 
-	return gpu ? gpu : upload_copy(data, size);
+	if (gpu)
+		return gpu;
+	gpu = static_read(address, size);
+	if (gpu)
+		return gpu;
+	for (index = 0; index < dk.window_chunk_count; index++)
+	{
+		const struct window_chunk *chunk = &dk.window_chunks[index];
+
+		first_in |= address >= chunk->address && address < chunk->address + WINDOW_CHUNK_SIZE;
+		last_in |= address + size > chunk->address && address + size <= chunk->address + WINDOW_CHUNK_SIZE;
+	}
+	return upload_copy(data, size, first_in && last_in ? _upload_window_crossing : _upload_outside_window);
 }
 
 /* whether [gpu, gpu + size) is memory the GPU reads draws' data from: one
@@ -3956,6 +4241,13 @@ static int gpu_range_known(DkGpuAddr gpu, uint64_t size)
 		return 0;
 	if (dk.upload_memory && gpu >= dk.upload_gpu && gpu + size <= dk.upload_gpu + (DkGpuAddr)FRAMES * UPLOAD_SLICE_SIZE)
 		return 1;
+	for (index = 0; index < STATIC_ARENAS; index++)
+	{
+		const struct static_arena *arena = &dk.static_arenas[index];
+
+		if (arena->block && gpu >= arena->gpu && gpu + size <= arena->gpu + STATIC_ARENA_SIZE)
+			return 1;
+	}
 	for (index = 0; index < dk.window_chunk_count; index++)
 	{
 		const struct window_chunk *chunk = &dk.window_chunks[index];
@@ -4029,7 +4321,7 @@ static void draw(const struct dk_command_draw *command)
 	for (binding = 0; binding < streams; binding++)
 	{
 		uint32_t size = command->streams[binding][1];
-		DkGpuAddr gpu = command->inline_bytes ? upload_copy(inline_data, command->inline_bytes) :
+		DkGpuAddr gpu = command->inline_bytes ? upload_copy(inline_data, command->inline_bytes, _upload_inline_vertices) :
 			range_read((const void *)(uintptr_t)command->streams[binding][0], size);
 
 		if (!gpu)
@@ -4054,7 +4346,7 @@ static void draw(const struct dk_command_draw *command)
 	{
 		if (dk.constants_generation != dk.upload_generation || !dk.constants_gpu)
 		{
-			dk.constants_gpu = upload_copy(dk.format.constants, sizeof(dk.format.constants));
+			dk.constants_gpu = upload_copy(dk.format.constants, sizeof(dk.format.constants), _upload_constants);
 			dk.constants_generation = dk.upload_generation;
 		}
 		if (!dk.constants_gpu)
@@ -4070,7 +4362,8 @@ static void draw(const struct dk_command_draw *command)
 	}
 	if (command->index_address == DK_INDEX_INLINE)
 	{
-		index_gpu = upload_copy(inline_data + ((command->inline_bytes + 3) & ~3u), command->count * sizeof(uint16_t));
+		index_gpu = upload_copy(inline_data + ((command->inline_bytes + 3) & ~3u), command->count * sizeof(uint16_t),
+			_upload_inline_indices);
 		if (!index_gpu)
 		{
 			profile.frame.skipped++;
@@ -4222,6 +4515,12 @@ static void submit_run(const unsigned char *at, uint32_t size)
 			break;
 		case DK_COMMAND_TEXTURE_FREE:
 			texture_free_receive((const struct dk_command_texture_free *)header);
+			break;
+		case DK_COMMAND_STATIC_MAKE:
+			static_make_receive((const struct dk_command_static *)header);
+			break;
+		case DK_COMMAND_STATIC_FREE:
+			static_free_receive((const struct dk_command_static *)header);
 			break;
 		case DK_COMMAND_TEXTURES:
 			textures_receive((const struct dk_command_textures *)header);
