@@ -15,6 +15,11 @@ them, in the file, and are kept for the texture cache
 
 All of it goes with ui.map's tags. Until it has been read, and without
 wizard.map or with one this cannot read, the screen keeps its picture.
+
+On the Multiplayer Color screen he answers to the controller
+(chief_controls): the right stick turns him, the north button changes what he
+holds, and left alone for CONTROLS_REST_MILLISECONDS he walks for that long and
+stands for that long in turn, until they are used again.
 */
 
 #include "cseries.h"
@@ -35,9 +40,11 @@ wizard.map or with one this cannot read, the screen keeps its picture.
 #include "render/render_cameras.h"
 #include "render/render_cameras_internal.h"
 #include "cache/cache_files.h"
+#include "input/input.h"
 #include "memory/zlib/zlib.h"
 #include "tag_schema.h"
 #include "menu_chief.h"
+#include "halo_overlay_menu.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -75,6 +82,13 @@ extern D3DDevice *global_d3d_device;
 #define RENDER_MODEL_MENU_FLAG (1UL << 4)
 #define VIEW_VERTICAL_ANGLE 0.42f
 #define VIEW_ANGLE_AROUND 0.08f
+/* his controls: how far the right stick must go, how fast it turns him at its
+furthest, how long each of walking and standing lasts left alone, and how long
+he is not drawn for before he is taken to be on a new screen */
+#define CONTROLS_DEAD_ZONE 0.2f
+#define CONTROLS_TURN_RADIANS_PER_SECOND 3.0f
+#define CONTROLS_REST_MILLISECONDS 5000UL
+#define CONTROLS_AWAY_MILLISECONDS 500UL
 /* (the picture he stands for is narrower than the panel it is in, and than
 what he holds: he is drawn this much past it on each side, inside the panel) */
 #define VIEW_SIDE_MARGIN 36
@@ -166,6 +180,8 @@ struct held_stance
 	struct animation const *idle;
 	/* (none in the pistol class's: it is blended to) */
 	struct animation const *ready;
+	/* (none, and he stands) */
+	struct animation const *walk;
 };
 
 struct kept_picture
@@ -212,6 +228,16 @@ static struct
 	unsigned long blended_since;
 	boolean blending;
 	boolean readying;
+	/* his controls: whether they are heard, how far they have turned him,
+	when they were last used, when he was last drawn, whether the north button
+	is down, and whether he is walking and since when */
+	boolean controlled;
+	real turned;
+	unsigned long touched_at;
+	unsigned long drawn_at;
+	boolean north_down;
+	boolean walking;
+	unsigned long walking_since;
 	real_point3d centre;
 	real height;
 	boolean ready;
@@ -690,6 +716,8 @@ static boolean stances_find(void)
 		stance->idle = animation_named(graph, name);
 		snprintf(name, sizeof(name), "stand %s ready", held_weapons[weapon].weapon_class);
 		stance->ready = animation_named(graph, name);
+		snprintf(name, sizeof(name), "stand %s move-front", held_weapons[weapon].weapon_class);
+		stance->walk = animation_named(graph, name);
 		if (!stance->weapon_class || !stance->idle || stance->idle->frame_count <= 0)
 			return FALSE;
 	}
@@ -915,13 +943,98 @@ static void animation_pose(
 	memcpy(pose, next, chief.body.node_count * sizeof(*pose));
 }
 
+/* from the pose he has, to whatever he does next */
+static void pose_blend_begin(unsigned long now)
+{
+	memcpy(chief.blended_from, chief.pose, sizeof(chief.pose));
+	chief.blended_since = now;
+	chief.blending = TRUE;
+}
+
+/* the next of what he holds, readied if his stance has that and he stands */
+static void weapon_next(unsigned long now)
+{
+	chief.held = (chief.held + 1) % HELD_WEAPON_COUNT;
+	chief.held_since = now;
+	chief.readying = chief.stances[chief.held].ready != NULL && !chief.walking;
+	pose_blend_begin(now);
+}
+
+/* the right stick turns him and the north button changes what he holds, on any
+controller; used, he stands, and left alone he walks for
+CONTROLS_REST_MILLISECONDS and stands for that long in turn. On a screen that does
+not hear them, or come back to one after being away, he stands facing front.
+The north button is where it is on each controller (xinput_sdl.c's Y) */
+static void chief_controls(boolean controlled)
+{
+	unsigned long now = GetTickCount();
+	unsigned long since_drawn = now - chief.drawn_at;
+	real turn = 0.0f;
+	boolean north = FALSE;
+	boolean wanted;
+	short controller;
+
+	if (!overlay_menu_open())
+	{
+		for (controller = 0; controller < MAXIMUM_GAMEPADS; controller++)
+		{
+			struct gamepad_state const *gamepad = input_get_gamepad_state(controller);
+
+			if (!gamepad)
+				continue;
+			turn += gamepad->sticks[_gamepad_stick_right].x / 32767.0f;
+			north |= gamepad->buttons[FIRST_GAMEPAD_ANALOG_BUTTON + _gamepad_analog_button_y] > 0;
+		}
+	}
+	if (turn > -CONTROLS_DEAD_ZONE && turn < CONTROLS_DEAD_ZONE)
+		turn = 0.0f;
+	chief.drawn_at = now;
+	if (controlled != chief.controlled || since_drawn >= CONTROLS_AWAY_MILLISECONDS)
+	{
+		chief.controlled = controlled;
+		chief.turned = 0.0f;
+		chief.touched_at = now;
+		/* (a press from the screen before is not one for him) */
+		chief.north_down = north;
+		if (chief.walking)
+		{
+			chief.walking = FALSE;
+			pose_blend_begin(now);
+		}
+		return;
+	}
+	if (!controlled)
+		return;
+	if (turn != 0.0f || (north && !chief.north_down))
+	{
+		chief.touched_at = now;
+		if (chief.walking)
+		{
+			chief.walking = FALSE;
+			pose_blend_begin(now);
+		}
+		chief.turned += turn * CONTROLS_TURN_RADIANS_PER_SECOND * since_drawn / 1000.0f;
+		if (north && !chief.north_down)
+			weapon_next(now);
+	}
+	chief.north_down = north;
+	wanted = ((now - chief.touched_at) / CONTROLS_REST_MILLISECONDS) % 2 == 1 &&
+		chief.stances[chief.held].walk != NULL && !chief.readying;
+	if (wanted != chief.walking)
+	{
+		chief.walking = wanted;
+		chief.walking_since = now;
+		pose_blend_begin(now);
+	}
+}
+
 /* what he is doing now: readying what he now holds if his stance has that,
-then idling, each blended from the pose he had; every so often, the next of
-what he holds */
+then idling or walking, each blended from the pose he had, facing as he has
+been turned; every so often, the next of what he holds */
 static void pose_update(real_matrix4x3 *nodes)
 {
 	static real_point3d const origin = { 0.0f, 0.0f, 0.0f };
-	static real_vector3d const forward = { 1.0f, 0.0f, 0.0f };
+	real_vector3d forward;
 	static real_vector3d const up = { 0.0f, 0.0f, 1.0f };
 	struct real_orientation pose[MAXIMUM_NODES_PER_ANIMATION];
 	struct held_stance const *stance;
@@ -931,12 +1044,7 @@ static void pose_update(real_matrix4x3 *nodes)
 
 	if (elapsed >= HELD_MILLISECONDS)
 	{
-		chief.held = (chief.held + 1) % HELD_WEAPON_COUNT;
-		chief.held_since = now;
-		chief.readying = chief.stances[chief.held].ready != NULL;
-		memcpy(chief.blended_from, chief.pose, sizeof(chief.pose));
-		chief.blended_since = now;
-		chief.blending = TRUE;
+		weapon_next(now);
 		elapsed = 0;
 	}
 	stance = &chief.stances[chief.held];
@@ -945,12 +1053,12 @@ static void pose_update(real_matrix4x3 *nodes)
 	if (chief.readying && elapsed >= ready_milliseconds)
 	{
 		chief.readying = FALSE;
-		memcpy(chief.blended_from, chief.pose, sizeof(chief.pose));
-		chief.blended_since = now;
-		chief.blending = TRUE;
+		pose_blend_begin(now);
 	}
 	if (chief.readying)
 		animation_pose(stance->ready, elapsed, pose);
+	else if (chief.walking && stance->walk)
+		animation_pose(stance->walk, now - chief.walking_since, pose);
 	else
 		animation_pose(stance->idle, elapsed, pose);
 	if (chief.blending)
@@ -968,6 +1076,9 @@ static void pose_update(real_matrix4x3 *nodes)
 		}
 	}
 	memcpy(chief.pose, pose, sizeof(chief.pose));
+	forward.i = (real)cos(chief.turned);
+	forward.j = (real)sin(chief.turned);
+	forward.k = 0.0f;
 	animation_graph_node_matrices_from_orientations(chief.animations_index, nodes, pose, &origin, &forward, &up);
 }
 
@@ -1035,7 +1146,7 @@ static void weapon_attach(
 
 /* ---------- drawing */
 
-boolean menu_chief_draw(short x0, short y0, short x1, short y1, short color_index)
+boolean menu_chief_draw(short x0, short y0, short x1, short y1, short color_index, boolean controlled)
 {
 	struct render_camera saved_render_camera, saved_rasterizer_camera;
 	struct render_frustum saved_render_frustum, saved_rasterizer_frustum;
@@ -1046,6 +1157,9 @@ boolean menu_chief_draw(short x0, short y0, short x1, short y1, short color_inde
 	struct render_lighting lighting;
 	rectangle2d panel;
 	real distance;
+	/* (turned, he turns about the model's origin, which must be in the middle
+	of the view; not turned, he is framed by the middle of his default pose) */
+	real look_y = controlled ? 0.0f : chief.centre.y;
 	long index;
 
 	if (x1 <= x0 || y1 <= y0 || !chief_finish())
@@ -1062,7 +1176,7 @@ boolean menu_chief_draw(short x0, short y0, short x1, short y1, short color_inde
 	panel.y1 = y1;
 	distance = chief.height * 0.56f / (real)tan(VIEW_VERTICAL_ANGLE * 0.5f);
 	render.camera.position.x = chief.centre.x + (real)cos(VIEW_ANGLE_AROUND) * distance;
-	render.camera.position.y = chief.centre.y + (real)sin(VIEW_ANGLE_AROUND) * distance;
+	render.camera.position.y = look_y + (real)sin(VIEW_ANGLE_AROUND) * distance;
 	render.camera.position.z = chief.centre.z;
 	render.camera.forward.i = -(real)cos(VIEW_ANGLE_AROUND);
 	render.camera.forward.j = -(real)sin(VIEW_ANGLE_AROUND);
@@ -1102,6 +1216,7 @@ boolean menu_chief_draw(short x0, short y0, short x1, short y1, short color_inde
 	for (index = 0; index < MAXIMUM_CHANGE_COLORS_PER_MODEL; index++)
 		white[index] = *global_real_rgb_white;
 
+	chief_controls(controlled);
 	pose_update(body_nodes);
 	{
 		struct kept_model const *weapon = &chief.weapons[chief.held];

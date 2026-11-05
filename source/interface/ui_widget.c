@@ -7243,17 +7243,18 @@ static void widget_instance_render_recursive(
 			(!strcmp(widget->name, "qtr_screen_profile_color_pic") && widget->parent && widget->parent->name &&
 				!strcmp(widget->parent->name, "player_profile_right_item"))))
 	{
-		extern boolean menu_chief_draw(short x0, short y0, short x1, short y1, short color_index);
-		/* (the profile screen's picture is not in the middle of its panel, as
-		he, with what he holds out to one side, must be) */
+		extern boolean menu_chief_draw(short x0, short y0, short x1, short y1, short color_index, boolean controlled);
+		/* (neither screen's picture is in the middle of its panel, as he, with
+		what he holds out to one side, must be) */
 		short chief_left = (short)(definition->bounds.x0 + offset.x + halo_screen_ui_offset_current() -
-			(widget->name[0] == 'q' ? 20 : 0));
+			(widget->name[0] == 'q' ? 20 : 5));
 		short chief_top = (short)(definition->bounds.y0 + offset.y);
 
 		if (menu_chief_draw(chief_left, chief_top,
 				(short)(chief_left + definition->bounds.x1 - definition->bounds.x0),
 				(short)(chief_top + definition->bounds.y1 - definition->bounds.y0),
-				frame_index))
+				frame_index,
+				widget->name[0] == 'c'))
 		{
 			bitmap = NULL;
 		}
