@@ -1380,7 +1380,7 @@ STRING_OVERRIDES.update({
         "All the weapons on the map are only effective at\\nshort ranges.",
         "There are no weapons on the map that were made in\\nCovenant sweat shops.",
         "Only weapons made by the Covenant will appear\\nin the map.",
-        "The flamethrower and fuel rod gun will not appear\\nin the map.",
+        "The map will contain whatever weapons the designers\\nplaced on it.",
         "Only the most devastating and dangerous of weapons\\nwill appear in the map.",
         "The map's weapons, without any grenades.",
         "You will start the game with the weapon set that the \\nmap designers custom tailored for it.",
