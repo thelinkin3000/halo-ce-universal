@@ -370,8 +370,10 @@ def strings_xml(lists: dict) -> str:
             strings = strings[:index] + texts + strings[index:]
             originals = originals[:index] + [None] * len(texts) + originals[index:]
         lines.append(f"\t<strings{attributes([('name', our_name(tag)), ('map', tag)])}>")
-        lines += [f"\t\t<string{attributes([('text', text), ('map', original)])}/>"
-                  for text, original in zip(strings, originals)]
+        for text, original in zip(strings, originals):
+            # (a string that differs by platform, which keeps one place in the list on each)
+            for platform, words in (text.items() if isinstance(text, dict) else [(None, text)]):
+                lines.append(f"\t\t<string{attributes([('text', words), ('map', original), ('platform', platform)])}/>")
         lines.append("\t</strings>")
     lines.append("</menus>")
     return "\n".join(lines) + "\n"

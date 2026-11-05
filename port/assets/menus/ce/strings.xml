@@ -1407,7 +1407,10 @@
 		<string text="Internet play, updates and the\nmultiplayer HUD.\n\nProfile:"/>
 		<string text="Change the current profile's\nfree-for-all multiplayer color.\n\nProfile:" map="7"/>
 		<string text="How players and the AI fall:\nthe animation, or a ragdoll.\n\nProfile:"/>
-		<string text="Halo: Combat Evolved, the Xbox\ngame, on this computer.\n\nProfile:"/>
+		<string text="SlipstreamCE, a fork of OpenCE.\nHalo: Combat Evolved on your\nSwitch\nProfile:" platform="switch"/>
+		<string text="SlipstreamCE, a fork of OpenCE.\nHalo: Combat Evolved on your\nPS5\nProfile:" platform="ps5"/>
+		<string text="SlipstreamCE, a fork of OpenCE.\nHalo: Combat Evolved on your\nAndroid Device\nProfile:" platform="android"/>
+		<string text="SlipstreamCE, a fork of OpenCE.\nHalo: Combat Evolved on your\nComputer\nProfile:" platform="desktop web"/>
 	</strings>
 	<strings name="main_menu/settings_select/player_setup/player_profile_edit/profile_edit_options" map="ui\shell\main_menu\settings_select\player_setup\player_profile_edit\profile_edit_options">
 		<string text="CHANGE NAME" map="0"/>
