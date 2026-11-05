@@ -1,0 +1,87 @@
+<svg id="network-setup-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 350 350" class="w-full h-full">
+
+                            <!-- 1. MAIN CHASSIS / BACKGROUND PANEL BASE (SQUARE 300x300) -->
+                            <rect x="25" y="25" width="300" height="300" rx="28" fill="#274261" stroke="#101c2b" stroke-width="2"></rect>
+
+                            <!-- Faceplate Inner Recess Outline -->
+                            <rect x="38" y="38" width="274" height="274" rx="20" fill="none" stroke="#1a2d44" stroke-width="1.5"></rect>
+
+                            <!-- 2. LAN TOP CONSOLES & NODE (REPLACES INTERNET CLOUD) -->
+                            <!-- Top Left Console Unit -->
+                            <g transform="translate(87, 60)">
+                                <rect x="0" y="0" width="46" height="46" rx="8" fill="#1a2d44" stroke="#101c2b" stroke-width="1.5"></rect>
+                                <line x1="10" y1="14" x2="36" y2="14" stroke="#9bbbd4" stroke-width="1.5" stroke-linecap="round"></line>
+                                <circle cx="23" cy="27" r="3" fill="none" stroke="#9bbbd4" stroke-width="1.25"></circle>
+                                <circle cx="14" cy="37" r="1.5" fill="#9bbbd4"></circle>
+                                <circle cx="23" cy="37" r="1.5" fill="#9bbbd4"></circle>
+                                <circle cx="32" cy="37" r="1.5" fill="#9bbbd4"></circle>
+                            </g>
+
+                            <!-- Top Right Console Unit -->
+                            <g transform="translate(217, 60)">
+                                <rect x="0" y="0" width="46" height="46" rx="8" fill="#1a2d44" stroke="#101c2b" stroke-width="1.5"></rect>
+                                <line x1="10" y1="14" x2="36" y2="14" stroke="#9bbbd4" stroke-width="1.5" stroke-linecap="round"></line>
+                                <circle cx="23" cy="27" r="3" fill="none" stroke="#9bbbd4" stroke-width="1.25"></circle>
+                                <circle cx="14" cy="37" r="1.5" fill="#9bbbd4"></circle>
+                                <circle cx="23" cy="37" r="1.5" fill="#9bbbd4"></circle>
+                                <circle cx="32" cy="37" r="1.5" fill="#9bbbd4"></circle>
+                            </g>
+
+                            <!-- Top Network Lines connecting to top consoles -->
+                            <g fill="none" stroke="#9bbbd4" stroke-width="1.5" transform="translate(-22, 10)">
+                                <!-- Vertical drops from top consoles to top bus bar -->
+                                <line x1="132" y1="96" x2="132" y2="120"></line>
+                                <line x1="262" y1="96" x2="262" y2="120"></line>
+                                
+                                <!-- Top Terminal Dots -->
+                                <circle cx="132" cy="96" r="2.5" fill="#9bbbd4"></circle>
+                                <circle cx="262" cy="96" r="2.5" fill="#9bbbd4"></circle>
+
+                                <!-- Top Bus Bar -->
+                                <line x1="132" y1="120" x2="262" y2="120"></line>
+
+                                <!-- Central LAN Connection Node -->
+                                <circle cx="197" cy="120" r="4" fill="#9bbbd4"></circle>
+                            </g>
+
+                            <!-- 3. NETWORK CONNECTIONS & EQUAL-LENGTH DROPS WITH TERMINAL DOTS -->
+                            <g fill="none" stroke="#9bbbd4" stroke-width="1.5" transform="translate(-22, 10)">
+                                <!-- Main Trunk line down from top node to bottom horizontal bar -->
+                                <line x1="197" y1="120" x2="197" y2="175"></line>
+                                
+                                <!-- Center Junction Dot -->
+                                <circle cx="197" cy="175" r="2.5" fill="#9bbbd4"></circle>
+
+                                <!-- Horizontal Bus Line -->
+                                <line x1="110" y1="175" x2="284" y2="175"></line>
+
+                                <!-- Left, Center & Right Equal Drops -->
+                                <line x1="110" y1="175" x2="110" y2="207"></line>
+                                <line x1="197" y1="175" x2="197" y2="207"></line>
+                                <line x1="284" y1="175" x2="284" y2="207"></line>
+
+                                <!-- Terminal Dots -->
+                                <circle cx="110" cy="207" r="2.5" fill="#9bbbd4"></circle>
+                                <circle cx="197" cy="207" r="2.5" fill="#9bbbd4"></circle>
+                                <circle cx="284" cy="207" r="2.5" fill="#9bbbd4"></circle>
+                            </g>
+
+                            <!-- 4. CENTRAL CONSOLE BOX (SHIFTED DOWNWARD) -->
+                            <g transform="translate(152, 232)">
+                                <rect x="0" y="0" width="46" height="46" rx="8" fill="#1a2d44" stroke="#101c2b" stroke-width="1.5"></rect>
+                                <!-- Disc Slot -->
+                                <line x1="10" y1="14" x2="36" y2="14" stroke="#9bbbd4" stroke-width="1.5" stroke-linecap="round"></line>
+                                <!-- Power Button -->
+                                <circle cx="23" cy="27" r="3" fill="none" stroke="#9bbbd4" stroke-width="1.25"></circle>
+                                <!-- Indicator LEDs -->
+                                <circle cx="14" cy="37" r="1.5" fill="#9bbbd4"></circle>
+                                <circle cx="23" cy="37" r="1.5" fill="#9bbbd4"></circle>
+                                <circle cx="32" cy="37" r="1.5" fill="#9bbbd4"></circle>
+                            </g>
+
+                            <!-- 5. THE GAMEPAD SETUP'S CONTROLLERS, DARKENED TO THE CONSOLES' BLUES: SWITCH LEFT, PS5 RIGHT (port/assets/menus/controllers; tools/ce_menus.py's draw_menu_icon puts them beside this file) -->
+                            <defs><filter id="controller-tint" color-interpolation-filters="sRGB"><feColorMatrix type="matrix" values="0.1807 0.6079 0.0614 0 -0.0700 0.1977 0.6651 0.0671 0 -0.0100 0.1998 0.6723 0.0679 0 0.0800 0 0 0 1 0"></feColorMatrix></filter></defs>
+                            <image href="switch_pro.svg" x="46" y="224.48" width="84" height="61.04" filter="url(#controller-tint)"></image>
+                            <image href="dualsense.svg" x="220" y="231.64" width="84" height="46.72" filter="url(#controller-tint)"></image>
+
+                        </svg>

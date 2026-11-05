@@ -40,11 +40,13 @@ import json
 import shutil
 import struct
 import sys
+import tempfile
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Optional
 from xml.sax.saxutils import quoteattr
 
+import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -172,6 +174,28 @@ XBOX_FRAMES = {
     "shell/main_menu/settings_select/player_setup/player_profile_edit/profile_options__7": 3,
 }
 PLACEHOLDER_SCALE = 2
+# the menus' rows with an icon of their own (port/assets/menus/menu_icons): its frame, its file and the margin around
+# its artwork, which is 302 across in all of them; and where the artwork goes in the frame, the middle of the panel it
+# is drawn in, as About's logo (tools/slipstream_icon.py), and clear of the description's text. (Multiplayer's picture
+# had three frames for its seven rows: MENU_EXTRA_FRAMES)
+MENU_ICONS = {
+    "shell/main_menu/settings_select/player_setup/player_profile_edit/profile_options__4": ("audio.svg", 24),
+    "shell/main_menu/settings_select/player_setup/player_profile_edit/profile_options__5": ("video.svg", 49),
+    "shell/main_menu/settings_select/player_setup/player_profile_edit/profile_options__6": ("internet.svg", 24),
+    "shell/main_menu/settings_select/player_setup/player_profile_edit/profile_options__9": ("gameplay.svg", 24),
+    "shell/main_menu/multiplayer_type_select/mp_options__0": ("internet.svg", 24),
+    "shell/main_menu/multiplayer_type_select/mp_options__1": ("lan.svg", 24),
+    "shell/main_menu/multiplayer_type_select/mp_options__6": ("gametypes.svg", 24),
+}
+# the frames a picture has past the PC version's, for the rows it has past them: the number of the frame's file (another
+# frame's for the same picture again, a MENU_ICONS' for a new one), or None for nothing. Multiplayer's Create Internet,
+# Create LAN, Co-op and Edit Gametypes; the profile settings' Gameplay
+MENU_EXTRA_FRAMES = {
+    "shell/main_menu/multiplayer_type_select/mp_options": [0, 1, None, 6],
+    "shell/main_menu/settings_select/player_setup/player_profile_edit/profile_options": [9],
+}
+MENU_ICON_ARTWORK = 302
+MENU_ICON_SQUARE = (112, 35, 340)
 
 # the Xbox's functions that the PC version rewrote for its own widgets (its
 # column lists where the Xbox had spinners, and other children), which stop
@@ -197,6 +221,20 @@ WIRED = {
 }
 
 # ---------- HEK tags
+
+
+def draw_menu_icon(svg: Path, margin: int, width: int, height: int, output: Path) -> None:
+    """a row's icon, alone in its frame (with the controllers beside it, as librsvg reads an image only from the
+    picture's folder)"""
+    x, y, side = MENU_ICON_SQUARE
+    zoom = side / MENU_ICON_ARTWORK
+    left = round(margin * zoom)
+    image = np.zeros((height, width, 4), np.uint8)
+    with tempfile.TemporaryDirectory() as directory:
+        for path in [svg, *(MENUS / "controllers").glob("*.svg")]:
+            shutil.copy2(path, directory)
+        image[y:y + side, x:x + side] = render_svg(Path(directory) / svg.name, zoom)[left:left + side, left:left + side]
+    Image.fromarray(bleed(image), "RGBA").save(output, optimize=True)
 
 
 class Tags:
@@ -430,12 +468,25 @@ class Art:
             self.draw(relative, index, len(data), width, height, MENUS / png, self.shown.get(tag, []))
             self.pngs.append(png)
             lines.append(f"\t\t<frame{attributes([('png', png), ('width', width), ('height', height)])}/>")
+        for number in MENU_EXTRA_FRAMES.get(relative, []):
+            if number is None:
+                lines.append(f"\t\t<frame{attributes([('png', 'ce/port/blank__0.png'), ('width', 16), ('height', 16)])}/>")
+                continue
+            png = f"ce/{relative}__{number}.png"
+            if png not in self.pngs:
+                self.draw(relative, number, len(data), width, height, MENUS / png, [])
+                self.pngs.append(png)
+            lines.append(f"\t\t<frame{attributes([('png', png), ('width', width), ('height', height)])}/>")
         lines.append("\t</bitmap>")
         return "\n".join(lines)
 
     def draw(self, relative: str, index: int, count: int, width: int, height: int, output: Path,
              shown: list) -> None:
         output.parent.mkdir(parents=True, exist_ok=True)
+        icon = MENU_ICONS.get(self.frame_sources(relative, index, count)[-1])
+        if icon:
+            draw_menu_icon(MENUS / "menu_icons" / icon[0], icon[1], width * PLACEHOLDER_SCALE, height * PLACEHOLDER_SCALE, output)
+            return
         for name in self.frame_sources(relative, index, count):
             svg = self.redraws / f"{name}.svg"
             if svg.is_file():

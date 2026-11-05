@@ -1,0 +1,86 @@
+<svg id="gameplay-settings-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 350 350" class="w-full h-full">
+
+                            <!-- 1. MAIN CHASSIS / BACKGROUND PANEL BASE -->
+                            <rect x="25" y="25" width="300" height="300" rx="28" fill="#274261" stroke="#101c2b" stroke-width="2"></rect>
+                            <rect x="38" y="38" width="274" height="274" rx="20" fill="none" stroke="#1a2d44" stroke-width="1.5"></rect>
+
+                            <!-- 2. DATA SLATE / CHECKLIST BOARD -->
+                            <rect x="60" y="52" width="230" height="246" rx="14" fill="#15273d" stroke="#101c2b" stroke-width="1.5"></rect>
+                            <rect x="68" y="60" width="214" height="230" rx="10" fill="#1a2d44" stroke="#254366" stroke-width="1"></rect>
+                            
+                            <!-- Slate Header Tab Clip -->
+                            <rect x="140" y="48" width="70" height="9" rx="3" fill="#203a58" stroke="#101c2b" stroke-width="1"></rect>
+                            <circle cx="175" cy="52.5" r="1.5" fill="#9bbbd4" opacity="0.8"></circle>
+
+                            <!-- 3. RULE CATEGORIES & TOGGLES (ORIGINAL 4-ROW LAYOUT SPACING) -->
+                            
+                            <!-- ITEM 1: IN-GAME TERMINAL -->
+                            <g transform="translate(76, 68)">
+                                <rect x="0" y="0" width="198" height="48" rx="6" fill="#15273d" stroke="#234266" stroke-width="1"></rect>
+                                
+                                <!-- Terminal / Monitor Icon -->
+                                <g transform="translate(14, 8)">
+                                    <rect x="5" y="6" width="22" height="17" rx="2" fill="none" stroke="#9bbbd4" stroke-width="1.2"></rect>
+                                    <line x1="12" y1="23" x2="20" y2="23" stroke="#9bbbd4" stroke-width="1.2"></line>
+                                    <line x1="9" y1="27" x2="23" y2="27" stroke="#9bbbd4" stroke-width="1.2" stroke-linecap="round"></line>
+                                    <path d="M 9 11 L 13 14.5 L 9 18" fill="none" stroke="#9bbbd4" stroke-width="1" stroke-linejoin="round"></path>
+                                    <line x1="15" y1="18" x2="20" y2="18" stroke="#9bbbd4" stroke-width="1"></line>
+                                </g>
+                                
+                                <!-- Connection Line -->
+                                <line x1="55" y1="24" x2="135" y2="24" stroke="#2e4e75" stroke-width="1" stroke-dasharray="3,3"></line>
+
+                                <!-- Toggle ON -->
+                                <g transform="translate(144, 15)">
+                                    <rect x="0" y="0" width="38" height="18" rx="9" fill="#1a2d44" stroke="#9bbbd4" stroke-width="1.5"></rect>
+                                    <circle cx="29" cy="9" r="6" fill="#9bbbd4"></circle>
+                                </g>
+                            </g>
+
+                            <!-- ITEM 2: PHYSICS SETTINGS -->
+                            <g transform="translate(76, 122)">
+                                <rect x="0" y="0" width="198" height="48" rx="6" fill="#15273d" stroke="#234266" stroke-width="1"></rect>
+                                
+                                <!-- Atom Orbital Icon -->
+                                <g transform="translate(14, 8)">
+                                    <circle cx="16" cy="16" r="3" fill="#9bbbd4"></circle>
+                                    <ellipse cx="16" cy="16" rx="12" ry="5" fill="none" stroke="#9bbbd4" stroke-width="1.2" transform="rotate(-30, 16, 16)"></ellipse>
+                                    <ellipse cx="16" cy="16" rx="12" ry="5" fill="none" stroke="#9bbbd4" stroke-width="1.2" transform="rotate(30, 16, 16)"></ellipse>
+                                </g>
+                                
+                                <!-- Connection Line -->
+                                <line x1="55" y1="24" x2="135" y2="24" stroke="#2e4e75" stroke-width="1" stroke-dasharray="3,3"></line>
+
+                                <!-- Toggle OFF -->
+                                <g transform="translate(144, 15)">
+                                    <rect x="0" y="0" width="38" height="18" rx="9" fill="#101c2b" stroke="#35577d" stroke-width="1.5"></rect>
+                                    <circle cx="9" cy="9" r="6" fill="#35577d"></circle>
+                                </g>
+                            </g>
+
+                            <!-- ITEM 3: GENERAL SETTINGS GEAR -->
+                            <g transform="translate(76, 176)">
+                                <rect x="0" y="0" width="198" height="48" rx="6" fill="#15273d" stroke="#234266" stroke-width="1"></rect>
+                                
+                                <!-- Gear / Cog Icon -->
+                                <g transform="translate(14, 8)">
+                                    <path d="M 14,3 L 18,3 L 19,6.5 A 11,11 0 0,1 21.8,7.7 L 25.2,4.3 L 27.7,6.8 L 24.3,10.2 A 11,11 0 0,1 25.5,13 L 29,14 L 29,18 L 25.5,19 A 11,11 0 0,1 24.3,21.8 L 27.7,25.2 L 25.2,27.7 L 21.8,24.3 A 11,11 0 0,1 19,25.5 L 18,29 L 14,29 L 13,25.5 A 11,11 0 0,1 10.2,24.3 L 6.8,27.7 L 4.3,25.2 L 7.7,21.8 A 11,11 0 0,1 6.5,19 L 3,18 L 3,14 L 6.5,13 A 11,11 0 0,1 7.7,10.2 L 4.3,6.8 L 6.8,4.3 L 10.2,7.7 A 11,11 0 0,1 13,6.5 Z" fill="none" stroke="#9bbbd4" stroke-width="1.2" stroke-linejoin="round"></path>
+                                    <circle cx="16" cy="16" r="4.5" fill="none" stroke="#9bbbd4" stroke-width="1.2"></circle>
+                                </g>
+                                
+                                <!-- Connection Line -->
+                                <line x1="55" y1="24" x2="135" y2="24" stroke="#2e4e75" stroke-width="1" stroke-dasharray="3,3"></line>
+
+                                <!-- Toggle ON -->
+                                <g transform="translate(144, 15)">
+                                    <rect x="0" y="0" width="38" height="18" rx="9" fill="#1a2d44" stroke="#9bbbd4" stroke-width="1.5"></rect>
+                                    <circle cx="29" cy="9" r="6" fill="#9bbbd4"></circle>
+                                </g>
+                            </g>
+
+                            <!-- ITEM 4: EMPTY ROW BOX -->
+                            <g transform="translate(76, 230)">
+                                <rect x="0" y="0" width="198" height="48" rx="6" fill="#15273d" stroke="#234266" stroke-width="1"></rect>
+                            </g>
+
+                        </svg>

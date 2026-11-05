@@ -1,0 +1,77 @@
+<svg id="video-setup-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" class="w-full h-full">
+
+                            <!-- 1. MAIN CHASSIS / BACKGROUND PANEL BASE (FULL SEAMLESS OUTSIDE LINE) -->
+                            <rect x="50" y="50" width="300" height="300" rx="32" fill="#274261" stroke="#101c2b" stroke-width="2"/>
+
+                            <!-- Faceplate Inner Recess Outline -->
+                            <rect x="65" y="65" width="270" height="270" rx="22" fill="none" stroke="#1a2d44" stroke-width="1.5"/>
+
+                            <!-- 2. MAIN 16:9 MONITOR SCREEN DISPLAY (TOP CENTER) -->
+                            <!-- Outer Monitor Screen Frame -->
+                            <rect x="80" y="78" width="240" height="138" rx="10" fill="#1a2d44" stroke="#101c2b" stroke-width="1.5"/>
+                            
+                            <!-- 16:9 Inner Display Glass -->
+                            <rect x="89" y="87" width="222" height="120" rx="5" fill="#274261" stroke="#101c2b" stroke-width="1"/>
+
+                            <!-- Screen Video Test Pattern & Adjustment Graphics -->
+                            <g fill="none" stroke="#9bbbd4">
+                                <!-- Test Grid Lines & Reticle -->
+                                <circle cx="200" cy="147" r="34" stroke-width="1" opacity="0.6"/>
+                                <circle cx="200" cy="147" r="20" stroke-width="1" stroke-dasharray="4 3" opacity="0.8"/>
+                                <line x1="99" y1="147" x2="301" y2="147" stroke-width="1" opacity="0.4" stroke-dasharray="2 3"/>
+                                <line x1="200" y1="97" x2="200" y2="197" stroke-width="1" opacity="0.4" stroke-dasharray="2 3"/>
+                                
+                                <!-- Corner Crop Alignment Markers -->
+                                <path d="M 99 105 L 99 97 L 107 97" stroke-width="1.5"/>
+                                <path d="M 301 105 L 301 97 L 293 97" stroke-width="1.5"/>
+                                <path d="M 99 189 L 99 197 L 107 197" stroke-width="1.5"/>
+                                <path d="M 301 189 L 301 197 L 293 197" stroke-width="1.5"/>
+                            </g>
+                            
+                            <!-- Screen Center Bright Reticle Dot -->
+                            <circle cx="200" cy="147" r="3" fill="#9bbbd4"/>
+
+                            <!-- 3. BOTTOM SECTION: EVENLY SPACED SLIDERS & CONTROLS -->
+                            
+                            <!-- Left Controls: 3 Evenly Spaced Horizontal Sliders -->
+                            <!-- Slider Slot 1 -->
+                            <rect x="80" y="235" width="135" height="6" rx="3" fill="#1a2d44" stroke="#101c2b" stroke-width="1.25"/>
+                            <!-- Slider Knob 1 -->
+                            <rect x="170" y="228" width="16" height="20" rx="4" fill="#9bbbd4" stroke="#101c2b" stroke-width="1.5"/>
+                            <line x1="178" y1="228" x2="178" y2="248" stroke="#101c2b" stroke-width="1" opacity="0.6"/>
+
+                            <!-- Slider Slot 2 -->
+                            <rect x="80" y="267" width="135" height="6" rx="3" fill="#1a2d44" stroke="#101c2b" stroke-width="1.25"/>
+                            <!-- Slider Knob 2 -->
+                            <rect x="130" y="260" width="16" height="20" rx="4" fill="#9bbbd4" stroke="#101c2b" stroke-width="1.5"/>
+                            <line x1="138" y1="260" x2="138" y2="280" stroke="#101c2b" stroke-width="1" opacity="0.6"/>
+
+                            <!-- Slider Slot 3 -->
+                            <rect x="80" y="299" width="135" height="6" rx="3" fill="#1a2d44" stroke="#101c2b" stroke-width="1.25"/>
+                            <!-- Slider Knob 3 -->
+                            <rect x="100" y="292" width="16" height="20" rx="4" fill="#9bbbd4" stroke="#101c2b" stroke-width="1.5"/>
+                            <line x1="108" y1="292" x2="108" y2="312" stroke="#101c2b" stroke-width="1" opacity="0.6"/>
+
+                            <!-- Right Controls: Aspect/Resolution Dial and Preset Buttons -->
+                            <!-- Rotary Dial -->
+                            <circle cx="248" cy="254" r="18" fill="#1a2d44" stroke="#101c2b" stroke-width="1.5"/>
+                            <circle cx="248" cy="254" r="11" fill="#446487" stroke="#101c2b" stroke-width="1"/>
+                            <line x1="248" y1="254" x2="256" y2="246" stroke="#9bbbd4" stroke-width="1.5" stroke-linecap="round"/>
+
+                            <!-- Preset Buttons Cluster -->
+                            <g fill="#1a2d44" stroke="#101c2b" stroke-width="1.5">
+                                <rect x="282" y="236" width="38" height="17" rx="4"/>
+                                <rect x="282" y="261" width="38" height="17" rx="4"/>
+                                <rect x="235" y="292" width="40" height="18" rx="4"/>
+                                <rect x="280" y="292" width="40" height="18" rx="4"/>
+                            </g>
+
+                            <!-- Light Cyan Indicator Lights -->
+                            <g fill="#9bbbd4">
+                                <rect x="287" y="242" width="9" height="5" rx="1"/>
+                                <rect x="287" y="267" width="9" height="5" rx="1"/>
+                                <circle cx="255" cy="301" r="3"/>
+                                <circle cx="300" cy="301" r="3"/>
+                            </g>
+
+                        </svg>

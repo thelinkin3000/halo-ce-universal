@@ -1,0 +1,119 @@
+<svg id="audio-settings-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 350 350" class="w-full h-full">
+
+                            <!-- 1. MAIN CHASSIS / BACKGROUND PANEL BASE (EXACT UNIFIED COLOR MATCH) -->
+                            <rect x="25" y="25" width="300" height="300" rx="28" fill="#274261" stroke="#101c2b" stroke-width="2"></rect>
+                            <rect x="38" y="38" width="274" height="274" rx="20" fill="#274261" stroke="#101c2b" stroke-width="1.5"></rect>
+                            <rect x="44" y="44" width="262" height="262" rx="16" fill="#274261" stroke="#254366" stroke-width="1"></rect>
+
+                            <!-- 2. TOP AUDIO MONITOR DISPLAY (CENTERED TO DIAL SPAN) -->
+                            <rect x="52" y="58" width="112" height="46" rx="6" fill="#122033" stroke="#101c2b" stroke-width="1.5"></rect>
+                            <rect x="56" y="62" width="104" height="38" rx="4" fill="#0d1726" stroke="#1a2d44" stroke-width="1"></rect>
+                            
+                            <!-- Equalizer Visualizer Bars -->
+                            <g fill="#9bbbd4" opacity="0.9">
+                                <rect x="65" y="84" width="4" height="10" rx="1"></rect>
+                                <rect x="72" y="76" width="4" height="18" rx="1"></rect>
+                                <rect x="79" y="80" width="4" height="14" rx="1"></rect>
+                                <rect x="86" y="72" width="4" height="22" rx="1"></rect>
+                                <rect x="93" y="86" width="4" height="8" rx="1"></rect>
+                                <rect x="100" y="68" width="4" height="26" rx="1"></rect>
+                                <rect x="107" y="74" width="4" height="20" rx="1"></rect>
+                                <rect x="114" y="82" width="4" height="12" rx="1"></rect>
+                                <rect x="121" y="76" width="4" height="18" rx="1"></rect>
+                                <rect x="128" y="84" width="4" height="10" rx="1"></rect>
+                                <rect x="135" y="78" width="4" height="16" rx="1"></rect>
+                                <rect x="142" y="86" width="4" height="8" rx="1"></rect>
+                            </g>
+
+                            <!-- 3. TOP RIGHT MATRIX PUSH BUTTONS (EVENLY SPACED TO x=298) -->
+                            <g>
+                                <!-- Row 1 -->
+                                <rect x="180" y="58" width="24" height="20" rx="5" fill="#122033" stroke="#101c2b" stroke-width="1"></rect>
+                                <circle cx="192" cy="68" r="3.5" fill="#9bbbd4" opacity="0.9"></circle>
+
+                                <rect x="210" y="58" width="24" height="20" rx="5" fill="#122033" stroke="#101c2b" stroke-width="1"></rect>
+                                <circle cx="222" cy="68" r="3.5" fill="#9bbbd4" opacity="0.9"></circle>
+
+                                <rect x="240" y="58" width="24" height="20" rx="5" fill="#122033" stroke="#101c2b" stroke-width="1"></rect>
+                                <circle cx="252" cy="68" r="3.5" fill="#9bbbd4" opacity="0.9"></circle>
+
+                                <rect x="270" y="58" width="24" height="20" rx="5" fill="#122033" stroke="#101c2b" stroke-width="1"></rect>
+                                <circle cx="282" cy="68" r="3.5" fill="#9bbbd4" opacity="0.9"></circle>
+
+                                <!-- Row 2 -->
+                                <rect x="180" y="84" width="24" height="20" rx="5" fill="#122033" stroke="#101c2b" stroke-width="1"></rect>
+                                <circle cx="192" cy="94" r="3.5" fill="#9bbbd4" opacity="0.9"></circle>
+
+                                <rect x="210" y="84" width="24" height="20" rx="5" fill="#122033" stroke="#101c2b" stroke-width="1"></rect>
+                                <circle cx="222" cy="94" r="3.5" fill="#9bbbd4" opacity="0.9"></circle>
+
+                                <rect x="240" y="84" width="24" height="20" rx="5" fill="#122033" stroke="#101c2b" stroke-width="1"></rect>
+                                <circle cx="252" cy="94" r="3.5" fill="#9bbbd4" opacity="0.9"></circle>
+
+                                <rect x="270" y="84" width="24" height="20" rx="5" fill="#122033" stroke="#101c2b" stroke-width="1"></rect>
+                                <circle cx="282" cy="94" r="3.5" fill="#9bbbd4" opacity="0.9"></circle>
+                            </g>
+
+                            <!-- 4. ROTARY DIALS / KNOBS (4 ROTARY KNOBS) -->
+                            <g>
+                                <!-- Knob 1 -->
+                                <circle cx="80" cy="128" r="13" fill="#122033" stroke="#101c2b" stroke-width="1.5"></circle>
+                                <circle cx="80" cy="128" r="10" fill="#1d344f" stroke="#2b4d75" stroke-width="1"></circle>
+                                <line x1="80" y1="128" x2="80" y2="120" stroke="#9bbbd4" stroke-width="1.8" stroke-linecap="round"></line>
+
+                                <!-- Knob 2 -->
+                                <circle cx="143" cy="128" r="13" fill="#122033" stroke="#101c2b" stroke-width="1.5"></circle>
+                                <circle cx="143" cy="128" r="10" fill="#1d344f" stroke="#2b4d75" stroke-width="1"></circle>
+                                <line x1="143" y1="128" x2="149" y2="122" stroke="#9bbbd4" stroke-width="1.8" stroke-linecap="round"></line>
+
+                                <!-- Knob 3 -->
+                                <circle cx="207" cy="128" r="13" fill="#122033" stroke="#101c2b" stroke-width="1.5"></circle>
+                                <circle cx="207" cy="128" r="10" fill="#1d344f" stroke="#2b4d75" stroke-width="1"></circle>
+                                <line x1="207" y1="128" x2="202" y2="121" stroke="#9bbbd4" stroke-width="1.8" stroke-linecap="round"></line>
+
+                                <!-- Knob 4 -->
+                                <circle cx="270" cy="128" r="13" fill="#122033" stroke="#101c2b" stroke-width="1.5"></circle>
+                                <circle cx="270" cy="128" r="10" fill="#1d344f" stroke="#2b4d75" stroke-width="1"></circle>
+                                <line x1="270" y1="128" x2="270" y2="120" stroke="#9bbbd4" stroke-width="1.8" stroke-linecap="round"></line>
+                            </g>
+
+                            <!-- 5. VERTICAL SLIDERS / FADERS (4 TRACKS AND SLIDER CAPS) -->
+                            <g>
+                                <!-- Track 1 -->
+                                <rect x="77" y="156" width="6" height="126" rx="3" fill="#0d1726" stroke="#101c2b" stroke-width="1"></rect>
+                                <!-- Slider Cap 1 -->
+                                <g transform="translate(68, 174)">
+                                    <rect x="0" y="0" width="24" height="16" rx="4" fill="#203854" stroke="#101c2b" stroke-width="1.2"></rect>
+                                    <rect x="2" y="2" width="20" height="12" rx="2" fill="#2b4d75" stroke="#9bbbd4" stroke-width="0.8"></rect>
+                                    <line x1="2" y1="8" x2="22" y2="8" stroke="#9bbbd4" stroke-width="1" opacity="0.6"></line>
+                                </g>
+
+                                <!-- Track 2 -->
+                                <rect x="140" y="156" width="6" height="126" rx="3" fill="#0d1726" stroke="#101c2b" stroke-width="1"></rect>
+                                <!-- Slider Cap 2 -->
+                                <g transform="translate(131, 214)">
+                                    <rect x="0" y="0" width="24" height="16" rx="4" fill="#203854" stroke="#101c2b" stroke-width="1.2"></rect>
+                                    <rect x="2" y="2" width="20" height="12" rx="2" fill="#2b4d75" stroke="#9bbbd4" stroke-width="0.8"></rect>
+                                    <line x1="2" y1="8" x2="22" y2="8" stroke="#9bbbd4" stroke-width="1" opacity="0.6"></line>
+                                </g>
+
+                                <!-- Track 3 -->
+                                <rect x="204" y="156" width="6" height="126" rx="3" fill="#0d1726" stroke="#101c2b" stroke-width="1"></rect>
+                                <!-- Slider Cap 3 -->
+                                <g transform="translate(195, 190)">
+                                    <rect x="0" y="0" width="24" height="16" rx="4" fill="#203854" stroke="#101c2b" stroke-width="1.2"></rect>
+                                    <rect x="2" y="2" width="20" height="12" rx="2" fill="#2b4d75" stroke="#9bbbd4" stroke-width="0.8"></rect>
+                                    <line x1="2" y1="8" x2="22" y2="8" stroke="#9bbbd4" stroke-width="1" opacity="0.6"></line>
+                                </g>
+
+                                <!-- Track 4 -->
+                                <rect x="267" y="156" width="6" height="126" rx="3" fill="#0d1726" stroke="#101c2b" stroke-width="1"></rect>
+                                <!-- Slider Cap 4 -->
+                                <g transform="translate(258, 234)">
+                                    <rect x="0" y="0" width="24" height="16" rx="4" fill="#203854" stroke="#101c2b" stroke-width="1.2"></rect>
+                                    <rect x="2" y="2" width="20" height="12" rx="2" fill="#2b4d75" stroke="#9bbbd4" stroke-width="0.8"></rect>
+                                    <line x1="2" y1="8" x2="22" y2="8" stroke="#9bbbd4" stroke-width="1" opacity="0.6"></line>
+                                </g>
+                            </g>
+
+                        </svg>

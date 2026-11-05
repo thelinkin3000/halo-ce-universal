@@ -5,6 +5,9 @@ The pictures of the controllers drawn under the button-layout overlay
 Setup): `tools/port_settings.py`'s `CONTROLLERS` says which platform draws
 which, and where each button is on it.
 
+The Switch's and the PS5's are on the Multiplayer screen's Internet and LAN
+icons too (`port/assets/menus/menu_icons`).
+
 They are AL2009man's [Gamepad Asset Pack](https://github.com/AL2009man/Gamepad-Asset-Pack)
 (MIT, `Gamepad-Asset-Pack-LICENSE.txt`, which the releases carry), at commit
 `a6d1113b`, with the consoles' logos taken out:

@@ -38,8 +38,6 @@ ABOUT_PICTURE = ROOT / "port/assets/menus/ce/shell/main_menu/settings_select/pla
 # (x, y, side) in the frame: the middle of the panel it is drawn in, across
 # and between the panel's top and the description's text
 ABOUT_SQUARE = (92, 15, 380)
-# the Gameplay row's frame: nothing, so it shows no one else's picture
-GAMEPLAY_PICTURE = ABOUT_PICTURE.with_name("profile_options__9.png")
 LAYER_DP = 108
 SAFE_DP = 66
 DENSITIES = {"mdpi": 1.0, "hdpi": 1.5, "xhdpi": 2.0, "xxhdpi": 3.0, "xxxhdpi": 4.0}
@@ -107,7 +105,6 @@ def main() -> None:
     alpha.paste(fitted, (x, y))
     white = Image.new("L", about, 255)
     Image.merge("RGBA", (white, white, white, alpha)).save(ABOUT_PICTURE, optimize=True)
-    Image.new("RGBA", about, (255, 255, 255, 0)).save(GAMEPLAY_PICTURE, optimize=True)
     print(f"background {colour}; artwork radius {radius:.0f} px of the logo, scaled {scale:.3f}")
 
 
