@@ -255,8 +255,7 @@ them:
 At the first start, the game writes the file with the default values. To
 get the default values again, delete the file.
 
-The settings are the settings of Linux, without the window, the mouse and
-the paths. Refer to [port/linux/README.md](../linux/README.md#settings).
+Every setting is described in [docs/settings.md](../../docs/settings.md).
 Some video settings also apply on Android, with these notes; the first three
 have rows of their own in Video Setup:
 

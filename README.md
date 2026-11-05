@@ -1,8 +1,10 @@
 <div align="center">
 
-# OpenCE Ports
+<img src="port/assets/icon/slipstream-logo-2048.png" width="220" alt="The SlipstreamCE logo: a ship flying past a ringworld" />
 
-**Halo: Combat Evolved on Android phones and handhelds, the Nintendo Switch and the PlayStation 5, built from the decompilation of the Xbox game.**
+# SlipstreamCE
+
+**Halo: Combat Evolved for Xbox, on Android, Switch and PS5, with modern renderers and performance in mind**
 
 [![Latest release](https://img.shields.io/github/v/release/thelinkin3000/halo-ce-universal?label=latest&color=2ea44f)](https://github.com/thelinkin3000/halo-ce-universal/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/thelinkin3000/halo-ce-universal/total?color=blue)](https://github.com/thelinkin3000/halo-ce-universal/releases)
@@ -17,8 +19,7 @@
 [Graphics](#graphics-vulkan-turnip-and-deko3d) ·
 [Multiplayer](#multiplayer) ·
 [Controls](#controls) ·
-[Report a problem](#reporting-a-problem) ·
-[Building](#building) ·
+[Building](docs/building.md) ·
 [Discord](https://discord.gg/9gqcHyr5km)
 
 <!-- Videos and screenshots from a contributor go here: one large capture,
@@ -32,13 +33,13 @@ Its Direct3D 8 rendering is translated to **Vulkan** on Android and the PS5
 and to **deko3d**, the Switch's own GPU interface, on the Switch.
 
 > [!TIP]
-> **New: the OpenCE overlay.** Hold **L + R** and press **d-pad down** (on
+> **New: the SlipstreamCE overlay.** Hold **L + R** and press **d-pad down** (on
 > Android without a controller, tap the screen with three fingers, or four as set in the touch controls' General options) for a
 > panel of cheats (god mode, infinite ammo, super jump and more), bots, the
 > game's speed, the HUD, the camera and the renderer's switches, without
 > leaving the game, and entries of your own. No cheats in multiplayer unless
 > you are the host: in a game someone else hosts, the overlay's cheats are
-> refused. See [The OpenCE overlay](#the-opence-overlay).
+> refused. See [The SlipstreamCE overlay](#the-slipstreamce-overlay).
 
 > [!IMPORTANT]
 > **No game data is included.** You need your own **Xbox** disc image of
@@ -61,12 +62,11 @@ and to **deko3d**, the Switch's own GPU interface, on the Switch.
 
 ## Contents
 
-- [What works](#what-works) · [Known issues](#known-issues)
+- [What works](#what-works) · [Known issues](#known-issues) · [What's improved](#whats-improved)
 - [Download](#download) · [Install](#install): [Android](#android), [Nintendo Switch](#nintendo-switch), [PlayStation 5](#playstation-5), [updating](#updating)
 - [Graphics: Vulkan, Turnip and deko3d](#graphics-vulkan-turnip-and-deko3d)
-- [Multiplayer](#multiplayer) · [Controls](#controls) · [The OpenCE overlay](#the-opence-overlay)
-- [Reporting a problem](#reporting-a-problem)
-- [Building](#building) · [Credits](#credits)
+- [Multiplayer](#multiplayer) · [Controls](#controls) · [The SlipstreamCE overlay](#the-slipstreamce-overlay)
+- [Building](docs/building.md) · [Credits](#credits)
 
 ## What works
 
@@ -93,14 +93,78 @@ and to **deko3d**, the Switch's own GPU interface, on the Switch.
 - **Android, Vulkan:** the first time a scene shows, a few parts can be
   missing for a moment while the phone compiles their shaders.
 
-The current list is in the [issues](https://github.com/thelinkin3000/halo-ce-universal/issues).
+## What's improved
+
+### Performance
+
+**Vulkan against OpenGL ES on Android**, in 48-bot matches on Blood Gulch and
+Damnation:
+
+| Phone | Measured | Vulkan | OpenGL ES |
+| --- | --- | --- | --- |
+| Galaxy S21 FE (Mali-G78, its own driver) | Average frame rate | 84-104 fps | 69-86 fps |
+| Galaxy Z Fold (Adreno 840) | Slowest 1% of frames | 62.7 fps | 40.5 fps |
+
+These come from separate benchmark runs during development, not one
+side-by-side session, so treat them as a guide. The Z Fold's average on Vulkan
+was 119.4 fps, at the limit of its 120 Hz screen.
+
+**Multiplayer on the Switch:**
+
+| Match | Players | Frame rate |
+| --- | --- | --- |
+| Blood Gulch | 64 | 60 fps |
+| Damnation | 64 | about 60 fps |
+| Chill Out | 64 | about 59 fps |
+| LAN game hosted on the console | 48 | steady 60 fps |
+
+Vulkan also records and presents its frames on a thread of its own, and now
+runs on phones whose own driver lacks dynamic rendering, such as Samsung's Mali
+phones and older Adreno phones.
+
+### Theater
+
+Record your network games and watch them again from **Theater**, below
+Multiplayer in the main menu.
+
+- **Views:** behind any player, through their eyes, a free camera, or a
+  cinematic camera that follows the player by itself.
+- **Playback:** a seek bar, scrubbing with the d-pad, and speeds from paused
+  up to 8x.
+- **Long matches:** a 22-minute match's replay plays on every platform.
+- **Moving replays:** Android imports and exports them. On the Switch and the
+  PS5, a page on your local network, opened by a QR code in the Theater, lets
+  you download and upload them.
+
+### Bots
+
+- **Game modes:** Capture the Flag, King of the Hill, Infection and SWAT, as
+  well as Slayer.
+- **Vehicles:** they drive and ride Warthogs, Ghosts and Scorpions, and man
+  turrets.
+- **Tactics:** they go for health and power-ups, hold vantage points, use
+  teleporters and ladders, and can spread over a map's side lanes.
+- **Six skill levels,** from Recruit to Legendary, each fighting as a player of
+  that level does.
+- **Anywhere you play:** up to 63 in a local game, in system link and private
+  internet games too, and added or dropped in the middle of a match.
+
+Much of this comes from BirchWoodGod's
+[halo-ce-vita](https://github.com/BirchWoodGod/halo-ce-vita).
+
+### Ragdolls
+
+Bodies can fall as ragdolls instead of playing the original death animations:
+choose in Settings > Gameplay, or set `game.ragdoll` in `config.toml`. A host
+keeps the original body physics, so it still plays with builds that have no
+ragdolls.
 
 ## Download
 
 Each release is a build of `main` we choose to publish, numbered by its tag.
 These links always point to the latest one:
 
-| Platform | Play | Debug (for reports) |
+| Platform | Play | Debug |
 | --- | --- | --- |
 | Android | [slipstreamce-android-release.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/slipstreamce-android-release.zip) | [slipstreamce-android-debug.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/slipstreamce-android-debug.zip) |
 | Nintendo Switch | [halo-switch-release.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/halo-switch-release.zip) | [halo-switch-debug.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/halo-switch-debug.zip) |
@@ -110,9 +174,6 @@ Use the release build to play. The debug build stops at the first failed
 assertion and writes it to the log, which makes it the one to use when
 you're chasing a problem. The [releases page](https://github.com/thelinkin3000/halo-ce-universal/releases)
 keeps the last five builds, if the latest one has a problem.
-
-For Windows and Linux, see the upstream project,
-[OpenCE](https://github.com/OpenCommunityEdition/OpenCE).
 
 ## Install
 
@@ -177,9 +238,8 @@ the SD card or the console. Your saves and settings stay.
 from the main menu, choose a profile, and open **VIDEO SETUP**:
 
 - **GRAPHICS BACKEND:** `VULKAN` or `OPENGL` (OpenGL ES 3).
-- **VULKAN DRIVER** (with `VULKAN`): `STOCK`, the phone's own driver, or
-  `TURNIP`, the open-source Mesa driver for Qualcomm Adreno GPUs, which the
-  app downloads. On Adreno, Turnip is often the more correct of the two.
+- **VULKAN DRIVER** (with `VULKAN`): `STOCK`, the phone's own driver, or any
+  freedreno style driver for vulkan, importable from the game itself.
 
 Select **OK**, then close the game and start it again: the backend and the
 driver change only at start-up. The line below the version number in the
@@ -244,21 +304,20 @@ background, Android stops it and the others drop it after 15 seconds.
 
 Any controller that Android knows works, and on the Switch the Joy-Con,
 the Pro Controller and the Lite's own buttons, with rumble. The first
-controller is player 1 and the others are players 2 to 4. The buttons
-follow the Xbox controller's:
+controller is player 1 and the others are players 2 to 4. The buttons are:
 
-| Xbox | DualSense | In game |
-| --- | --- | --- |
-| left / right stick | left / right stick | move / look |
-| right trigger | R2 | fire |
-| left trigger | L2 | throw a grenade |
-| A | Cross | jump, accept |
-| B | Circle | melee, back |
-| X | Square | action, reload |
-| Y | Triangle | change weapon |
-| white / black | L1 / R1 | flashlight / change grenade |
-| stick clicks | L3 / R3 | crouch / zoom |
-| start / back | Options / Create | pause / scoreboard |
+| Xbox | DualSense | Switch | In game |
+| --- | --- | --- | --- |
+| left / right stick | left / right stick | left / right stick | move / look |
+| right trigger | R2 | ZR | fire |
+| left trigger | L2 | ZL | throw a grenade |
+| A | Cross | B (A in menus) | jump, accept |
+| B | Circle | A (B in menus) | melee, back |
+| X | Square | Y | action, reload |
+| Y | Triangle | X | change weapon |
+| white / black | L1 / R1 | L / R | flashlight / change grenade |
+| stick clicks | L3 / R3 | left / right stick click | crouch / zoom |
+| start / back | Options / touchpad click | + / − | pause / scoreboard |
 
 On Android without a controller, touch controls show in game: a move stick,
 swipe to look (with the controller's aim assist), and buttons that you can
@@ -278,9 +337,9 @@ scope) and set its sensitivity and inversion each way. See
 <img width="640" alt="The Gyro Aim screen: aim, sensitivity and invert" src="docs/images/gyro-aim.jpg" />
 
 The settings, which are the same on every platform, are described in
-[port/linux/README.md](port/linux/README.md#settings).
+[docs/settings.md](docs/settings.md).
 
-## The OpenCE overlay
+## The SlipstreamCE overlay
 
 A panel over the left of the screen with cheats, bots and switches, in the
 menus and in a game, on the Switch, the PS5 and Android.
@@ -304,7 +363,7 @@ input, but it is not paused.
 | left / right | flip a toggle; otherwise right opens a folder, left goes back |
 | B (Circle) | back out of a folder; at the top, close |
 | Back / Start (Create / Options) | close |
-| touch or mouse | tap a row to choose it, tap the folder's name to go back, tap outside the panel to close, drag or scroll the wheel to scroll |
+| touch | tap a row to choose it, tap the folder's name to go back, tap outside the panel to close, drag to scroll |
 
 A label too long for the panel scrolls while it is chosen, and some entries
 show a note above the panel's foot (for example, "Applies at the next
@@ -343,7 +402,6 @@ folder the first time the overlay opens.
 | Switch | `sdmc:/switch/halo/overlay/` |
 | PS5 | `/data/halo/overlay/` |
 | Android | `/sdcard/Android/data/ar.com.slipstreamce/files/overlay/` (copy files with `adb push`) |
-| Linux and Windows | `overlay/` beside `maps/` |
 
 Each folder in it is a folder of the overlay, and each folder in one of
 those a folder in that, by its name. A folder with the name of one of the
@@ -417,141 +475,9 @@ The overlay's first entries are those of hardran3's
 [OpenCE-Ultrahand](https://github.com/hardran3/OpenCE-Ultrahand) and
 HaloDrones packages for the Switch's Ultrahand Overlay.
 
-## Reporting a problem
-
-Open an [issue](https://github.com/thelinkin3000/halo-ce-universal/issues) or ask on
-[Discord](https://discord.gg/9gqcHyr5km), and include:
-
-- the device (phone model and GPU, or Switch / Switch Lite / OLED) and the
-  build number from the main menu;
-- on Android, the renderer and driver line from the main menu;
-- `debug.txt` and `halo.log` from the game's folder
-  (`sdmc:/switch/halo/` on the Switch, the app's data folder on Android);
-- on the Switch, if it crashed, the newest report in
-  `sdmc:/atmosphere/crash_reports/`;
-- screenshots or a video of what looks wrong.
-
-A debug build gives the most useful logs.
-
 ## Building
 
-You do not need the Xbox SDK. The port supplies the SDK declarations that
-the game uses. Refer to [port/include/xdk](port/include/xdk/README.md).
-
-To build the game:
-
-1. Install Python and [ninja](https://ninja-build.org/).
-2. Install the tools for your platform. Refer to the README for the
-   platform.
-3. In the root folder of the repository, enter `python configure.py`.
-4. Enter `ninja` with the target for the platform:
-
-| Target | Result |
-| --- | --- |
-| `ninja linux` | `build/linux/halo` |
-| `ninja linux_arm64` (on 64-bit ARM Linux) | `build/linux_arm64/halo` and `libSDL3.so.0` |
-| `ninja linux_x86_64` (on 64-bit x86 Linux, after `python configure.py --linux-x86-64`) | `build/linux_x86_64/halo` and `libSDL3.so.0` |
-| `ninja windows` (on Windows, or on Linux after `configure.py --windows-cross`) | `build/windows/halo.exe` and `SDL3.dll` |
-| `ninja android_apk` | `port/android/app/build/outputs/apk/debug/app-debug.apk` |
-| `ninja switch` | `build/switch/halo.nro` and `build/switch/halo_guest.elf` |
-
-The Switch needs two toolchains and neither can be replaced by the other.
-devkitPro builds the host (`devkitA64`, `libnx`, `switch-sdl2`,
-`switch-mesa`, `switch-libdrm_nouveau`), and the Android NDK builds the game
-image, which is ILP32 AArch64 - 32-bit pointers, because the Xbox data
-formats embed them and have to keep their layout. devkitA64 cannot build it,
-being LP64 only. So the Switch build wants the same NDK as the Android build,
-found as it is there, plus devkitPro:
-
-```
-sudo dkp-pacman -S --needed devkitA64 libnx switch-sdl2 switch-mesa switch-libdrm_nouveau
-```
-
-`configure.py` finds devkitPro through `DEVKITPRO`, or `/opt/devkitpro`, or
-`~/devkitpro`. Both files are needed to run: the NRO is the program, and the
-ELF is the game image it loads from the card.
-
-If you enter `ninja` without a target, ninja builds the game for the
-computer that you use: on 64-bit x86 Linux, the x86 build (`ninja linux`).
-
-`tools/ci_build.py` makes the same builds as GitHub Actions. For example,
-enter `python tools/ci_build.py linux release`.
-
-### Build options
-
-Give these options to `configure.py`:
-
-| Option | Result |
-| --- | --- |
-| (none) | A debug build. A failed assertion stops the game. |
-| `--release` | A release build. The game does not examine assertions, as in the retail game. |
-| `--portable` | The Linux and Windows builds operate on all x86-64 processors. The Linux build also operates on older distributions and on SteamOS: refer to "Portable build" in [port/linux/README.md](port/linux/README.md#portable-build). Use this option for builds that you give to other persons. |
-| `--lto=thin`, `--lto=off` | Less link-time optimization. The link is faster. |
-| `--pgo=off` | No profile-guided optimization. |
-| `--pgo=train` | Records a new optimization profile. Refer to "Optimization profiles". |
-| `--profile` | A profiling build. It records CPU times. Refer to "Profiling builds". |
-| `--web-emcc PATH` | The Emscripten `emcc` for `ninja web` (else the one on the PATH, or `~/emsdk`'s). |
-
-Without `--portable`, the Linux and Windows builds use all the instructions
-of the processor that builds them (`-march=native`). Such a build does not
-always start on a different computer.
-
-### Optimization profiles
-
-The builds use profiles of the game to optimize the code:
-
-- `pgo/halo_linux.profdata` for Linux and Android.
-- `pgo/halo_windows.profdata` for Windows.
-
-The profiles need clang 22 or later. With an older clang, the builds do not
-use the profiles.
-
-To record a new profile:
-
-1. Delete the profile.
-2. Enter `python configure.py --pgo=train`.
-3. Enter `ninja linux` or `ninja windows`.
-
-The build then plays the main menu and the first minute of each campaign
-level. This procedure continues for approximately 15 minutes. The game
-data must be in `assets/`.
-
-### Profiling builds
-
-A profiling build records where the game spends its time.
-
-1. Enter `python configure.py --profile`, then build as usual.
-2. Start a recording. Enter `profile_record` in the console (or the telnet
-   console), or set `debug.profile_record = true` in `config.toml`. To
-   record each game of a session, also set
-   `debug.profile_record_when = "game"`.
-3. Stop the recording. Enter `profile_stop`, load another map, or quit.
-
-The game writes numbered `.part<n>.json` files under `profiles/` in its data root
-and logs their paths. Parts are retained after the recording stops. Logs go to
-standard error; a Windows release build without standard error writes them to
-`halo.log` next to `halo.exe`.
-
-`tools/net_report.py` is a helper for developers. Enter
-`python tools/net_report.py <recording.part1.json>` to read a recording
-as tables. The command also writes `<recording>.summary.txt`, a short text
-file.
-
-| Command | Result |
-| --- | --- |
-| `profile_record [seconds]` | Starts a recording. With a number of seconds, the recording stops after that time. |
-| `profile_stop` | Stops the recording. |
-
-`debug.profile_memory` sets the memory of a recording in MB (default 256,
-from 4 to 1024). A recording has no length limit:
-the game writes a part each time the memory is full. Refer to "Settings" in
-[port/linux/README.md](port/linux/README.md).
-
-On Android, the files are in `/sdcard/Android/data/ar.com.slipstreamce/files/profiles/`.
-Enter `adb pull` to copy the recording parts to a computer.
-
-A profiling build plays with normal builds. It does not use
-`--pgo=train`.
+See [docs/building.md](docs/building.md).
 
 ## Credits
 
@@ -560,7 +486,7 @@ A profiling build plays with normal builds. It does not use
   Xbox build 2342 (`cachebeta.exe`, SHA-256
   `4cc87b45f721270392a96f1674ed2b5cd4a7bb4355faeab4531d1cf1884d9520`).
 - [OpenCE](https://github.com/OpenCommunityEdition/OpenCE), the upstream
-  port to Windows and Linux, which these ports follow and share the game
+  project, which these ports follow and share the game
   code, netcode and menus with.
 - [Mesa](https://mesa3d.org/)'s Turnip driver, in the builds of
   [K11MCH1/AdrenoToolsDrivers](https://github.com/K11MCH1/AdrenoToolsDrivers).
@@ -573,6 +499,7 @@ A profiling build plays with normal builds. It does not use
 - AL2009man's [Gamepad Asset Pack](https://github.com/AL2009man/Gamepad-Asset-Pack)
   (MIT), the controllers of the button-layout overlay (Gamepad Setup's
   BUTTON LAYOUT).
+- puginatux, for the menu assets and the logo.
 
 Halo is a trademark of Microsoft. This project is not affiliated with or
 endorsed by Microsoft, Bungie or 343 Industries.

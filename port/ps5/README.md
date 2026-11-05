@@ -33,7 +33,7 @@ developing are at its end.
 ## Installing from the release
 
 1. Download `halo-ps5-release.zip` from the repository's latest release
-   (https://github.com/thelinkin3000/halo-ce-universal/releases/latest)
+   (https://github.com/thelinkin3000/SlipstreamCE/releases/latest)
    and unzip it on your computer.
 2. Over FTP, copy its `PPSA99500` folder into `/data/homebrew` on the
    console.
@@ -85,7 +85,7 @@ over the old one (with the game closed).
 The game's settings are in its menus (Settings), as the PS5's: Video Setup's
 MAXIMUM RESOLUTION, Gamepads' GYRO AIM and the rest (below, "The menus"),
 and in `/data/halo/config.toml`, which you can edit over FTP with the game
-closed (`port/linux/README.md` describes every setting). Two defaults are a
+closed (`docs/settings.md` describes every setting). Two defaults are a
 computer's rather than a console's: voice chat's push-to-talk is the `V`
 key (`controls.push_to_talk`: set it to `"Gamepad LB"`, say, to talk with the
 pad), and the frame rate is not capped (`display.max_fps = 0`; the display's
