@@ -48,8 +48,8 @@ for CINEMATIC_HIDDEN_TIME once the shot has lasted CINEMATIC_LEAST_SHOT
 (playback_cinematic_sight), at once in the CINEMATIC_SPAWN_TIME after they
 spawn, and bringing whoever hurts them off the screen into the frame
 (network_replay_playback_damage, playback_cinematic_threat); it stands still
-until they go too far, when it follows them on a tether, or move across its view
-or turn, when it swings round them to their rear quarter
+until they go too far, when it comes in to a third of that on a spring, swinging
+round them to their rear quarter as it comes, and stands still again
 (playback_cinematic_move, playback_cinematic_orbit). D-pad
 Up turns behind with the player again too, as R3 does.
 Through the eyes, the aim turns smoothly between the facings the replay
@@ -350,15 +350,16 @@ this at most; and no more once the player aims this near them (radians) */
 #define CINEMATIC_THREAT_WIDEST DEGREES_TO_RADIANS(90.0f)
 #define CINEMATIC_THREAT_FACED DEGREES_TO_RADIANS(30.0f)
 /* the cinematic camera moving (playback_cinematic_move). The tether: how far
-the player may go, in the arm's lengths the camera is placed at; its spring's
-time, how far behind that it lags them in seconds of their speed; the most it
-pulls at once, so that a camera let go of a corner does not fly; and how many
-tethers away the zoom takes over, for a camera that cannot follow. A focus going
-further and faster than a vehicle goes has been moved there, and is cut to */
-#define CINEMATIC_TETHER_ARMS 1.75f
-#define CINEMATIC_TETHER_TIME 0.6f
-#define CINEMATIC_TETHER_MOST_PULL 8.0f
-#define CINEMATIC_TETHER_ZOOM 2.0f
+the player may go before it moves, in the arm's lengths the camera is placed
+at; how much of that it comes in to, to stand still again; its spring's time;
+and the most it pulls at once, so that a camera let go of a corner does not fly.
+A focus going further and faster than a vehicle goes has been moved there, and
+is cut to */
+#define CINEMATIC_TETHER_ARMS 3.5f
+#define CINEMATIC_TETHER_SETTLE (1.0f / 3.0f)
+#define CINEMATIC_TETHER_ARRIVED 0.1f
+#define CINEMATIC_TETHER_TIME 1.0f
+#define CINEMATIC_TETHER_MOST_PULL 16.0f
 #define CINEMATIC_JUMP_LEAST 1.0f
 #define CINEMATIC_JUMP_SPEED 60.0f
 /* ... the arc: going across its view this fast (units a second) or turning
@@ -372,12 +373,6 @@ aim, on its spring's time, not nearer the player than LEAST across */
 #define CINEMATIC_ORBIT_QUARTER DEGREES_TO_RADIANS(45.0f)
 #define CINEMATIC_ORBIT_TIME 1.5f
 #define CINEMATIC_ORBIT_LEAST 0.5f
-/* ... the arm, where it would lose sight of them: in fast (seconds to come
-about two-thirds of the way), held, then out on a spring of OUT_TIME, most of the
-way in twice that */
-#define CINEMATIC_ARM_IN_TIME 0.05f
-#define CINEMATIC_ARM_HOLD 0.15f
-#define CINEMATIC_ARM_OUT_TIME 0.2f
 /* the keyframes: one every 10 seconds of the game, as the playback first
 reaches it, compressed in memory (zlib's fastest level), up to this much
 memory in all (and this many); and how long after one d-pad left goes to
@@ -566,17 +561,13 @@ static struct
 	real cinematic_shot;
 	boolean cinematic_died;
 	real cinematic_spawned;
-	/* ... its moving (playback_cinematic_move): the tether's length and its
-	spring's speed; the arm as far as it may go (0, as far as it likes), the
-	length it goes back to, and the time before it starts back; and the arc:
-	its spring's speed, how long the player has moved or turned and not, whether
-	it is going, to which side of behind them (0, none yet), and their aim's
-	yaw the frame before, if it has one */
-	real cinematic_tether;
+	/* ... its moving (playback_cinematic_move): whether it is, a tripod
+	otherwise; the tether's spring's speed; and the arc: its spring's speed, how
+	long the player has moved or turned and not, whether it is going, to which side
+	of behind them (0, none yet), and their aim's yaw the frame before, if it has
+	one */
+	boolean cinematic_moving;
 	real cinematic_tether_speed;
-	real cinematic_arm;
-	real cinematic_arm_rest;
-	real cinematic_arm_hold;
 	real cinematic_orbit_speed;
 	real cinematic_orbit_moving;
 	real cinematic_orbit_still;
@@ -2298,9 +2289,7 @@ static void playback_view_tangents(
 not moved since it was placed and tracks the player, narrowed as they go
 further than FREE_CAMERA_ZOOM_DISTANCE so they stay the size they were (to
 FREE_CAMERA_NARROWEST); held while it has not moved but does not track; moved,
-the camera's own, and never narrowed again until it is placed anew. The
-cinematic camera follows them instead, and zooms only as they get
-CINEMATIC_TETHER_ZOOM tethers away, as they do from one that cannot follow */
+the camera's own, and never narrowed again until it is placed anew */
 static real playback_free_camera_zoom_wanted(
 	void)
 {
@@ -2312,17 +2301,15 @@ static real playback_free_camera_zoom_wanted(
 	{
 		real_vector3d to;
 		real distance;
-		real zoom_distance = playback.view == _replay_view_cinematic ?
-			playback.cinematic_tether * CINEMATIC_TETHER_ZOOM : FREE_CAMERA_ZOOM_DISTANCE;
 
 		to.i = playback.free_focus.x - playback.free_position.x;
 		to.j = playback.free_focus.y - playback.free_position.y;
 		to.k = playback.free_focus.z - playback.free_position.z;
 		distance = (real)sqrt(to.i * to.i + to.j * to.j + to.k * to.k);
 		wanted = CAMERA_FIELD_OF_VIEW;
-		if (distance > zoom_distance)
+		if (distance > FREE_CAMERA_ZOOM_DISTANCE)
 		{
-			wanted = 2.0f * (real)atan(tan(CAMERA_FIELD_OF_VIEW / 2.0f) * zoom_distance / distance);
+			wanted = 2.0f * (real)atan(tan(CAMERA_FIELD_OF_VIEW / 2.0f) * FREE_CAMERA_ZOOM_DISTANCE / distance);
 			wanted = MAX(wanted, FREE_CAMERA_NARROWEST);
 		}
 	}
@@ -2775,8 +2762,9 @@ static void playback_cinematic_sight(
 	playback.cinematic_spawned = MAX(playback.cinematic_spawned - seconds, 0.0f);
 }
 
-/* how far round the player the cinematic camera's arc takes it this frame:
-once they have moved across its view or turned for CINEMATIC_ORBIT_AFTER, it
+/* how far round the player the cinematic camera's arc takes it this frame,
+only as it moves, what was left of its swing easing off as it stops: once they
+have moved across its view or turned for CINEMATIC_ORBIT_AFTER, it
 swings to the rear quarter of where they aim on the side it is on, until they
 have neither moved nor turned for CINEMATIC_ORBIT_REST. Not while it frames a
 threat */
@@ -2806,7 +2794,13 @@ static real playback_cinematic_orbit(
 		turning = (real)fabs(playback_angle_between(playback.cinematic_orbit_aim, aim_yaw)) / seconds;
 	playback.cinematic_orbit_aim = aim_yaw;
 	playback.cinematic_orbit_aim_valid = TRUE;
-	if (lateral > CINEMATIC_ORBIT_SPEED || turning > CINEMATIC_ORBIT_TURN)
+	if (!playback.cinematic_moving)
+	{
+		playback.cinematic_orbit_moving = playback.cinematic_orbit_still = 0.0f;
+		playback.cinematic_orbiting = FALSE;
+		playback.cinematic_orbit_side = 0.0f;
+	}
+	else if (lateral > CINEMATIC_ORBIT_SPEED || turning > CINEMATIC_ORBIT_TURN)
 	{
 		playback.cinematic_orbit_still = 0.0f;
 		playback.cinematic_orbit_moving += seconds;
@@ -2837,15 +2831,16 @@ static real playback_cinematic_orbit(
 	return swung - azimuth;
 }
 
-/* the cinematic camera moving, seconds of the game's time: round the player
-on its arc (playback_cinematic_orbit), and in on its tether where they have gone
-too far (playback_spring, so that it follows behind them with weight, swinging in
-behind them as something towed does), both about the player rather than across
-the ground. Where that would lose sight of them the arm comes in, fast, as far as
-it must, is held there and goes back out slowly; where it would have to come in by
-over half, it does not, and the arc stops: a wall the sight check cuts away from.
-It moves as a flown free camera does, never through or against a wall. Near
-enough the player and neither of those, it stands still, a tripod */
+/* the cinematic camera moving, seconds of the game's time. It is a tripod,
+turning and zooming and not moving, until the player goes further than the
+tether; then it comes in to CINEMATIC_TETHER_SETTLE of that on a spring, led by
+how fast they go from it so that it gets there even as they run, swinging round
+them on its arc as it comes (playback_cinematic_orbit), and is a tripod again
+where they are then. It moves about the player rather than across the ground.
+Where it would lose sight of them there, it comes only as far as it can see them
+from, or if that is under half of the way, the arc stops: a wall the sight check
+cuts away from. It moves as a flown free camera does, never through or against a
+wall, and one that takes it in near enough has it a tripod there */
 static void playback_cinematic_move(
 	long unit_index,
 	real seconds)
@@ -2853,13 +2848,13 @@ static void playback_cinematic_move(
 	struct object_datum *object = object_get(unit_index);
 	boolean riding = object->object.parent_object_index != NONE;
 	real tether = (riding ? CAMERA_VEHICLE_DISTANCE : CAMERA_DISTANCE) * CINEMATIC_TETHER_ARMS;
+	real settle = tether * CINEMATIC_TETHER_SETTLE;
 	real_point3d const *focus = &playback.free_focus;
 	real_vector3d offset;
 	real_vector3d direction;
 	real_vector3d move;
-	real length, across, azimuth, turned, wanted, target, moved;
+	real length, across, azimuth, turned, target, moved;
 
-	playback.cinematic_tether = tether;
 	if (seconds <= 0.0f)
 		return;
 	offset.i = playback.free_position.x - focus->x;
@@ -2869,29 +2864,30 @@ static void playback_cinematic_move(
 	across = (real)sqrt(offset.i * offset.i + offset.j * offset.j);
 	if (length < 0.01f)
 		return;
+	if (length > tether)
+		playback.cinematic_moving = TRUE;
 	azimuth = (real)atan2(offset.j, offset.i);
 	turned = playback_cinematic_orbit(unit_index, azimuth, across, seconds);
 	/* (a tripod: no rays) */
-	if ((real)fabs(turned) < 1.0e-5f && length <= tether && playback.cinematic_arm == 0.0f &&
-		playback.cinematic_arm_rest == 0.0f && (real)fabs(playback.cinematic_tether_speed) < 1.0e-3f)
+	if (!playback.cinematic_moving && (real)fabs(turned) < 1.0e-5f && (real)fabs(playback.cinematic_tether_speed) < 1.0e-3f)
 	{
 		playback.cinematic_tether_speed = 0.0f;
 		return;
 	}
-	wanted = MIN(length, tether);
-	if (playback.cinematic_arm_rest > 0.0f)
-		wanted = MAX(wanted, MIN(playback.cinematic_arm_rest, tether));
-	for (;;)
+	direction.i = (real)cos(azimuth + turned) * across / length;
+	direction.j = (real)sin(azimuth + turned) * across / length;
+	direction.k = offset.k / length;
+	target = length;
+	if (playback.cinematic_moving)
 	{
 		real_vector3d arm;
+		real_vector3d velocity;
 		real_point3d goal;
 
-		direction.i = (real)cos(azimuth + turned) * across / length;
-		direction.j = (real)sin(azimuth + turned) * across / length;
-		direction.k = offset.k / length;
-		arm.i = direction.i * wanted;
-		arm.j = direction.j * wanted;
-		arm.k = direction.k * wanted;
+		target = MIN(length, settle);
+		arm.i = direction.i * target;
+		arm.j = direction.j * target;
+		arm.k = direction.k * target;
 		goal.x = focus->x + arm.i;
 		goal.y = focus->y + arm.j;
 		goal.z = focus->z + arm.k;
@@ -2899,75 +2895,36 @@ static void playback_cinematic_move(
 		{
 			real reach = playback_free_camera_reach(focus, &arm);
 
-			if (reach < wanted)
+			if (reach >= target * FREE_CAMERA_LEAST_ARM)
+				target = MIN(target, reach);
+			else if (turned != 0.0f)
 			{
-				if (reach >= wanted * FREE_CAMERA_LEAST_ARM)
-				{
-					real from = playback.cinematic_arm > 0.0f ? playback.cinematic_arm : length;
-
-					playback.cinematic_arm_rest = MAX(playback.cinematic_arm_rest, wanted);
-					playback.cinematic_arm_hold = CINEMATIC_ARM_HOLD;
-					if (from > reach)
-						playback.cinematic_arm = reach + (from - reach) * (real)exp(-seconds / CINEMATIC_ARM_IN_TIME);
-					else
-						playback.cinematic_arm = from;
-					break;
-				}
-				/* (too far in: not that way, if this is the arc's doing) */
-				if (turned != 0.0f)
-				{
-					turned = 0.0f;
-					playback.cinematic_orbit_speed = 0.0f;
-					continue;
-				}
-				break;
+				turned = 0.0f;
+				playback.cinematic_orbit_speed = 0.0f;
+				direction.i = offset.i / length;
+				direction.j = offset.j / length;
 			}
 		}
-		if (playback.cinematic_arm > 0.0f)
-		{
-			if (playback.cinematic_arm_hold > 0.0f)
-				playback.cinematic_arm_hold -= seconds;
-			else
-				playback.cinematic_arm = 0.0f;
-		}
-		else if (length >= wanted - 0.05f)
-			playback.cinematic_arm_rest = 0.0f;
-		break;
+		target = MAX(target, length - CINEMATIC_TETHER_MOST_PULL);
+		/* (ahead by what the spring would lag them, so that it gets there) */
+		object_get_velocities(unit_index, &velocity, NULL);
+		target -= MAX(-(velocity.i * offset.i + velocity.j * offset.j + velocity.k * offset.k) / length *
+			TICKS_PER_SECOND, 0.0f) * CINEMATIC_TETHER_TIME;
 	}
 	moved = length;
-	if (playback.cinematic_arm > 0.0f && playback.cinematic_arm < length)
-	{
-		moved = playback.cinematic_arm;
-		playback.cinematic_tether_speed = 0.0f;
-	}
-	else
-	{
-		target = playback.cinematic_arm > 0.0f ? MIN(wanted, playback.cinematic_arm) : wanted;
-		target = MAX(target, length - CINEMATIC_TETHER_MOST_PULL);
-		playback_spring(&moved, &playback.cinematic_tether_speed, target, seconds,
-			playback.cinematic_arm_rest > 0.0f ? CINEMATIC_ARM_OUT_TIME : CINEMATIC_TETHER_TIME);
-	}
+	playback_spring(&moved, &playback.cinematic_tether_speed, target, seconds, CINEMATIC_TETHER_TIME);
 	move.i = focus->x + direction.i * moved - playback.free_position.x;
 	move.j = focus->y + direction.j * moved - playback.free_position.y;
 	move.k = focus->z + direction.k * moved - playback.free_position.z;
 	playback_free_camera_move(&move);
 	playback_free_camera_clear();
-	/* (a wall that took it in as it slid along it is an arm brought in too,
-	that goes back out when it is gone) */
+	/* (there: a tripod again) */
 	offset.i = playback.free_position.x - focus->x;
 	offset.j = playback.free_position.y - focus->y;
 	offset.k = playback.free_position.z - focus->z;
 	length = (real)sqrt(offset.i * offset.i + offset.j * offset.j + offset.k * offset.k);
-	move.i = focus->x + direction.i * moved - playback.free_position.x;
-	move.j = focus->y + direction.j * moved - playback.free_position.y;
-	move.k = focus->z + direction.k * moved - playback.free_position.z;
-	if (length < moved && move.i * move.i + move.j * move.j + move.k * move.k > 0.001f * 0.001f)
-	{
-		playback.cinematic_arm_rest = MAX(playback.cinematic_arm_rest, wanted);
-		playback.cinematic_arm = length;
-		playback.cinematic_arm_hold = CINEMATIC_ARM_HOLD;
-		playback.cinematic_tether_speed = 0.0f;
-	}
+	if (length <= settle + CINEMATIC_TETHER_ARRIVED)
+		playback.cinematic_moving = FALSE;
 }
 
 /* the free camera, a tripod: placed behind the player when it is chosen (as
@@ -3033,8 +2990,8 @@ static boolean playback_free_camera(
 		playback.cinematic_shot = 0.0f;
 		playback.cinematic_died = FALSE;
 		playback.cinematic_spawned = 0.0f;
+		playback.cinematic_moving = FALSE;
 		playback.cinematic_tether_speed = 0.0f;
-		playback.cinematic_arm = playback.cinematic_arm_rest = playback.cinematic_arm_hold = 0.0f;
 		playback.cinematic_orbit_speed = playback.cinematic_orbit_moving = playback.cinematic_orbit_still = 0.0f;
 		playback.cinematic_orbiting = FALSE;
 		playback.cinematic_orbit_side = 0.0f;

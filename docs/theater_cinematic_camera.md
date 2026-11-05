@@ -27,25 +27,31 @@ Three goals:
 | Item | Asks for | Tagged for | Outcome |
 |---|---|---|---|
 | 1.1 | Wall clearance: a 20-30 cm sphere sweep | Cinematic, Creator | Done, with rays (see below) |
-| 1.2 | Anti-stutter: ray bundle, fast in, slow out, 150 ms hold | Cinematic, Creator | Done, applied to cuts |
+| 1.2 | Anti-stutter: ray bundle, fast in, slow out, 150 ms hold | Cinematic, Creator | Done, applied to cuts (see the moving camera's decisions) |
 | 1.3 | Corner fallback: crane or side shift | Cinematic, Creator | Done, at placement |
 | 2.1 | Terrain and elevation awareness | Cinematic, Creator | Done, at placement |
-| 2.2 | Elastic distance tether | Cinematic | Done |
+| 2.2 | Elastic distance tether | Cinematic | Done, as a chase that ends in a tripod (the user's change) |
 | 3.1 | Rule of thirds, lead room | Cinematic, Creator | Done |
 | 3.2 | Off-screen threat framing | Cinematic | Done |
-| 3.3 | Arc-orbit sweep | Cinematic | Done |
+| 3.3 | Arc-orbit sweep | Cinematic | Done, only during the chase (the user's change) |
 | 3.4 | Spring-damped smoothing | Cinematic, Creator | Done |
 
 "Creator" is the free camera while it tracks the player.
 
 ## Decisions
 
-**The cinematic camera moves; the free camera stays a tripod (the user's
-decision).** It began as a tripod, and steps 6 and 7 waited while the rest was
-built. The addendum tags the tether and the arc-orbit for Cinematic only, so
-the free camera does not get them. The cinematic camera is still a tripod while
-neither is wanted: near enough the player, with them neither moving across its
-view nor turning, it stands still and casts no extra rays.
+**The tripod is the default; moving is the exception (the user's decisions).**
+The cinematic camera is a tripod whenever the player is within its maximum
+distance: it turns, frames and zooms, and does not move, whatever they do. Past
+that distance it moves in to a third of it, then is a tripod again. The free
+camera does not get any of this, as the addendum tags the tether and the arc for
+Cinematic only.
+
+**A steady run gives repeated chases.** With the tripod the default, a player who
+keeps running gets a chase, a stop, and another chase, rather than a camera that
+keeps following. Reaching a third of the distance takes the spring being led by
+their speed, as a plain spring would lag behind and never arrive. This is what was
+asked for, and how it looks is the first thing to check in the game.
 
 **It moves round the player, not across the ground.** Its position is taken
 as an angle and a length about the player each frame, and the arc and the tether
@@ -53,35 +59,33 @@ each change one of them on a spring. So the arc is a true arc, and nothing has t
 be remembered about where the camera was meant to be: a wall that stops it is
 simply where the next frame starts from.
 
-**The tether replaces the zoom, except for a camera that cannot follow.** The
-zoom on the cinematic camera now starts only at twice the tether. Following on
-foot or in a vehicle stays inside that, so the view stays wide. A camera held
-back by a wall is what reaches it, and that is the tripod's old answer. It also
-makes the riskiest case below, a jump from 8 degrees to a wide threat view, rare.
+**The tripod's zoom is back, at its original distance.** It is how the tripod keeps
+the action in frame without moving, and it is continuous as the distance changes,
+so a chase's coming in reads as the player staying the same size. At the maximum
+distance that is about 32 degrees on foot and 16 in a vehicle.
 
 **Its motion goes by the game's time.** The aim and zoom springs still go by real
 time. If the camera's own moving did too it would drift round a paused player, and
 at 4x it would fall four times as far behind.
 
-**Fast-in, slow-out now applies to the arm, as the addendum has it.** Where the
-place it is going would lose sight of the player, the arm comes in, is held 150 ms
-and goes back out; the same if a wall it slides along has brought it in. Where
-that would take over half of the arm it does not come in, and the arc stops
-instead, leaving a real wall to the sight check's cut. So a cut is still the
-answer to losing the player entirely: this reduces them, it does not end them.
-
-**A post in the way does not collapse the arm.** The arm's rays would pull a
-camera in for any post they touched, a jump for something the sight check
-tolerates. So the rays are only cast once the place it is going cannot see the
-player. The move's own wall sweep keeps it off anything nearer.
+**The arm's fast-in, hold and slow-out were removed.** The addendum's timing is for
+an arm kept at a length. This camera only ever comes in, and once it is in range it
+is a tripod, which by the decision above does not move out again, so there is
+nothing to recover. They were written for the earlier version and took the camera
+out of its tripod state against a wall. What is left: where the place it is going
+cannot see the player it comes only as far as it can see them from, and where that
+is under half of the way the arc stops, leaving a real wall to the sight check's
+cut. So a cut is still the answer to losing the player entirely.
 
 **A jump of the player is a cut.** A teleporter, a spawn or a jump in the replay
 moves the focus further and faster than any vehicle (`CINEMATIC_JUMP_SPEED`). The
-tether would otherwise fly the camera across the level, so it is placed anew. The
-pull is capped too (`CINEMATIC_TETHER_MOST_PULL`), for a camera a corner lets go.
+camera would otherwise fly across the level, so it is placed anew. The pull is
+capped too (`CINEMATIC_TETHER_MOST_PULL`), for a camera a corner lets go; the
+lead for the player's speed is on top of the cap, so that it can still catch them.
 
 **The arc rests during a threat.** The threat's framing was worked out against
 a camera that is not going anywhere, and two moves at once would read as neither.
+The chase goes on.
 
 **Order of the work.** Fixing the cuts came first, as they were a likely bug.
 Then the spring, as everything else moves through it, then framing and
@@ -195,51 +199,52 @@ It ends after `CINEMATIC_THREAT_HOLD` of game time from the last hit, or sooner
 if the attacker would be on the screen anyway, the player aims within
 `CINEMATIC_THREAT_FACED` of them, or the player is out of their sight.
 
-### Step 6: the tether
+### Step 6: the chase
 
 `playback_cinematic_move`, called each frame before the aim so that the aim is
 from where the camera now is. Past `CINEMATIC_TETHER_ARMS` of the arm it was placed
-with (6.1 units on foot, 12.25 in a vehicle) the arm is pulled in on a spring. The
-camera is dragged along the line to the player, so it swings in behind them as
-something towed does. It lags by `CINEMATIC_TETHER_TIME` of their speed: about 7.6
-units on foot and 18 in a vehicle at 10 units a second.
-
-`playback_cinematic_move` is also where the arm's collision is: see the fast-in
-decision. The probes are step 3's `playback_free_camera_reach`, the moves are
-`playback_free_camera_move` and `playback_free_camera_clear`.
+with (12.25 units on foot, 24.5 in a vehicle) `cinematic_moving` is set and the
+camera comes in to `CINEMATIC_TETHER_SETTLE` of that (4.08 and 8.17), and is a
+tripod within `CINEMATIC_TETHER_ARRIVED` of it. Moves go through
+`playback_free_camera_move` and `playback_free_camera_clear`, the place's sight
+through `playback_free_camera_sees` and step 3's `playback_free_camera_reach`.
 
 Tested by compiling the real functions into a harness with the collision stubbed
 as one flat wall, so this says nothing yet about real geometry:
 
-- A still player: no movement and no rays.
-- The lag above, at 20, 30, 60 and 144 fps, within half a frame.
-- A wall across its path: it stays off the wall, and the arm goes back out 90% of
-  the way 0.55 seconds after the wall is gone (0.15 of that the hold).
-- A wall too near: the arc stops short, and no collapse.
-- A camera 40 units away let go: 13 units a second at most, not a flight.
+- 12 units away, strafing and spinning for 10 seconds: no movement and no rays.
+- Just past the distance, then standing still: a gentle start, 6 units a second at
+  most, a tripod after 3.2 seconds at about 4.1 units, at 20, 30, 60 and 144 fps.
+- Running at a steady 2.5 units a second: repeated chases, one about every 6.5
+  seconds, a tripod 53% of the time, 4.2 to 12.3 units away.
+- A vehicle at 10 units a second: one chase about
+  every 5 seconds, a tripod 36% of the time, 8.3 to 24.9 units away. At 20 it
+  still keeps within 26.
+- A camera held at a wall with the player beyond it: it stays off the wall, for the
+  sight check to cut.
+- A camera 60 units away let go: 16 units a second at most.
 
-Its cost, counted from the code and not measured: none extra while it stands
-still. While it moves, about 9 rays a frame in the open (a sight check, the goal's
-sight, the sweep, and 6 for the clearance), and about 20 at worst against a wall.
+Its cost, counted from the code and not measured: no rays of its own as a tripod,
+and a tripod's sight check as before. In a chase, about 9 rays a frame in the open
+(a sight check, the place's sight, the sweep, and 6 for the clearance), and about
+20 at worst against a wall.
 
 ### Step 7: the arc
 
-`playback_cinematic_orbit`. Moving across its view or turning for
-`CINEMATIC_ORBIT_AFTER` starts it, and it goes on until they have neither moved
+`playback_cinematic_orbit`, during a chase only. Moving across its view or turning
+for `CINEMATIC_ORBIT_AFTER` starts it, and it goes on until they have neither moved
 nor turned for `CINEMATIC_ORBIT_REST`. It goes to `CINEMATIC_ORBIT_QUARTER` either
 side of behind where they aim, on the side it is on, which it keeps until it is
-well round the other, so that aiming a little either way does not swap sides.
+well round the other, so that aiming a little either way does not swap sides. A
+chase is short, so it may not get all the way round before the camera stops.
 
 Tested in the same harness:
 
-- It reaches the rear quarter at each frame rate, and the radius does not change.
-- 22 degrees a second at its fastest for a 45 degree swing, starting 0.75 seconds
-  in, about 2.9 seconds from there to nearly done.
-- From in front of the player, it goes to the rear quarter too.
-- Stopping eases off rather than halting. Aim wobbling about behind: no side swaps.
-- Along a wall, it slides, the arm coming in as it goes. It is slow there (10 seconds
-  or more) and gets within a couple of degrees, as far as the wall lets it.
-- It does not move at all during a threat, or while the replay is paused.
+- With nothing in the way, the radius does not change as it swings.
+- A chase with the player strafing got 28 degrees round, and the swing eased off
+  for another 6 degrees over 2 seconds after the camera became a tripod.
+- By a wall, it stays off it and is a tripod once it is in range (2.2 seconds there).
+- It does not swing at all during a threat, or while the replay is paused.
 
 ## The numbers
 
@@ -268,10 +273,11 @@ World units and seconds unless marked.
 | `CINEMATIC_THREAT_EDGE` | 0.8 | How near the screen's edge the two are kept |
 | `CINEMATIC_THREAT_WIDEST` | 90 degrees | Widest view for a threat |
 | `CINEMATIC_THREAT_FACED` | 30 degrees | Aim this near the attacker ends it |
-| `CINEMATIC_TETHER_ARMS` | 1.75 | How far the player may go, in placed arms |
-| `CINEMATIC_TETHER_TIME` | 0.6 | Tether's lag, in the game's time |
-| `CINEMATIC_TETHER_MOST_PULL` | 8.0 | Most the arm is pulled at once |
-| `CINEMATIC_TETHER_ZOOM` | 2.0 | Tethers away that the zoom takes over |
+| `CINEMATIC_TETHER_ARMS` | 3.5 | The maximum distance, in placed arms |
+| `CINEMATIC_TETHER_SETTLE` | 1/3 | How much of that a chase comes in to |
+| `CINEMATIC_TETHER_ARRIVED` | 0.1 | How near that is a tripod again |
+| `CINEMATIC_TETHER_TIME` | 1.0 | The chase's spring, in the game's time |
+| `CINEMATIC_TETHER_MOST_PULL` | 16.0 | Most it is pulled at once |
 | `CINEMATIC_JUMP_LEAST` | 1.0 | Least distance that can be a jump |
 | `CINEMATIC_JUMP_SPEED` | 60 | Speed that is a jump, units a second |
 | `CINEMATIC_ORBIT_SPEED` | 1.0 | Across its view this fast starts the arc, units a second |
@@ -281,9 +287,6 @@ World units and seconds unless marked.
 | `CINEMATIC_ORBIT_QUARTER` | 45 degrees | Rear quarter, either side of behind |
 | `CINEMATIC_ORBIT_TIME` | 1.5 | Arc's spring |
 | `CINEMATIC_ORBIT_LEAST` | 0.5 | Least distance across for the arc |
-| `CINEMATIC_ARM_IN_TIME` | 0.05 | Arm coming in (the addendum's) |
-| `CINEMATIC_ARM_HOLD` | 0.15 | Arm's hold (the addendum's 150 ms) |
-| `CINEMATIC_ARM_OUT_TIME` | 0.2 | Arm's spring going out: 90% in about 0.4, for the addendum's 0.3-0.5 |
 
 ## Still to do
 
@@ -292,12 +295,13 @@ World units and seconds unless marked.
    - that the repeated re-cuts near scenery and doors are gone;
    - tight corners and low ceilings, where it falls back to the crane or the side;
    - a valley or a trench, for whether the camera rises enough;
-   - being shot from behind while far away, now mostly at a normal width;
-   - a long run in the open and a Warthog, for whether the tether keeps them the
-     size it should with no cuts;
-   - strafing in a fight, for whether the arc feels like an operator or a drift,
-     and whether it starts too readily (a player is nearly always moving);
-   - a player against a wall, and running through a doorway, the arm's cases;
+   - being shot from behind while far away. The jump from a narrow zoom to a
+     wide view may look abrupt;
+   - a long run in the open and a Warthog, for how the repeated chases look;
+   - whether a player 12 units away is too far for the tripod, and is hidden from
+     it, and cut away from, more often than before;
+   - a fight during a chase, for whether the arc helps in the short time it has;
+   - a player against a wall, and running through a doorway;
    - a teleporter, and a replay at 0.25x and 4x, and paused.
 2. Tune the numbers above from what that shows.
 3. Measure the rays on the Switch: a placement, and now the frames it moves in.
