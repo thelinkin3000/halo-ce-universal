@@ -225,7 +225,7 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     # taken from the environment: $USER on a build machine is whoever's account
     # ran it, which would put a different publisher on every release and on CI
     # whatever the runner happens to be called.
-    nacp_title = "Halo: Combat Evolved"
+    nacp_title = "SlipstreamCE"
     nacp_author = "thelinkin3000"
     nacp_version = "1.0.0"
     # The icon does not go in the NACP: it is an asset, embedded by elf2nro

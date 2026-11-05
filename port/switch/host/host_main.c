@@ -1447,7 +1447,7 @@ int main(int argc, char *argv[])
 	the alternative to knowing where it stopped is guessing */
 	log_marker("marker: main() entered");
 	log_marker("marker: log file opened");
-	host_logf(HOST_LOG_INFO, "Halo for Switch starting (%s)", executable_root);
+	host_logf(HOST_LOG_INFO, "SlipstreamCE for Switch starting (%s)", executable_root);
 	/* the game image an update installed last time, before anything loads it */
 	host_update_finish();
 	host_memory_log_regions();

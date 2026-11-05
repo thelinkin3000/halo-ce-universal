@@ -39,7 +39,7 @@ developing are at its end.
    console.
 3. Make the folder `/data/halo` and copy the game's disc image (`.iso` or
    `.xiso`) into it.
-4. Start Halo: Combat Evolved from the home screen.
+4. Start SlipstreamCE from the home screen.
 
 `README.txt` in the zip says the same in a few lines. The zip also holds
 `COPYING` and `licenses/`, the licences of what the title is built from;
@@ -72,7 +72,7 @@ folder holds:
 A release's build looks for a newer release on GitHub each time it starts,
 about ten seconds in, while you play. When there is one it downloads it
 (about 50 MB) and installs it in the title's folder, with notifications
-("Halo: downloading build N", every quarter of the way, then "Halo: build N
+("SlipstreamCE: downloading build N", every quarter of the way, then "SlipstreamCE: build N
 is installed: close the game and start it again to use it"). The game goes
 on as it was until you close it; the next start is the new build. If the
 download or the install does not finish, a notification says why and

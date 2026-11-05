@@ -283,7 +283,7 @@ def this_commit() -> str:
 def notice_text(commit: str) -> str:
     """NOTICE.txt: what the title is built from, under which licences, and
     where its source is; made from the pins at every build (ps5_notice)"""
-    return f"""Halo: Combat Evolved for the PS5 ({TITLE_ID})
+    return f"""SlipstreamCE, Halo: Combat Evolved for the PS5 ({TITLE_ID})
 
 This title is a work under the GNU General Public License, version 3 or
 (at your option) any later version, as a whole: it is linked with parts

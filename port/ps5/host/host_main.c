@@ -499,7 +499,7 @@ static void end_of_game(void)
 			HOLD_SECONDS);
 		sleep(HOLD_SECONDS);
 	}
-	ps5_notify("Halo: Combat Evolved ends");
+	ps5_notify("SlipstreamCE ends");
 	/* (the kernel log then reports exit() and a SIGSYS, as for every title
 	that ends: port/ps5/README.md) */
 	ps5_log("the host ends");
@@ -518,7 +518,7 @@ bool __wrap_SDL_ShowSimpleMessageBox(uint32_t flags, const char *title, const ch
 
 	(void)flags;
 	(void)window;
-	snprintf(text, sizeof(text), "%s: %s", title ? title : "Halo", message ? message : "");
+	snprintf(text, sizeof(text), "%s: %s", title ? title : "SlipstreamCE", message ? message : "");
 	ps5_notify("%s", text);
 	return true;
 }
@@ -529,7 +529,7 @@ static void log_identity(void)
 {
 	struct ps5_kernel_sw_version version;
 
-	ps5_log("Halo: Combat Evolved for the PS5, build %s (phase 6: playing on the console)", HALO_PROBE_BUILD);
+	ps5_log("SlipstreamCE for the PS5, build %s (phase 6: playing on the console)", HALO_PROBE_BUILD);
 	memset(&version, 0, sizeof(version));
 	version.size = sizeof(version);
 	if (sceKernelGetSystemSwVersion(&version) == 0)
@@ -1086,7 +1086,7 @@ int main(void)
 		usleep(100000);
 	log_open();
 	log_start_writer();
-	ps5_notify("Halo: Combat Evolved starts");
+	ps5_notify("SlipstreamCE starts");
 	log_identity();
 	ps5_log("descriptors 0 to 2: %s", taken == 7 ? "free at start, taken with " PS5_TITLE_FOLDER "/eboot.bin" :
 		taken ? "some free at start, taken with " PS5_TITLE_FOLDER "/eboot.bin" : "open at start");

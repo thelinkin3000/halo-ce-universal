@@ -721,7 +721,7 @@ int host_sdl_open_file_dialog(int filter_count, const char *filter_names, const 
 	if (found)
 	{
 		host_logf(HOST_LOG_INFO, "file dialog: answered %s with nobody at the console", path);
-		ps5_notify("Halo: extracting the game's maps from %s (about 1.8 GB, under a minute)", strrchr(path, '/') + 1);
+		ps5_notify("SlipstreamCE: extracting the game's maps from %s (about 1.8 GB, under a minute)", strrchr(path, '/') + 1);
 	}
 	else
 	{
@@ -729,7 +729,7 @@ int host_sdl_open_file_dialog(int filter_count, const char *filter_names, const 
 		host_logf(HOST_LOG_ERROR, "file dialog: no .iso or .xiso in %s to answer with: put the game's disc image "
 			"there (port/ps5/README.md)", PS5_DATA_FOLDER);
 		if (!no_disc_image)
-			ps5_notify("Halo: put the game's disc image (.iso or .xiso) in %s over FTP and start again",
+			ps5_notify("SlipstreamCE: put the game's disc image (.iso or .xiso) in %s over FTP and start again",
 				PS5_DATA_FOLDER);
 		no_disc_image = 1;
 	}
@@ -766,9 +766,9 @@ void host_sdl_destroy_renderer(uint32_t renderer)
 		host_sdl_handle_free(renderer);
 		host_logf(HOST_LOG_INFO, "2D renderer: destroyed after %llu presents", (unsigned long long)renderer_presents);
 		if (progress_total && progress_done >= progress_total)
-			ps5_notify("Halo: the maps are in place (%llu MB); the game starts", progress_total);
+			ps5_notify("SlipstreamCE: the maps are in place (%llu MB); the game starts", progress_total);
 		else if (progress_total)
-			ps5_notify("Halo: the extraction stopped at %llu of %llu MB", progress_done, progress_total);
+			ps5_notify("SlipstreamCE: the extraction stopped at %llu of %llu MB", progress_done, progress_total);
 	}
 }
 
@@ -830,7 +830,7 @@ int host_sdl_render_debug_text(uint32_t renderer, float x, float y, const char *
 		if (tenths > progress_tenths)
 		{
 			if (progress_tenths >= 0 && tenths < 10)
-				ps5_notify("Halo: extracting the maps: %d %% (%llu of %llu MB)", tenths * 10, done, total);
+				ps5_notify("SlipstreamCE: extracting the maps: %d %% (%llu of %llu MB)", tenths * 10, done, total);
 			progress_tenths = tenths;
 		}
 	}

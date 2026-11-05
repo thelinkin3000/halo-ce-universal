@@ -245,7 +245,7 @@ void ps5_update_recover(void)
 	{
 		/* this program is the old one, and the game image beside it now the
 		new one's: the new build has to start instead */
-		ps5_notify("Halo: the update to build %s is installed; start the game again", stamp);
+		ps5_notify("SlipstreamCE: the update to build %s is installed; start the game again", stamp);
 		ps5_log_sync(1);
 		ps5_log("the host ends: the new build starts at the next start");
 		_exit(0);
@@ -318,7 +318,7 @@ static void download_progress(void *context, unsigned long long received, unsign
 	if (quarter > progress->quarter && quarter < 4)
 	{
 		progress->quarter = quarter;
-		ps5_notify("Halo: downloading build %ld: %d %%", progress->build, quarter * 25);
+		ps5_notify("SlipstreamCE: downloading build %ld: %d %%", progress->build, quarter * 25);
 		ps5_log("update: %llu of %llu bytes", received, total);
 	}
 }
@@ -516,7 +516,7 @@ static void *update_thread(void *argument)
 	}
 	ps5_log("update: build %ld is available (this is build %d): downloading " UPDATE_ASSET, build,
 		HALO_BUILD_NUMBER);
-	ps5_notify("Halo: downloading build %ld", build);
+	ps5_notify("SlipstreamCE: downloading build %ld", build);
 	progress.build = build;
 	{
 		char url[256];
@@ -529,7 +529,7 @@ static void *update_thread(void *argument)
 		{
 			unlink(UPDATE_ARCHIVE);
 			ps5_log("update: the download of %s did not finish: %s", url, error);
-			ps5_notify("Halo: the update did not finish: %s", error);
+			ps5_notify("SlipstreamCE: the update did not finish: %s", error);
 			return NULL;
 		}
 		ps5_log("update: downloaded in %.1f s", (ps5_now_ns() - start) / 1e9);
@@ -539,13 +539,13 @@ static void *update_thread(void *argument)
 	{
 		unlink(UPDATE_ARCHIVE);
 		ps5_log("update: the install did not finish: %s", error);
-		ps5_notify("Halo: the update did not finish: %s", error);
+		ps5_notify("SlipstreamCE: the update did not finish: %s", error);
 		return NULL;
 	}
 	unlink(UPDATE_ARCHIVE);
 	ps5_log("update: build %ld is installed (%.1f s); it starts at the next start", build,
 		(ps5_now_ns() - start) / 1e9);
-	ps5_notify("Halo: build %ld is installed: close the game and start it again to use it", build);
+	ps5_notify("SlipstreamCE: build %ld is installed: close the game and start it again to use it", build);
 	return NULL;
 }
 

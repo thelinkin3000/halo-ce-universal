@@ -155,7 +155,7 @@ ftpsrv.
 1. Unzip the download on your computer, and copy its `PPSA99500` folder
    into `/data/homebrew` on the console over FTP.
 2. Make the folder `/data/halo` and copy your disc image into it.
-3. Start Halo: Combat Evolved from the home screen. On the first start it
+3. Start SlipstreamCE from the home screen. On the first start it
    unpacks the maps (under a minute); notifications show how far it has
    got.
 
