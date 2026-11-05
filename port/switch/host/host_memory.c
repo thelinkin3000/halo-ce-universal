@@ -884,12 +884,9 @@ int host_memory_initialize(uint32_t base, uint32_t size)
 	the game state (game.c's "!game_globals->active"). */
 	/* (its hold stands for it from here: libnx keeps both reservations) */
 	custom_edition_hold_base = custom_edition_hold_end = 0;
-	if (reserve(HALO_GUEST_CUSTOM_EDITION_BASE, HALO_GUEST_CUSTOM_EDITION_END - HALO_GUEST_CUSTOM_EDITION_BASE, 0) != 0)
-	{
-		host_logf(HOST_LOG_WARN, "Custom Edition's tag cache range %08x-%08x is taken: its maps cannot run",
-			(unsigned)HALO_GUEST_CUSTOM_EDITION_BASE, (unsigned)HALO_GUEST_CUSTOM_EDITION_END);
-		log_conflicts(HALO_GUEST_CUSTOM_EDITION_BASE, HALO_GUEST_CUSTOM_EDITION_END - HALO_GUEST_CUSTOM_EDITION_BASE);
-	}
+	/* (where it is taken the guest puts the tag cache elsewhere, and says so:
+	port/linux/src/xbox_memory.c) */
+	(void)reserve(HALO_GUEST_CUSTOM_EDITION_BASE, HALO_GUEST_CUSTOM_EDITION_END - HALO_GUEST_CUSTOM_EDITION_BASE, 0);
 
 	/* The window, as large as the console will give: each size is tried
 	 * where the game and its data expect it, then at the address this build
