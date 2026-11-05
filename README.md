@@ -6,8 +6,8 @@
 
 **Halo: Combat Evolved for Xbox, on Android, Switch and PS5, with modern renderers and performance in mind**
 
-[![Latest release](https://img.shields.io/github/v/release/thelinkin3000/halo-ce-universal?label=latest&color=2ea44f)](https://github.com/thelinkin3000/halo-ce-universal/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/thelinkin3000/halo-ce-universal/total?color=blue)](https://github.com/thelinkin3000/halo-ce-universal/releases)
+[![Latest release](https://img.shields.io/github/v/release/thelinkin3000/SlipstreamCE?label=latest&color=2ea44f)](https://github.com/thelinkin3000/SlipstreamCE/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/thelinkin3000/SlipstreamCE/total?color=blue)](https://github.com/thelinkin3000/SlipstreamCE/releases)
 [![Android](https://img.shields.io/badge/Android-Vulkan%20%C2%B7%20Turnip%20%C2%B7%20OpenGL%20ES-3ddc84?logo=android&logoColor=white)](#android)
 [![Nintendo Switch](https://img.shields.io/badge/Switch-deko3d-e60012)](#nintendo-switch)
 [![PlayStation 5](https://img.shields.io/badge/PS5-Vulkan%20%C2%B7%20RADV-003791)](#playstation-5)
@@ -48,7 +48,7 @@ and to **deko3d**, the Switch's own GPU interface, on the Switch.
 
 > [!WARNING]
 > **Official sources.** The only official downloads are the
-> [releases on this repository](https://github.com/thelinkin3000/halo-ce-universal/releases). Builds,
+> [releases on this repository](https://github.com/thelinkin3000/SlipstreamCE/releases). Builds,
 > "updates" or donation requests offered anywhere else under this project's
 > name are not from us.
 
@@ -166,13 +166,13 @@ These links always point to the latest one:
 
 | Platform | Play | Debug |
 | --- | --- | --- |
-| Android | [slipstreamce-android-release.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/slipstreamce-android-release.zip) | [slipstreamce-android-debug.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/slipstreamce-android-debug.zip) |
-| Nintendo Switch | [halo-switch-release.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/halo-switch-release.zip) | [halo-switch-debug.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/halo-switch-debug.zip) |
-| PlayStation 5 | [halo-ps5-release.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/halo-ps5-release.zip) | [halo-ps5-debug.zip](https://github.com/thelinkin3000/halo-ce-universal/releases/latest/download/halo-ps5-debug.zip) |
+| Android | [slipstreamce-android-release.zip](https://github.com/thelinkin3000/SlipstreamCE/releases/latest/download/slipstreamce-android-release.zip) | [slipstreamce-android-debug.zip](https://github.com/thelinkin3000/SlipstreamCE/releases/latest/download/slipstreamce-android-debug.zip) |
+| Nintendo Switch | [halo-switch-release.zip](https://github.com/thelinkin3000/SlipstreamCE/releases/latest/download/halo-switch-release.zip) | [halo-switch-debug.zip](https://github.com/thelinkin3000/SlipstreamCE/releases/latest/download/halo-switch-debug.zip) |
+| PlayStation 5 | [halo-ps5-release.zip](https://github.com/thelinkin3000/SlipstreamCE/releases/latest/download/halo-ps5-release.zip) | [halo-ps5-debug.zip](https://github.com/thelinkin3000/SlipstreamCE/releases/latest/download/halo-ps5-debug.zip) |
 
 Use the release build to play. The debug build stops at the first failed
 assertion and writes it to the log, which makes it the one to use when
-you're chasing a problem. The [releases page](https://github.com/thelinkin3000/halo-ce-universal/releases)
+you're chasing a problem. The [releases page](https://github.com/thelinkin3000/SlipstreamCE/releases)
 keeps the last five builds, if the latest one has a problem.
 
 ## Install
