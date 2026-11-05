@@ -2802,11 +2802,12 @@ glslang on the path, clang 22 for the compile), `port/ps5/host/host_main.c`
   - **When.** On a host thread of its own once the guest has started and
     the network is up, so the game is never held: the menu comes up as
     always, the check and the download go on beside it.
-  - **The check.** `https://api.github.com/repos/thelinkin3000/halo-ce-universal/releases/latest`,
+  - **The check.** `https://api.github.com/repos/thelinkin3000/SlipstreamCE/releases/latest`,
     its `tag_name` (`build-<number>`), as `updater.c` reads it; a number
     above the build's is an update.
-  - **The download.** `halo-ps5-<release|debug>.zip` of that release,
-    through `posix_update.c`'s `update_download` used as it is (HTTPS with
+  - **The download.** `slipstreamce-ps5-<release|debug>.zip` of that release,
+    or `halo-ps5-<release|debug>.zip` when GitHub answers 404 for it,
+    through `posix_update.c`'s `update_download_status` (HTTPS with
     Mbed TLS, redirects followed, the certificate and host name always
     checked), into `/data/halo/update.partial.zip`. The console has no
     certificate bundle, so the title carries the roots its hosts' chains

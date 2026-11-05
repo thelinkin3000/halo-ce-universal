@@ -23,6 +23,12 @@ of it; 1 on success, else 0 and why in error */
 int update_download(const char *url, const char *path, unsigned long long maximum, update_progress_proc progress,
 	void *context, char *error, int error_size);
 
+/* update_download, saying too what the server last answered (0 if it did not):
+for a caller that treats a missing file differently from a failed download.
+posix_update.c's only */
+int update_download_status(const char *url, const char *path, unsigned long long maximum,
+	update_progress_proc progress, void *context, int *answered, char *error, int error_size);
+
 /* one HTTP request (update_https_request's answer): the status (0 if none
 came), the response's headers as received ("Name: value" lines, each ended
 by "\n"), and its body (malloc'd, NUL terminated: the caller frees it) */

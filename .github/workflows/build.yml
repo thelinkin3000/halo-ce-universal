@@ -805,9 +805,10 @@ jobs:
             # the Switch's and the PS5's stored, not deflated: their updaters
             # (port/switch/host/host_update.c, in every build installed so
             # far, and port/ps5/host/host_update_ps5.c) unpack stored entries
-            # only
+            # only (the slipstreamce- names are the ones their updaters look
+            # for first, for when the zips take them)
             case "$name" in
-              halo-switch*|halo-ps5*) level=-0 ;;
+              halo-switch*|halo-ps5*|slipstreamce-switch*|slipstreamce-ps5*) level=-0 ;;
               *) level= ;;
             esac
             (cd "$build" && zip $level -qr "$GITHUB_WORKSPACE/release/$name.zip" .)

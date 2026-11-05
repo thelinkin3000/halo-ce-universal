@@ -83,7 +83,7 @@ RADV_ZLIB_VERSION = "1.3.1"
 
 # this repository, which the notice names at the build's commit, and which
 # the updater asks for releases (port/ps5/host/host_update_ps5.c)
-REPOSITORY_URL = "https://github.com/thelinkin3000/halo-ce-universal"
+REPOSITORY_URL = "https://github.com/thelinkin3000/SlipstreamCE"
 
 TITLE_ID = "PPSA99500"
 PORT_DIR = Path("port/ps5")

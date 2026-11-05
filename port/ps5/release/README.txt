@@ -26,5 +26,5 @@ again. To stop it, put update.auto = false in config.toml. To update by
 hand, copy a newer release's PPSA99500 folder over the old one.
 
 Everything else (what it does, the network, building it):
-https://github.com/thelinkin3000/halo-ce-universal/blob/main/port/ps5/README.md
+https://github.com/thelinkin3000/SlipstreamCE/blob/main/port/ps5/README.md
 The licences are in COPYING and licenses/; NOTICE.txt says where the source is.

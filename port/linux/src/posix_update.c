@@ -36,7 +36,7 @@ Built with the host's ABI, as the other posix_*.c.
 #include <sys/types.h>
 #include <unistd.h>
 
-#define UPDATE_USER_AGENT "halo-ce-universal-updater"
+#define UPDATE_USER_AGENT "slipstreamce-updater"
 #define MAXIMUM_REDIRECTS 8
 #define TIMEOUT_MILLISECONDS 20000
 #define MAXIMUM_HEADER_SIZE 16384
@@ -502,14 +502,15 @@ static int https_get(const char *url, struct download *download, char *location,
 	return status;
 }
 
-int update_download(const char *url, const char *path, unsigned long long maximum, update_progress_proc progress,
-	void *context, char *error, int error_size)
+int update_download_status(const char *url, const char *path, unsigned long long maximum,
+	update_progress_proc progress, void *context, int *answered, char *error, int error_size)
 {
 	char current[2048];
 	char location[2048];
 	struct download download;
 	int redirect;
 
+	*answered = 0;
 	pthread_once(&certificates_once, load_certificates);
 	if (!crypto_ready)
 	{
@@ -537,6 +538,7 @@ int update_download(const char *url, const char *path, unsigned long long maximu
 	{
 		int status = https_get(current, &download, location, sizeof(location), error, error_size);
 
+		*answered = status;
 		if (status == 200)
 		{
 			if (fclose(download.file) != 0)
@@ -572,6 +574,14 @@ int update_download(const char *url, const char *path, unsigned long long maximu
 	fclose(download.file);
 	unlink(path);
 	return 0;
+}
+
+int update_download(const char *url, const char *path, unsigned long long maximum, update_progress_proc progress,
+	void *context, char *error, int error_size)
+{
+	int answered;
+
+	return update_download_status(url, path, maximum, progress, context, &answered, error, error_size);
 }
 
 /* ---------- any request */

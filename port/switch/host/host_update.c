@@ -13,7 +13,9 @@ turns the look off.
 
 GitHub names the latest release by where /releases/latest redirects to
 (/releases/tag/build-<number>), so the check is one request and no JSON. The
-archive (halo-switch-release.zip, or -debug.zip for a debug build) is stored,
+archive (slipstreamce-switch-release.zip, or -debug.zip for a debug build, or
+halo-switch-release.zip or its -debug.zip if GitHub answers 404 for that one:
+the name the zips have until they take the new one) is stored,
 not compressed - the release is zipped with zip -0 - and each file's size and
 CRC come before its data, so it is unpacked as it downloads: the two files the
 port needs are written beside the old ones as .new, checked against their CRC,
@@ -71,11 +73,12 @@ time; update.auto off asks nothing.
 #define HALO_BUILD_FLAVOR "release"
 #endif
 
-#define UPDATE_REPOSITORY "thelinkin3000/halo-ce-universal"
+#define UPDATE_REPOSITORY "thelinkin3000/SlipstreamCE"
 /* the shared shader keys, and their SHA-1 (sha1sum's line, or just the hash) */
 #define KEYS_URL "https://raw.githubusercontent.com/" UPDATE_REPOSITORY "/main/keys.dkk"
 #define KEYS_SHA1_URL "https://raw.githubusercontent.com/" UPDATE_REPOSITORY "/main/keys.sha1"
-#define UPDATE_ASSET "halo-switch-" HALO_BUILD_FLAVOR ".zip"
+#define UPDATE_ASSET "slipstreamce-switch-" HALO_BUILD_FLAVOR ".zip"
+#define UPDATE_OLD_ASSET "halo-switch-" HALO_BUILD_FLAVOR ".zip"
 #define UPDATE_PROGRAM "halo.nro"
 #define UPDATE_IMAGE "halo_guest.elf"
 /* the deko3d renderer's image as releases before it became the game image
@@ -528,18 +531,26 @@ static void remove_partial_files(void)
 
 static int download_and_install(long build, char *error, size_t error_size)
 {
+	static const char *const assets[] = { UPDATE_ASSET, UPDATE_OLD_ASSET };
 	char url[256];
 	struct unpack *unpack = calloc(1, sizeof(*unpack));
-	int status, which;
+	int status, which, asset = 0;
 
 	if (!unpack)
 		return fail(error, error_size, "Out of memory for the update.");
-	snprintf(url, sizeof(url), "https://github.com/" UPDATE_REPOSITORY "/releases/download/build-%ld/" UPDATE_ASSET,
-		build);
-	host_logf(HOST_LOG_INFO, "update: downloading %s", url);
 	unpack->build = build;
 	draw_progress(unpack);
-	status = host_https_fetch(url, 1, unpack_body, unpack, NULL, 0, error, error_size);
+	/* (a 404 has given unpack_body nothing, so the next asset starts clean) */
+	for (;;)
+	{
+		snprintf(url, sizeof(url), "https://github.com/" UPDATE_REPOSITORY "/releases/download/build-%ld/%s", build,
+			assets[asset]);
+		host_logf(HOST_LOG_INFO, "update: downloading %s", url);
+		status = host_https_fetch(url, 1, unpack_body, unpack, NULL, 0, error, error_size);
+		if (status != 404 || asset == 1)
+			break;
+		asset++;
+	}
 	if (unpack->file)
 		fclose(unpack->file);
 	if (unpack->error[0])
@@ -549,7 +560,7 @@ static int download_and_install(long build, char *error, size_t error_size)
 	}
 	else if (status >= 0 && status != 200)
 	{
-		fail(error, error_size, "GitHub answered %d for build %ld's %s.", status, build, UPDATE_ASSET);
+		fail(error, error_size, "GitHub answered %d for build %ld's %s.", status, build, assets[asset]);
 		status = -1;
 	}
 	for (which = 0; status == 200 && which < REQUIRED_FILES; which++)

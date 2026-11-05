@@ -349,7 +349,7 @@ static int request(const char *host, const char *path, host_https_body body, voi
 			fail(error, error_size, "Out of memory for the request.");
 			goto done;
 		}
-		size = (size_t)sprintf(text, "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: halo-ce-universal-switch\r\n"
+		size = (size_t)sprintf(text, "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: slipstreamce-switch\r\n"
 			"Accept: */*\r\nConnection: close\r\n\r\n", path, host);
 		while (sent < size)
 		{
