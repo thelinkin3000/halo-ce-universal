@@ -326,7 +326,19 @@ DELETE (pressed twice), IMPORT and EXPORT (Android) and BACK. A recording shorte
   90 degrees at most, or as near as that lets it with the player at its edge
   (`playback_cinematic_threat`); for 1.25 seconds of the game after the
   last hit, or until they are on the screen as it would be without this, the
-  player aims within 30 degrees of them, or is out of their sight. The top
+  player aims within 30 degrees of them, or is out of their sight. It
+  stands still until it has reason to move (`playback_cinematic_move`, in the
+  game's time, so not while paused): a player gone further than 1.75 of the
+  distance it was placed at pulls it after them on a spring, 0.6 seconds of
+  their speed behind (its zoom starting only at twice that, for a camera that
+  cannot follow), and one moving across its view or turning for 0.75 seconds
+  swings it round them on an arc, to 45 degrees either side of behind where they
+  aim on the side it is on, until they have neither moved nor turned for
+  half a second (`playback_cinematic_orbit`, not during a threat). Where
+  that would lose sight of them, or a wall takes it in, the arm comes in, is held
+  0.15 seconds and goes back out; rather than come in by over half the arc stops. A
+  player moved further and faster than a vehicle goes (a teleporter, a spawn, a
+  jump in the replay) has it placed anew. The top
   line says CINEMATIC. Through the eyes, the aim
   turns smoothly between the facings the replay has of the player (all
   of them indexed as it loads, `playback_index_facings`: the host's
