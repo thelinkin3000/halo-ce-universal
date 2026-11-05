@@ -34,15 +34,20 @@ slowly, its speed eased up and down: playback_free_camera_speed), the right
 one turning it and the triggers taking it down (left) and up (right), eased
 up from still (the Switch's are buttons: playback_free_camera_rise),
 sliding along walls rather than through them (playback_free_camera_move);
-a tripod, placed where behind's would be when it is chosen, tracking the
-player (playback_free_camera_track) as it moves until the right stick takes
-the aim (R3 or D-pad Up tracks again, or stops; D-pad Down or L3 puts it
-behind the player again, tracking them, as when it was chosen), and zooming on them
+a tripod, placed behind the player when it is chosen, higher for high ground
+around them, or if there is no room there over them or to their side
+(playback_free_camera_place), tracking the player on a spring with the room
+ahead of where they aim (playback_free_camera_track,
+playback_free_camera_framing) as it moves until the right stick takes
+the aim (R3 or D-pad Up tracks again, or stops; D-pad Down or L3 places it
+again, tracking them, as when it was chosen), and zooming on them
 as they go further until it first moves (playback_free_camera_zoom); or a
 cinematic one, the free camera with no controls: placed and tracking as it,
-and placed behind the player again whenever the level hides them from it
-for CINEMATIC_HIDDEN_TIME (playback_cinematic_sight), at once in the
-CINEMATIC_SPAWN_TIME after they spawn. D-pad
+and placed again whenever the level hides them from it
+for CINEMATIC_HIDDEN_TIME once the shot has lasted CINEMATIC_LEAST_SHOT
+(playback_cinematic_sight), at once in the CINEMATIC_SPAWN_TIME after they
+spawn, and bringing whoever hurts them off the screen into the frame
+(network_replay_playback_damage, playback_cinematic_threat). D-pad
 Up turns behind with the player again too, as R3 does.
 Through the eyes, the aim turns smoothly between the facings the replay
 has of the player (playback_index_facings, playback_eyes_aim) and the host's
@@ -294,11 +299,53 @@ stay the size they were, eased over this long (seconds) */
 #define FREE_CAMERA_ZOOM_DISTANCE 5.0f
 #define FREE_CAMERA_NARROWEST DEGREES_TO_RADIANS(8.0f)
 #define FREE_CAMERA_ZOOM_TIME 0.3f
+/* how a view's width is the screen's: the vertical tangent of half of it is
+this of the tangent of half the width (main.c's, the observer's width at 4:3,
+render_camera_get_adjusted_field_of_view_tangent's 0.85), the horizontal one
+that by the window's shape */
+#define CAMERA_VERTICAL_TANGENT (0.75f * 0.85f)
+/* ... the tripod's framing while it tracks: the player on a third-line of the
+screen (a third of the way from the middle to the edge) with the room ahead of
+where they aim, as much of it as they aim across its view; how long the
+framing lags what it wants (seconds) */
+#define FREE_CAMERA_THIRD (1.0f / 3.0f)
+#define FREE_CAMERA_FRAMING_TIME 0.4f
+/* ... where a tripod is placed: the camera that far from the player kept
+clear of what is around it, looked at along the middle of the arm and to this
+far each side of it at its end; less of the arm than this, or no sight of the
+player from its end, and the next place is tried. A crane (this of the arm's
+length across, and this up) and then either side of them */
+#define FREE_CAMERA_PROBE_RADIUS 0.15f
+#define FREE_CAMERA_LEAST_ARM 0.5f
+#define FREE_CAMERA_CRANE_ACROSS 0.45f
+#define FREE_CAMERA_CRANE_UP 0.95f
+/* ... and how high: the ground this far round the player (the arm's length,
+in this many directions) looked down on from this far above them, under open
+sky. Half of it more than this above their feet (world units) is a valley, and
+the camera goes up by what it is more, by at most this */
+#define FREE_CAMERA_TERRAIN_DIRECTIONS 8
+#define FREE_CAMERA_TERRAIN_LOOK 3.0f
+#define FREE_CAMERA_TERRAIN_LEAST 1.0f
+#define FREE_CAMERA_TERRAIN_MOST 2.0f
 /* the cinematic camera: how long the player may be hidden from it (seconds)
-before it is placed behind them again, and how long after they spawn it is
-placed at once if they are (seconds) */
+before it is placed again, how long they must be in sight for that to start
+over, the least a shot lasts (but in the time after they spawn), and how long
+after they spawn it is placed at once if they are (seconds); and how far either
+side of their middle it looks for them (world units), so that a post is not
+what hides them */
 #define CINEMATIC_HIDDEN_TIME 0.2f
+#define CINEMATIC_CLEAR_TIME 0.15f
+#define CINEMATIC_LEAST_SHOT 1.0f
 #define CINEMATIC_SPAWN_TIME 0.5f
+#define CINEMATIC_SIGHT_WIDTH 0.2f
+/* ... whoever hurt the player, off the screen: brought in for this long after
+the last hit (seconds of the game), at this of the way from the middle to the
+edge of the screen (the player at that of the other side), the view widened to
+this at most; and no more once the player aims this near them (radians) */
+#define CINEMATIC_THREAT_HOLD 1.25f
+#define CINEMATIC_THREAT_EDGE 0.8f
+#define CINEMATIC_THREAT_WIDEST DEGREES_TO_RADIANS(90.0f)
+#define CINEMATIC_THREAT_FACED DEGREES_TO_RADIANS(30.0f)
 /* the keyframes: one every 10 seconds of the game, as the playback first
 reaches it, compressed in memory (zlib's fastest level), up to this much
 memory in all (and this many); and how long after one d-pad left goes to
@@ -478,12 +525,34 @@ static struct
 	boolean free_placing;
 	boolean free_tracking;
 	boolean free_still;
-	/* the cinematic camera: how long the player has been hidden from it
-	(seconds), whether they have died since it was placed, and what is left
-	of the CINEMATIC_SPAWN_TIME after they spawned (seconds) */
+	/* the cinematic camera: how long the player has been hidden from it and
+	in sight of it since (seconds), how long this shot has lasted (seconds),
+	whether they have died since it was placed, and what is left of the
+	CINEMATIC_SPAWN_TIME after they spawned (seconds) */
 	real cinematic_hidden;
+	real cinematic_clear;
+	real cinematic_shot;
 	boolean cinematic_died;
 	real cinematic_spawned;
+	/* ... whoever last hurt the player watched: the tick of the hit (NONE,
+	none), that player, their player and object if they have one and where it
+	last was; and the view's width it wants (0, none) */
+	long threat_tick;
+	long threat_watched;
+	long threat_player;
+	long threat_object;
+	real_point3d threat_point;
+	real threat_field_of_view;
+	/* the tripod's springs' speeds (playback_spring): its aim's and its view's
+	width's; and its framing, how far its aim is off the player, with their
+	speeds */
+	real free_yaw_speed;
+	real free_pitch_speed;
+	real free_field_of_view_speed;
+	real free_frame_yaw;
+	real free_frame_yaw_speed;
+	real free_frame_pitch;
+	real free_frame_pitch_speed;
 	/* when D-pad Down last put the free camera back behind the
 	player (system_milliseconds: REPLAY_CAMERA_RESET_MILLISECONDS) */
 	unsigned long free_reset_at;
@@ -761,6 +830,8 @@ static void playback_free(
 	playback.hidden = FALSE;
 	playback.paused = FALSE;
 	playback.camera_valid = FALSE;
+	playback.threat_tick = NONE;
+	playback.threat_field_of_view = 0.0f;
 	playback_keyframes_free();
 	playback.behind_orbiting = FALSE;
 	playback.behind_zoom = 1.0f;
@@ -2100,52 +2171,86 @@ static void playback_free_camera_move(
 }
 
 static void playback_focus(long unit_index, real_point3d *focus);
-static void playback_behind_camera(long unit_index, real seconds);
+static real playback_eyes_time(void);
+static real playback_angle_between(real from, real to);
+static void playback_eyes_aim(long unit_index, short player_index, real time, real_vector3d *aim);
 
-/* how much of the way to where it is going a value eased over time
-(seconds) goes in seconds */
-static real playback_ease(
+/* the free camera kept off what it has come too near without moving toward
+it, past a corner the look along its move only just missed: looked at each way
+as far as the margin, and moved out of what is nearer */
+static void playback_free_camera_clear(
+	void)
+{
+	static real_vector3d const directions[6] =
+	{
+		{ 1.0f, 0.0f, 0.0f }, { -1.0f, 0.0f, 0.0f },
+		{ 0.0f, 1.0f, 0.0f }, { 0.0f, -1.0f, 0.0f },
+		{ 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, -1.0f }
+	};
+	real_vector3d push = { 0.0f, 0.0f, 0.0f };
+	short direction;
+
+	for (direction = 0; direction < NUMBEROF(directions); direction++)
+	{
+		struct collision_result collision;
+		real_vector3d probe;
+
+		probe.i = directions[direction].i * FREE_CAMERA_WALL_MARGIN;
+		probe.j = directions[direction].j * FREE_CAMERA_WALL_MARGIN;
+		probe.k = directions[direction].k * FREE_CAMERA_WALL_MARGIN;
+		if (collision_test_vector(FREE_CAMERA_COLLISION_FLAGS, &playback.free_position, &probe, NONE, &collision))
+		{
+			real out = FREE_CAMERA_WALL_MARGIN * (1.0f - collision.t);
+
+			push.i += collision.plane.n.i * out;
+			push.j += collision.plane.n.j * out;
+			push.k += collision.plane.n.k * out;
+		}
+	}
+	if (push.i * push.i + push.j * push.j + push.k * push.k > 0.005f * 0.005f)
+		playback_free_camera_move(&push);
+}
+
+/* a value moved toward where it is going on a critically damped spring,
+time behind it as it goes at a steady speed: starting and stopping gently and
+not going past it, the same whatever the frames' lengths */
+static void playback_spring(
+	real *value,
+	real *speed,
+	real target,
 	real seconds,
 	real time)
 {
-	return 1.0f - (real)exp(-seconds / time);
+	real rate = 2.0f / time;
+	real offset = *value - target;
+	real push = (*speed + rate * offset) * seconds;
+	real decay = (real)exp(-rate * seconds);
+
+	*speed = (*speed - rate * push) * decay;
+	*value = target + (offset + push) * decay;
 }
 
-/* the free camera's aim eased toward the player's focus, as a tripod's
-turned by hand: FREE_CAMERA_TRACK_TIME behind it */
-static void playback_free_camera_track(
-	real seconds)
+/* the tangents of half of a view's width, across the screen and up it */
+static void playback_view_tangents(
+	real field_of_view,
+	real *across,
+	real *up)
 {
-	real_vector3d to;
-	real across;
-	real yaw, pitch, turn;
-	real ease = playback_ease(seconds, FREE_CAMERA_TRACK_TIME);
+	rectangle2d window = render.camera.window_bounds;
+	long width = window.x1 - window.x0;
+	long height = window.y1 - window.y0;
 
-	to.i = playback.free_focus.x - playback.free_position.x;
-	to.j = playback.free_focus.y - playback.free_position.y;
-	to.k = playback.free_focus.z - playback.free_position.z;
-	across = (real)sqrt(to.i * to.i + to.j * to.j);
-	if (across < 0.01f && (real)fabs(to.k) < 0.01f)
-		return;
-	yaw = (real)atan2(to.j, to.i);
-	pitch = PIN((real)atan2(to.k, across), -FREE_CAMERA_MAXIMUM_PITCH, FREE_CAMERA_MAXIMUM_PITCH);
-	turn = yaw - playback.free_yaw;
-	while (turn > _pi)
-		turn -= 2.0f * _pi;
-	while (turn < -_pi)
-		turn += 2.0f * _pi;
-	playback.free_yaw += turn * ease;
-	playback.free_pitch += (pitch - playback.free_pitch) * ease;
+	*up = CAMERA_VERTICAL_TANGENT * (real)tan(field_of_view / 2.0f);
+	*across = *up * (width > 0 && height > 0 ? (real)width / (real)height : 16.0f / 9.0f);
 }
 
-/* the free camera's view's width: while it has not moved since it was
-placed and tracks the player, narrowed as they go further than
-FREE_CAMERA_ZOOM_DISTANCE so they stay the size they were (to
-FREE_CAMERA_NARROWEST); held while it has not moved but does not track;
-moved, eased back to the camera's own, and never narrowed again until it is
-placed anew */
-static void playback_free_camera_zoom(
-	real seconds)
+/* the view's width the tripod's zoom wants, without any threat: while it has
+not moved since it was placed and tracks the player, narrowed as they go
+further than FREE_CAMERA_ZOOM_DISTANCE so they stay the size they were (to
+FREE_CAMERA_NARROWEST); held while it has not moved but does not track; moved,
+the camera's own, and never narrowed again until it is placed anew */
+static real playback_free_camera_zoom_wanted(
+	void)
 {
 	real wanted = playback.free_field_of_view;
 
@@ -2167,34 +2272,452 @@ static void playback_free_camera_zoom(
 			wanted = MAX(wanted, FREE_CAMERA_NARROWEST);
 		}
 	}
-	playback.free_field_of_view += (wanted - playback.free_field_of_view) *
-		playback_ease(seconds, FREE_CAMERA_ZOOM_TIME);
+	return wanted;
+}
+
+/* the free camera's view's width: what its zoom wants, or wider for a threat
+(playback_cinematic_threat) */
+static void playback_free_camera_zoom(
+	real seconds)
+{
+	real wanted = MAX(playback_free_camera_zoom_wanted(), playback.threat_field_of_view);
+
+	playback_spring(&playback.free_field_of_view, &playback.free_field_of_view_speed, wanted, seconds,
+		FREE_CAMERA_ZOOM_TIME);
+}
+
+/* the host's damage to a unit, as a replay plays it (network_damage.c): whose
+it is and where from, for the cinematic camera to show them */
+void network_replay_playback_damage(
+	long object_index,
+	long owner_player_index,
+	long owner_object_index,
+	real_point3d const *origin)
+{
+	struct player_datum *player;
+	struct object_datum *object;
+
+	if (!playback.playing || playback.view != _replay_view_cinematic || playback.watched == NONE)
+		return;
+	player = player_try_and_get(playback.watched);
+	if (!player || player->unit_index == NONE)
+		return;
+	object = object_get(player->unit_index);
+	if (object_index != player->unit_index && object_index != object->object.parent_object_index)
+		return;
+	/* (their own doing, and what is nobody's: a fall) */
+	if (owner_player_index == playback.watched || owner_object_index == player->unit_index ||
+		owner_object_index == object->object.parent_object_index ||
+		(owner_player_index == NONE && owner_object_index == NONE))
+	{
+		return;
+	}
+	playback.threat_tick = game_time_get();
+	playback.threat_watched = playback.watched;
+	playback.threat_player = owner_player_index;
+	playback.threat_object = owner_object_index;
+	playback.threat_point = *origin;
+}
+
+/* whoever hurt the player, while it is on the cinematic camera to show them:
+wanted_yaw and wanted_pitch become where its aim goes from the player's
+(focus_yaw, focus_pitch) to have both on the screen, the view widened as it
+must be (playback.threat_field_of_view); FALSE if nothing needs to change: no
+one, or longer ago than CINEMATIC_THREAT_HOLD (in the game's time, so a jump
+back in the replay is no hit yet), or they are on the screen as it is
+(standard_yaw, the view its zoom wants), or the player has turned to them or
+into cover */
+static boolean playback_cinematic_threat(
+	long unit_index,
+	real_vector3d const *aim,
+	real focus_yaw,
+	real focus_pitch,
+	real standard_yaw,
+	real *wanted_yaw,
+	real *wanted_pitch)
+{
+	long age = playback.threat_tick != NONE ? game_time_get() - playback.threat_tick : NONE;
+	long owner = NONE;
+	real_point3d focus;
+	real_vector3d to;
+	real_vector3d from_player;
+	struct collision_result collision;
+	real standard = playback_free_camera_zoom_wanted();
+	real standard_across, standard_up;
+	real across, yaw, pitch, turn, rise, half_turn, half_rise, field_of_view, length;
+	real wide_across, wide_up;
+
+	playback.threat_field_of_view = 0.0f;
+	if (playback.threat_tick == NONE || playback.threat_watched != playback.watched || age < 0 ||
+		age > (long)(CINEMATIC_THREAT_HOLD * TICKS_PER_SECOND))
+	{
+		playback.threat_tick = NONE;
+		return FALSE;
+	}
+	/* (where they are now, if they are: the hit's origin once they are gone) */
+	if (playback.threat_player != NONE)
+	{
+		struct player_datum *player = player_try_and_get(playback.threat_player);
+
+		if (player && player->unit_index != NONE)
+			owner = player->unit_index;
+	}
+	if (owner == NONE && playback.threat_object != NONE && object_try_and_get(playback.threat_object))
+		owner = playback.threat_object;
+	if (owner != NONE)
+		playback_focus(owner, &playback.threat_point);
+	playback_focus(unit_index, &focus);
+	from_player.i = playback.threat_point.x - focus.x;
+	from_player.j = playback.threat_point.y - focus.y;
+	from_player.k = playback.threat_point.z - focus.z;
+	length = (real)sqrt(from_player.i * from_player.i + from_player.j * from_player.j + from_player.k * from_player.k);
+	/* (the player has turned to them, or is out of their sight) */
+	if (length < 0.01f ||
+		(from_player.i * aim->i + from_player.j * aim->j + from_player.k * aim->k) / length > (real)cos(CINEMATIC_THREAT_FACED) ||
+		collision_test_vector(FREE_CAMERA_COLLISION_FLAGS, &focus, &from_player, NONE, &collision))
+	{
+		playback.threat_tick = NONE;
+		return FALSE;
+	}
+	to.i = playback.threat_point.x - playback.free_position.x;
+	to.j = playback.threat_point.y - playback.free_position.y;
+	to.k = playback.threat_point.z - playback.free_position.z;
+	across = (real)sqrt(to.i * to.i + to.j * to.j);
+	yaw = (real)atan2(to.j, to.i);
+	pitch = (real)atan2(to.k, across);
+	/* (on the screen as it would be without them) */
+	playback_view_tangents(standard, &standard_across, &standard_up);
+	turn = playback_angle_between(standard_yaw, yaw);
+	if ((real)fabs(turn) < _pi / 2.0f && (real)fabs(pitch - focus_pitch) < _pi / 2.0f &&
+		(real)fabs(tan(turn)) < standard_across * CINEMATIC_THREAT_EDGE &&
+		(real)fabs(tan(pitch - focus_pitch)) < standard_up * CINEMATIC_THREAT_EDGE)
+	{
+		return FALSE;
+	}
+	/* (the aim halfway between them, the view as wide as that takes, to its
+	widest; wider than that, the player at the far edge of it and the aim as
+	near the threat as that lets it) */
+	turn = playback_angle_between(focus_yaw, yaw);
+	rise = pitch - focus_pitch;
+	half_turn = (real)fabs(turn) / 2.0f;
+	half_rise = (real)fabs(rise) / 2.0f;
+	playback_view_tangents(1.0f, &wide_across, &wide_up);
+	wide_across /= (real)tan(0.5f);
+	wide_up /= (real)tan(0.5f);
+	field_of_view = 2.0f * (real)atan(MAX((real)tan(MIN(half_turn, 1.5f)) / (CINEMATIC_THREAT_EDGE * wide_across),
+		(real)tan(MIN(half_rise, 1.5f)) / (CINEMATIC_THREAT_EDGE * wide_up)));
+	field_of_view = PIN(field_of_view, standard, MAX(CINEMATIC_THREAT_WIDEST, standard));
+	playback.threat_field_of_view = field_of_view;
+	playback_view_tangents(field_of_view, &wide_across, &wide_up);
+	half_turn = MIN(half_turn, (real)atan(CINEMATIC_THREAT_EDGE * wide_across));
+	half_rise = MIN(half_rise, (real)atan(CINEMATIC_THREAT_EDGE * wide_up));
+	*wanted_yaw = turn < 0.0f ? -half_turn : half_turn;
+	*wanted_pitch = rise < 0.0f ? -half_rise : half_rise;
+	return TRUE;
+}
+
+/* the tripod's framing, how far off the player its aim is going: the room
+ahead of where they aim, as much of it as they aim across its view; on the
+cinematic camera, whoever hurt them off the screen before that */
+static void playback_free_camera_framing(
+	long unit_index,
+	real focus_yaw,
+	real focus_pitch,
+	real seconds)
+{
+	real wanted_yaw = 0.0f;
+	real wanted_pitch = 0.0f;
+
+	playback.threat_field_of_view = 0.0f;
+	if (unit_index != NONE && playback.watched != NONE)
+	{
+		real_vector3d aim;
+		real tangent_across, tangent_up;
+		real lead;
+
+		playback_view_tangents(playback_free_camera_zoom_wanted(), &tangent_across, &tangent_up);
+		playback_eyes_aim(unit_index, (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(playback.watched), playback_eyes_time(), &aim);
+		/* (their aim leftward of the camera's sight of them: the camera turned
+		left of them, so that they stand right of the middle) */
+		lead = (real)atan(tangent_across * FREE_CAMERA_THIRD *
+			(real)sin(playback_angle_between(focus_yaw, (real)atan2(aim.j, aim.i))));
+		wanted_yaw = lead;
+		if (playback.view == _replay_view_cinematic)
+		{
+			playback_cinematic_threat(unit_index, &aim, focus_yaw, focus_pitch, focus_yaw + lead,
+				&wanted_yaw, &wanted_pitch);
+		}
+	}
+	playback_spring(&playback.free_frame_yaw, &playback.free_frame_yaw_speed, wanted_yaw, seconds, FREE_CAMERA_FRAMING_TIME);
+	playback_spring(&playback.free_frame_pitch, &playback.free_frame_pitch_speed, wanted_pitch, seconds, FREE_CAMERA_FRAMING_TIME);
+}
+
+/* the free camera's aim going after the player's focus and its framing, as a
+tripod's turned by hand: FREE_CAMERA_TRACK_TIME behind it */
+static void playback_free_camera_track(
+	long unit_index,
+	real seconds)
+{
+	real_vector3d to;
+	real across;
+	real yaw, pitch;
+
+	to.i = playback.free_focus.x - playback.free_position.x;
+	to.j = playback.free_focus.y - playback.free_position.y;
+	to.k = playback.free_focus.z - playback.free_position.z;
+	across = (real)sqrt(to.i * to.i + to.j * to.j);
+	if (across < 0.01f && (real)fabs(to.k) < 0.01f)
+		return;
+	yaw = (real)atan2(to.j, to.i);
+	pitch = (real)atan2(to.k, across);
+	playback_free_camera_framing(unit_index, yaw, pitch, seconds);
+	yaw = playback.free_yaw + playback_angle_between(playback.free_yaw, yaw + playback.free_frame_yaw);
+	pitch = PIN(pitch + playback.free_frame_pitch, -FREE_CAMERA_MAXIMUM_PITCH, FREE_CAMERA_MAXIMUM_PITCH);
+	playback_spring(&playback.free_yaw, &playback.free_yaw_speed, yaw, seconds, FREE_CAMERA_TRACK_TIME);
+	playback_spring(&playback.free_pitch, &playback.free_pitch_speed, pitch, seconds, FREE_CAMERA_TRACK_TIME);
+	playback.free_pitch = PIN(playback.free_pitch, -FREE_CAMERA_MAXIMUM_PITCH, FREE_CAMERA_MAXIMUM_PITCH);
+}
+
+/* whether the player (their focus) can be seen from there past the level, its
+scenery and its doors: their middle or either side of it, a post in the way of
+one of them not hiding them */
+static boolean playback_free_camera_sees(
+	real_point3d const *position,
+	real_point3d const *focus)
+{
+	real_vector3d to;
+	real across;
+	short side;
+
+	to.i = focus->x - position->x;
+	to.j = focus->y - position->y;
+	to.k = focus->z - position->z;
+	across = (real)sqrt(to.i * to.i + to.j * to.j);
+	/* (at them: nothing between) */
+	if (across < 0.01f && (real)fabs(to.k) < 0.01f)
+		return TRUE;
+	for (side = 0; side < 3; side++)
+	{
+		struct collision_result collision;
+		real width = side == 0 ? 0.0f : side == 1 ? CINEMATIC_SIGHT_WIDTH : -CINEMATIC_SIGHT_WIDTH;
+		real_vector3d probe = to;
+
+		if (across > 0.01f)
+		{
+			probe.i -= to.j / across * width;
+			probe.j += to.i / across * width;
+		}
+		if (!collision_test_vector(FREE_CAMERA_COLLISION_FLAGS, position, &probe, NONE, &collision))
+			return TRUE;
+	}
+	return FALSE;
+}
+
+/* how much of the arm from the player's focus the camera can have, the
+wall margin kept: along its middle and to either side and above and below of
+its end, so that it is not placed against what it was only just missed by */
+static real playback_free_camera_reach(
+	real_point3d const *focus,
+	real_vector3d const *arm)
+{
+	real length = (real)sqrt(arm->i * arm->i + arm->j * arm->j + arm->k * arm->k);
+	real across = (real)sqrt(arm->i * arm->i + arm->j * arm->j);
+	real reach = length;
+	real_vector3d side;
+	real_vector3d up;
+	short probe;
+
+	if (length < 0.01f)
+		return 0.0f;
+	side.i = across > 0.01f ? -arm->j / across : 1.0f;
+	side.j = across > 0.01f ? arm->i / across : 0.0f;
+	side.k = 0.0f;
+	/* (side, across the arm's direction) */
+	up.i = (side.j * arm->k - side.k * arm->j) / length;
+	up.j = (side.k * arm->i - side.i * arm->k) / length;
+	up.k = (side.i * arm->j - side.j * arm->i) / length;
+	for (probe = 0; probe < 5; probe++)
+	{
+		static real const offsets[5][2] = { { 0.0f, 0.0f }, { 1.0f, 0.0f }, { -1.0f, 0.0f }, { 0.0f, 1.0f }, { 0.0f, -1.0f } };
+		struct collision_result collision;
+		real extra = (length + CAMERA_WALL_MARGIN) / length;
+		real_vector3d vector;
+
+		vector.i = arm->i * extra + (side.i * offsets[probe][0] + up.i * offsets[probe][1]) * FREE_CAMERA_PROBE_RADIUS;
+		vector.j = arm->j * extra + (side.j * offsets[probe][0] + up.j * offsets[probe][1]) * FREE_CAMERA_PROBE_RADIUS;
+		vector.k = arm->k * extra + (side.k * offsets[probe][0] + up.k * offsets[probe][1]) * FREE_CAMERA_PROBE_RADIUS;
+		if (collision_test_vector(FREE_CAMERA_COLLISION_FLAGS, focus, &vector, NONE, &collision))
+		{
+			real along = collision.t * (real)sqrt(vector.i * vector.i + vector.j * vector.j + vector.k * vector.k);
+
+			reach = MIN(reach, along - CAMERA_WALL_MARGIN);
+		}
+	}
+	return MAX(reach, 0.0f);
+}
+
+/* how far the camera goes up for the ground around the player: none under a
+roof; else half of what is around them (so not for a wall on one side of them),
+as high as it is more than FREE_CAMERA_TERRAIN_LEAST above their feet, a
+valley's or a trench's sides otherwise hiding them as they go along it */
+static real playback_free_camera_terrain_rise(
+	real_point3d const *focus,
+	real feet,
+	real distance)
+{
+	struct collision_result collision;
+	real_point3d top = *focus;
+	real_vector3d look = { 0.0f, 0.0f, FREE_CAMERA_TERRAIN_LOOK };
+	real heights[FREE_CAMERA_TERRAIN_DIRECTIONS];
+	short direction;
+	short other;
+
+	if (collision_test_vector(FREE_CAMERA_COLLISION_FLAGS, focus, &look, NONE, &collision))
+		return 0.0f;
+	top.z += FREE_CAMERA_TERRAIN_LOOK;
+	for (direction = 0; direction < FREE_CAMERA_TERRAIN_DIRECTIONS; direction++)
+	{
+		real angle = 2.0f * _pi * direction / FREE_CAMERA_TERRAIN_DIRECTIONS;
+		real height = feet;
+		real_vector3d out;
+
+		out.i = (real)cos(angle) * distance;
+		out.j = (real)sin(angle) * distance;
+		out.k = 0.0f;
+		/* (a wall as high as the look is that high) */
+		if (collision_test_vector(FREE_CAMERA_COLLISION_FLAGS, &top, &out, NONE, &collision))
+			height = top.z;
+		else
+		{
+			real_point3d over = top;
+			real_vector3d down = { 0.0f, 0.0f, feet - top.z };
+
+			over.x += out.i;
+			over.y += out.j;
+			if (collision_test_vector(FREE_CAMERA_COLLISION_FLAGS, &over, &down, NONE, &collision))
+				height = collision.point.z;
+		}
+		for (other = direction; other > 0 && heights[other - 1] < height; other--)
+			heights[other] = heights[other - 1];
+		heights[other] = height;
+	}
+	return PIN(heights[FREE_CAMERA_TERRAIN_DIRECTIONS / 2 - 1] - feet - FREE_CAMERA_TERRAIN_LEAST,
+		0.0f, FREE_CAMERA_TERRAIN_MOST);
+}
+
+/* the tripod placed for the player: behind them as behind's camera is (turned
+as they face), up for the ground around them; or if that leaves too little of
+the arm or no sight of them, the first that does of a crane over them and
+either side of them; or if none does, whichever comes nearest. Looking at them */
+static void playback_free_camera_place(
+	long unit_index)
+{
+	struct object_datum *object = object_get(unit_index);
+	long followed = object->object.parent_object_index != NONE ? object->object.parent_object_index : unit_index;
+	real distance = followed == unit_index ? CAMERA_DISTANCE : CAMERA_VEHICLE_DISTANCE;
+	real height = followed == unit_index ? CAMERA_HEIGHT : CAMERA_VEHICLE_HEIGHT;
+	real across = distance * (real)cos(CAMERA_PITCH);
+	real above = -distance * (real)sin(CAMERA_PITCH);
+	real_point3d focus;
+	real_point3d best;
+	real best_score = -1.0f;
+	real yaw, rise;
+	real_vector3d forward;
+	short place;
+	struct
+	{
+		real turn;
+		real across;
+		real above;
+	} places[4];
+
+	object = object_get(followed);
+	playback_focus(unit_index, &focus);
+	yaw = (real)atan2(object->object.forward.j, object->object.forward.i);
+	playback.yaw = yaw;
+	rise = playback_free_camera_terrain_rise(&focus, focus.z - height, distance);
+	places[0].turn = 0.0f;
+	places[0].across = across;
+	places[0].above = above + rise;
+	places[1].turn = 0.0f;
+	places[1].across = distance * FREE_CAMERA_CRANE_ACROSS;
+	places[1].above = distance * FREE_CAMERA_CRANE_UP + rise;
+	places[2].turn = _pi / 2.0f;
+	places[2].across = across;
+	places[2].above = above + rise;
+	places[3].turn = -_pi / 2.0f;
+	places[3].across = across;
+	places[3].above = above + rise;
+	best = focus;
+	for (place = 0; place < NUMBEROF(places); place++)
+	{
+		real back = yaw + places[place].turn;
+		real_vector3d arm;
+		real_point3d position;
+		real length, reach, score;
+		boolean sees;
+
+		arm.i = -(real)cos(back) * places[place].across;
+		arm.j = -(real)sin(back) * places[place].across;
+		arm.k = places[place].above;
+		length = (real)sqrt(arm.i * arm.i + arm.j * arm.j + arm.k * arm.k);
+		reach = playback_free_camera_reach(&focus, &arm);
+		position.x = focus.x + arm.i * reach / length;
+		position.y = focus.y + arm.j * reach / length;
+		position.z = focus.z + arm.k * reach / length;
+		sees = playback_free_camera_sees(&position, &focus);
+		score = (reach / length) * (sees ? 1.0f : 0.25f);
+		if (score > best_score)
+		{
+			best_score = score;
+			best = position;
+		}
+		if (sees && reach / length >= FREE_CAMERA_LEAST_ARM)
+			break;
+	}
+	forward.i = focus.x - best.x;
+	forward.j = focus.y - best.y;
+	forward.k = focus.z - best.z;
+	/* (the arm all gone: as behind's, looking as they face) */
+	if (forward.i * forward.i + forward.j * forward.j + forward.k * forward.k < 0.0001f)
+	{
+		forward.i = (real)cos(yaw);
+		forward.j = (real)sin(yaw);
+		forward.k = 0.0f;
+	}
+	playback_camera_set(&best, &forward);
 }
 
 /* the cinematic camera's sight of the player: hidden from it by the level,
 its scenery or its doors for CINEMATIC_HIDDEN_TIME (at all, in the
-CINEMATIC_SPAWN_TIME after they spawn), it is placed behind them again, as
-L3 places the free camera */
+CINEMATIC_SPAWN_TIME after they spawn), once the shot has lasted
+CINEMATIC_LEAST_SHOT, it is placed anew, as L3 places the free camera. That
+starts over only when they have been in sight for CINEMATIC_CLEAR_TIME, a run
+past a row of posts counted as the hiding it is */
 static void playback_cinematic_sight(
 	long unit_index,
 	real seconds)
 {
 	real_point3d focus;
-	real_vector3d to;
-	struct collision_result collision;
 
+	playback.cinematic_shot += seconds;
 	playback_focus(unit_index, &focus);
-	to.i = focus.x - playback.free_position.x;
-	to.j = focus.y - playback.free_position.y;
-	to.k = focus.z - playback.free_position.z;
-	if (collision_test_vector(FREE_CAMERA_COLLISION_FLAGS, &playback.free_position, &to, NONE, &collision))
+	if (!playback_free_camera_sees(&playback.free_position, &focus))
 	{
+		playback.cinematic_clear = 0.0f;
 		playback.cinematic_hidden += seconds;
-		if (playback.cinematic_spawned > 0.0f || playback.cinematic_hidden >= CINEMATIC_HIDDEN_TIME)
+		if (playback.cinematic_spawned > 0.0f ||
+			(playback.cinematic_hidden >= CINEMATIC_HIDDEN_TIME && playback.cinematic_shot >= CINEMATIC_LEAST_SHOT))
+		{
 			playback.free_placing = TRUE;
+		}
 	}
 	else
-		playback.cinematic_hidden = 0.0f;
+	{
+		playback.cinematic_clear += seconds;
+		if (playback.cinematic_clear >= CINEMATIC_CLEAR_TIME)
+			playback.cinematic_hidden = 0.0f;
+	}
 	playback.cinematic_spawned = MAX(playback.cinematic_spawned - seconds, 0.0f);
 }
 
@@ -2232,12 +2755,7 @@ static boolean playback_free_camera(
 	{
 		if (unit_index != NONE)
 		{
-			struct object_datum *object = object_get(unit_index);
-			long followed = object->object.parent_object_index != NONE ? object->object.parent_object_index : unit_index;
-
-			object = object_get(followed);
-			playback.yaw = (real)atan2(object->object.forward.j, object->object.forward.i);
-			playback_behind_camera(unit_index, 0.0f);
+			playback_free_camera_place(unit_index);
 		}
 		if (!playback.camera_valid)
 			return FALSE;
@@ -2245,8 +2763,14 @@ static boolean playback_free_camera(
 		playback.free_tracking = TRUE;
 		playback.free_still = TRUE;
 		playback.cinematic_hidden = 0.0f;
+		playback.cinematic_clear = 0.0f;
+		playback.cinematic_shot = 0.0f;
 		playback.cinematic_died = FALSE;
 		playback.cinematic_spawned = 0.0f;
+		playback.threat_field_of_view = 0.0f;
+		playback.free_yaw_speed = playback.free_pitch_speed = playback.free_field_of_view_speed = 0.0f;
+		playback.free_frame_yaw = playback.free_frame_yaw_speed = 0.0f;
+		playback.free_frame_pitch = playback.free_frame_pitch_speed = 0.0f;
 		playback.free_field_of_view = CAMERA_FIELD_OF_VIEW;
 		playback.free_focus_valid = FALSE;
 		playback.free_move_x = playback.free_move_y = playback.free_rise = 0.0f;
@@ -2264,9 +2788,11 @@ static boolean playback_free_camera(
 	if (turn_x != 0.0f || turn_y != 0.0f || playback.touch_yaw != 0.0f || playback.touch_pitch != 0.0f)
 		playback.free_tracking = FALSE;
 	if (playback.free_tracking && playback.free_focus_valid)
-		playback_free_camera_track(seconds);
+		playback_free_camera_track(unit_index, seconds);
 	else
 	{
+		playback.threat_field_of_view = 0.0f;
+		playback.free_yaw_speed = playback.free_pitch_speed = 0.0f;
 		playback.free_yaw += playback.touch_yaw - turn_x * FREE_CAMERA_TURN * seconds;
 		playback.free_pitch = PIN(playback.free_pitch + playback.touch_pitch + turn_y * FREE_CAMERA_TURN * seconds,
 			-FREE_CAMERA_MAXIMUM_PITCH, FREE_CAMERA_MAXIMUM_PITCH);
@@ -2288,6 +2814,8 @@ static boolean playback_free_camera(
 		FREE_CAMERA_SPEED * seconds;
 	move.k = rise * FREE_CAMERA_SPEED * seconds;
 	playback_free_camera_move(&move);
+	if (playback.free_move_x != 0.0f || playback.free_move_y != 0.0f || rise != 0.0f)
+		playback_free_camera_clear();
 	playback_free_camera_zoom(seconds);
 	playback_camera_set(&playback.free_position, &forward);
 	playback.camera.field_of_view = playback.free_field_of_view;

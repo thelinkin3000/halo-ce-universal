@@ -71,6 +71,8 @@ being hit looks and feels like on the clients).
 #include <math.h>
 
 /* damage.c's */
+void network_replay_playback_damage(long object_index, long owner_player_index, long owner_object_index,
+	real_point3d const *origin);
 void damage_replay_player_effect(long player_index, struct damage_data *damage, real total_damage);
 void damage_replay_aftermath(long object_index, struct damage_data *damage, unsigned long being_damaged_flags,
 	real shield_damage, real body_damage, real body_damage_multiplier, short body_part);
@@ -2721,6 +2723,12 @@ void network_damage_handle_events(
 			if (network_objects_client_has(event->object_index) &&
 				object_try_and_get_and_verify_type(event->object_index, _object_mask_unit))
 			{
+				/* (a replay's cinematic camera shows who did it) */
+				if (event->shield_damage > 0.0f || event->body_damage > 0.0f)
+				{
+					network_replay_playback_damage(event->object_index, damage.owner_player_index,
+						damage.owner_object_index, &damage.origin);
+				}
 				/* (what harm it did the units' states bring: no death from here) */
 				damage_replay_aftermath(event->object_index, &damage,
 					event->being_damaged_flags &
