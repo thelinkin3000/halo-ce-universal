@@ -234,6 +234,11 @@ struct host_vk_backend
 	cache every pipeline is made in, saved per driver */
 	VkDescriptorSetLayout draw_set_layout;
 	VkPipelineLayout draw_layout;
+	/* the dynamic lighting's model variants with occlusion: the draws' set, and the fields' (VK_PLASMA_SET) */
+	VkDescriptorSetLayout plasma_set_layout;
+	VkPipelineLayout plasma_layout;
+	/* the images they read (VK_COMMAND_PLASMA_OCCLUSION) */
+	uint32_t plasma_images[2];
 	VkPipelineCache pipeline_cache;
 
 	/* the built-in pipeline of clears of some channels only */
@@ -403,7 +408,9 @@ void host_vk_services_start(void);
 void host_vk_pipeline_command(const struct vk_command_pipeline *command);
 /* the pipeline for a draw's two shader handles and state, queued if new: the VkPipeline once it is ready, else VK_NULL_HANDLE
 (counted as skipped); B.lock is held */
-VkPipeline host_vk_pipeline_find(uint32_t vertex_handle, uint32_t pixel_handle, const struct vk_pipeline_state *state);
+VkPipeline host_vk_pipeline_find(uint32_t vertex_handle, uint32_t pixel_handle, const struct vk_pipeline_state *state,
+	int plasma_occlusion);
+void host_vk_plasma_occlusion_command(const struct vk_command_plasma_occlusion *command);
 /* the statistics line's part, and the services' tick (a frame): the cache is saved every five minutes if pipelines
 were made since */
 void host_vk_services_statistics(char *text, size_t size);

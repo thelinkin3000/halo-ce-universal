@@ -185,8 +185,17 @@ struct nv2a_pixel_shader_key
 	port/switch/guest/dk_shaders.c: deko3d never sets it; padded to whole
 	words, which the OpenGL and Vulkan renderers hash the key by) */
 	unsigned char ce_meter_channels;
-	unsigned char ce_meter_padding[3];
+	/* The dynamic lighting's model variant (XGPU_PLASMA_MODEL_*; 0 for the
+	stock shader, whose key and hash this leaves as they were). The Vulkan
+	renderer's: under deko3d only vertex shaders have the variant. */
+	unsigned char plasma_model;
+	unsigned char ce_meter_padding[2];
 };
+
+/* what a model lighting program's variant adds (plasma_model_shader.c):
+the selected lights' soft falloff, and the visibility fields too */
+#define XGPU_PLASMA_MODEL_FALLOFF 1u
+#define XGPU_PLASMA_MODEL_OCCLUSION 2u
 
 char *nv2a_pixel_shader_to_glsl(const struct nv2a_pixel_shader_key *key);
 

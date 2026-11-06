@@ -35,6 +35,7 @@ clip-space position again.
 
 #include "xgpu.h"
 #include "vk_shaders.h"
+#include "plasma_model_shader.h"
 
 #include <stdlib.h>
 
@@ -189,10 +190,16 @@ static const char shader_helpers[] =
 	"}\n";
 
 char *nv2a_vk_vertex_shader_to_glsl(const uint32_t *instructions, unsigned long instruction_count,
-	unsigned long packed_attribute_mask, const struct nv2a_vertex_lighting *lighting)
+	unsigned long packed_attribute_mask, const struct nv2a_vertex_lighting *lighting, unsigned int plasma)
 {
 	struct xgpu_text text = { 0 };
 	unsigned long index;
+	struct nv2a_vertex_lighting plasma_lighting;
+
+	/* (only a program with both point lights, lit for each vertex: the pixel shader lights the others) */
+	if (plasma && (lighting || !nv2a_vertex_shader_lighting((const DWORD *)instructions, instruction_count, &plasma_lighting) ||
+		plasma_lighting.lights != 2))
+		plasma = 0;
 
 	xgpu_text_append(&text,
 		"#version 450\n"
@@ -204,11 +211,23 @@ char *nv2a_vk_vertex_shader_to_glsl(const uint32_t *instructions, unsigned long 
 		"{\n"
 		"\tlayout(offset = %d) vec4 viewport_scale;\n"
 		"\tlayout(offset = %d) vec4 viewport_offset;\n"
-		"\tlayout(offset = %d) vec4 point_and_screen;\n"
-		"};\n",
+		"\tlayout(offset = %d) vec4 point_and_screen;\n",
 		VK_SHADER_SET, VK_BINDING_VERTEX_CONSTANTS, VK_VERTEX_CONSTANTS_C, VK_VERTEX_CONSTANT_COUNT,
 		VK_SHADER_SET, VK_BINDING_VERTEX_PARAMETERS, VK_VERTEX_PARAMETERS_VIEWPORT_SCALE,
 		VK_VERTEX_PARAMETERS_VIEWPORT_OFFSET, VK_VERTEX_PARAMETERS_POINT_AND_SCREEN);
+	if (plasma)
+		xgpu_text_append(&text,
+			"\tlayout(offset = %d) vec4 plasma_model_parameters;\n"
+			"\tlayout(offset = %d) vec4 plasma_occ_transform[2];\n",
+			VK_VERTEX_PARAMETERS_PLASMA_MODEL, VK_VERTEX_PARAMETERS_PLASMA_OCC_TRANSFORM);
+	xgpu_text_append(&text, "};\n");
+	if (plasma & XGPU_PLASMA_MODEL_OCCLUSION)
+		xgpu_text_append(&text,
+			"layout(set = %d, binding = %d) uniform sampler3D plasma_occ_texture0;\n"
+			"layout(set = %d, binding = %d) uniform sampler3D plasma_occ_texture1;\n",
+			VK_PLASMA_SET, VK_PLASMA_BINDING_TEXTURE0, VK_PLASMA_SET, VK_PLASMA_BINDING_TEXTURE1);
+	if (plasma)
+		plasma_model_emit_visibility(&text, plasma);
 	xgpu_text_append(&text,
 		"layout(location = %d) out vec4 xD0;\n"
 		"layout(location = %d) out vec4 xD1;\n"
@@ -284,6 +303,8 @@ char *nv2a_vk_vertex_shader_to_glsl(const uint32_t *instructions, unsigned long 
 		xgpu_text_append(&text, "\tA = "); operand(&text, instruction, 'A', relative); xgpu_text_append(&text, ";\n");
 		xgpu_text_append(&text, "\tB = "); operand(&text, instruction, 'B', relative); xgpu_text_append(&text, ";\n");
 		xgpu_text_append(&text, "\tC = "); operand(&text, instruction, 'C', relative); xgpu_text_append(&text, ";\n");
+		if (plasma)
+			plasma_model_emit_vertex(&text, instruction, index, &plasma_lighting);
 
 		switch (mac)
 		{

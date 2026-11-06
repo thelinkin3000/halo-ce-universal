@@ -51,6 +51,7 @@ enum
 	VK_COMMAND_HUD_IMAGE,
 	VK_COMMAND_STATIC_FREE,
 	VK_COMMAND_DATA_PATCH,
+	VK_COMMAND_PLASMA_OCCLUSION,
 };
 
 /* a surface's kind, as the host makes its image */
@@ -336,8 +337,21 @@ struct vk_command_draw
 	struct vk_data_ref index_data;
 	int32_t vertex_offset;
 	uint32_t count;
-	/* (the visibility tests are VK_COMMAND_VISIBILITY_*: the host knows a draw is in one from them) */
-	uint32_t reserved;
+	/* (the visibility tests are VK_COMMAND_VISIBILITY_*: the host knows a draw is in one from them)
+	1: its shaders are a model variant with occlusion (XGPU_PLASMA_MODEL_OCCLUSION), which reads the images
+	VK_COMMAND_PLASMA_OCCLUSION named last; 0 for every other draw */
+	uint32_t plasma_occlusion;
+};
+
+/* ---------- the dynamic lighting's visibility fields
+
+The images the model variants with occlusion read (VK_PLASMA_SET), until they change. Sent only for such a draw, so that
+nothing else's stream or binding changes. */
+
+struct vk_command_plasma_occlusion
+{
+	struct vk_command_header header;
+	uint32_t images[2];
 };
 
 /* Vulkan's formats, the numbers the vertex input uses */

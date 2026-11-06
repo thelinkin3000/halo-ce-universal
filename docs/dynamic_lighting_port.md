@@ -136,6 +136,14 @@ There are eight phases, and each one leaves all three platforms shippable with t
 - [ ] No model disappears or goes dark while an enhanced shader compiles.
 - [ ] The GulchCE Android symptoms are checked explicitly: first-person geometry and model brightness.
 
+**Status (Phase 3):** written for both backends and checked as far as this machine can, none of it on a GPU. The first three criteria stay open because they ask about pictures and running key counts, but here is what was checked:
+
+- Every real vertex program goes through the Vulkan and deko3d generators in `test_plasma_model_shader.py`, and every variant compiles with glslang and UAM. That shows the GLSL is valid, not that it looks right.
+- Stock shader text is byte-identical to the tree before this port for all 67 real programs, packed and unpacked, lit and unlit, on both backends, by a one-off comparison (not a kept test). So stock hashes and caches don't move.
+- `test_plasma_model_fallback.py` runs the real Vulkan `draw_shaders` against a fake shader service, with negative controls: no selected light never asks for the variant, a variant that is compiling or failed draws stock, and a draw doesn't spend the frame waiting for a variant. deko3d's choice is only checked by reading its order in the source.
+
+**Decided (occlusion bindings before Phase 6):** build the shader without them. `XGPU_PLASMA_MODEL_FALLOFF` variants have no samplers and `plasma_visibility` returns 1, and only `XGPU_PLASMA_MODEL_OCCLUSION` variants bind fields. So Light Occlusion off costs no sampler or field, and no fallback texture is needed before Phase 6.
+
 ### Phase 4: Remaining sources and the menu
 
 **Enable:** Weapon Glow, Plasma Prong Lighting, Shield Emitters, Vehicle Lights, World Emitters and the Covenant profiles.
@@ -214,21 +222,21 @@ The GL images aren't shown, because they link the inert stub and never run this 
 
 ### Model lighting: add to both backends
 
-GulchCE's version is OpenGL-specific: `plasma_occlusion_gl.c`, `plasma_model_shader.c` and about 300 lines in `d3d8_gl.c`. Each step below has to be done twice, in `*_vk.c` and `*_dk.c`.
+GulchCE's version is OpenGL-specific: `plasma_occlusion_gl.c`, `plasma_model_shader.c` and about 300 lines in `d3d8_gl.c`. What was built differs from the first plan in these ways, each so that stock draws stay as they were:
 
 | Step | GulchCE reference | Vulkan | deko3d |
 | --- | --- | --- | --- |
-| Shader key bit for enhanced variants | `key->plasma_model` in `d3d8_gl.c:4176` | Pixel and vertex keys in `d3d8_vk.c` | Same in `d3d8_dk.c`, plus the shared key files |
-| Vertex and pixel GLSL | `plasma_model_emit_*` | `nv2a_vsh_vk.c`, `nv2a_psh_vk.c` (`model_lighting`) | `nv2a_vsh_dk.c`, `nv2a_psh_dk.c` |
-| Uniforms (`plasma_model_slots`, `plasma_occ_enabled`, two transforms) | `glGetUniformLocation` per program | Add to the `VK_PIXEL_PARAMETERS_*` block | Add to the matching parameter block in `dk_shaders.h` |
-| Two `sampler3D` occlusion bindings | GL units 6 and 7 | Add after `VK_BINDING_TEXTURE3` in `vk_shaders.h` | Add after `DK_BINDING_TEXTURE3` in `dk_shaders.h` |
-| Binding per draw | `plasma_occlusion_bind_model` | New function in `d3d8_vk.c` | New function in `d3d8_dk.c` |
+| Variant in the shader key | `key->plasma_model` in `d3d8_gl.c:4176` | `key->plasma_model`, taken from the key's padding so its layout and stock hashes don't change, and a marker in the vertex hash | Bits above the attributes in `dk_vertex_key.packed_mask`. Stock keys and `DK_KEY_FORMAT` don't change |
+| Vertex and pixel GLSL | `plasma_model_emit_*` | `nv2a_vsh_vk.c` for vertex lighting, `nv2a_psh_vk.c` (`model_lighting`) for per-pixel | `nv2a_vsh_dk.c` only: deko3d has no per-pixel lighting, so every model is vertex lit |
+| Uniforms | `glGetUniformLocation` per program | Appended to the vertex and pixel parameter blocks, declared only by variants | Appended to the vertex parameter block, declared only by variants |
+| Two `sampler3D` occlusion bindings | GL units 6 and 7 | A second descriptor set (`VK_PLASMA_SET`) with its own pipeline layout, used only by occlusion variants, so stock pipelines keep their layout and cache entries | Vertex-stage bindings 0 and 1, bound only once a field exists |
+| Binding per draw | `plasma_occlusion_bind_model` | `VK_COMMAND_PLASMA_OCCLUSION` when the images change, and a flag in `vk_command_draw`'s reserved word | `DK_COMMAND_PLASMA_OCCLUSION` when the images change |
 
-Until Phase 6, the occlusion bindings still need a valid texture, or the shader has to be built without them. Decide this during Phase 3.
+The cost to stock draws is that each parameter block is 48 bytes longer, which every put carries (vertex 48 to 96 on both backends, pixel 720 to 768 on Vulkan). The alternative was another uniform binding for every draw. A 3D image's upload barrier on Vulkan also now covers the vertex stage. Stock 3D images are uploaded only when a map loads.
 
 ### Three differences from desktop
 
-**A missing shader skips the draw.** GulchCE compiles enhanced variants lazily and stalls for a moment. Both of our backends skip a draw until its shader is ready, so a model could vanish the first time a light touches it. While the enhanced variant compiles, draw with the stock variant instead. GulchCE's separate failure state, `plasma_lighting_failed`, can serve as a model.
+**A missing shader skips the draw.** GulchCE compiles enhanced variants lazily and stalls for a moment. Checked against the code: Vulkan's `shader_handle` first compiles for up to a frame's time per frame (`host_vk_shader_make`) and skips the draw after that, and deko3d queues it and skips, except that it waits within a map's first seconds (`stall_allowed`). So a model could vanish the first time a light touches it. The variant now compiles in the background, and the draw uses the stock shader until it's ready. A failed variant stays stock (`plasma_failed` on Vulkan; deko3d's service keeps answering 0). Inside that deko3d window, a variant can still wait as any shader does. On Vulkan a new pipeline is still made at the draw, as every pipeline is.
 
 **Rewriting textures costs page faults.** Our backends spot rewritten textures through the memory watch, which uses `mprotect` and a `SIGSEGV` handler per 4 KiB page on Android, with its own version in `host_memory.c` on Switch and PS5. Eight fields with three 16 KiB textures each is 96 pages per full rewrite. GulchCE already skips byte-identical uploads, but moving lights will change them. If this shows up in measurements, add a direct upload path for feature-owned textures.
 

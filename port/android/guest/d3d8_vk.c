@@ -30,6 +30,8 @@ host's Vulkan backend (port/android/host/host_vk.c).
 #include "port_config.h"
 #include "vk_commands.h"
 #include "vk_shaders.h"
+#include "plasma_model_shader.h"
+#include "plasma_occlusion.h"
 #include "vk_device.h"
 #include "hud_hires.h"
 
@@ -739,6 +741,8 @@ struct vertex_shader_object
 	struct nv2a_vertex_lighting lighting;
 	/* a shader lit for each pixel failed to compile: lit as the vertex shader lights it from then on */
 	BOOL lighting_failed;
+	/* the dynamic lighting's model variant failed to compile: this program draws as stock from then on */
+	BOOL plasma_failed;
 	/* the fixed-function pipeline's (fixed_function_program): its GLSL is nv2a_vk_fixed_function_glsl's */
 	BOOL fixed_function;
 };
@@ -2831,7 +2835,7 @@ static void dump_vertex_shader(const char *folder, const struct vertex_shader_ob
 	dump_vertex_count++;
 	snprintf(what, sizeof(what), "vertex shader %lu, %lu instructions, packed mask %lx", program->id,
 		program->instruction_count, mask);
-	text = nv2a_vk_vertex_shader_to_glsl((const uint32_t *)program->instructions, program->instruction_count, mask, NULL);
+	text = nv2a_vk_vertex_shader_to_glsl((const uint32_t *)program->instructions, program->instruction_count, mask, NULL, 0);
 	snprintf(name, sizeof(name), "vs_%lu_%lx.vert", program->id, mask);
 	dump_text(folder, name, text, what);
 	free(text);
@@ -2909,9 +2913,11 @@ static struct shader_entry *shader_entries[2][SHADER_BUCKETS];
 static BOOL shader_import_logged;
 
 /* the handle of a shader, asking the host (and sending its GLSL when the host does not know it); 0 if it is not ready,
-and *failed set if it never will be. lit: a vertex shader that hands its lighting on (nv2a_vk_vertex_shader_to_glsl) */
+and *failed set if it never will be. lit: a vertex shader that hands its lighting on (nv2a_vk_vertex_shader_to_glsl);
+plasma: a vertex shader of the dynamic lighting's model variant. wait: 0 not to make it for this draw, only to have it
+made: a draw with a stock shader to fall back on has no need to spend the frame's time */
 static uint32_t shader_handle(uint32_t stage, uint64_t hash, const struct vertex_shader_object *program,
-	unsigned long mask, BOOL lit, const struct nv2a_pixel_shader_key *key, BOOL *failed)
+	unsigned long mask, BOOL lit, unsigned int plasma, const struct nv2a_pixel_shader_key *key, BOOL wait, BOOL *failed)
 {
 	struct shader_entry **bucket = &shader_entries[stage][hash % SHADER_BUCKETS];
 	struct shader_entry *entry;
@@ -2961,7 +2967,7 @@ static uint32_t shader_handle(uint32_t stage, uint64_t hash, const struct vertex
 		char *glsl = stage == VK_SHADER_STAGE_VERTEX && program->fixed_function ? nv2a_vk_fixed_function_glsl() :
 			stage == VK_SHADER_STAGE_VERTEX ?
 			nv2a_vk_vertex_shader_to_glsl((const uint32_t *)program->instructions, program->instruction_count, mask,
-				lit ? &program->lighting : NULL) :
+				lit ? &program->lighting : NULL, plasma) :
 			nv2a_vk_pixel_shader_to_glsl(key);
 
 		if (glsl)
@@ -2973,7 +2979,7 @@ static uint32_t shader_handle(uint32_t stage, uint64_t hash, const struct vertex
 	}
 	/* queued or compiling: made now, for this draw, while the frame has time for it (the host's host_vk_shader_make);
 	else the draw is left out until a compile thread has made it */
-	if (status != VK_SHADER_STATUS_FAILED && status != VK_SHADER_STATUS_NOT_READY)
+	if (wait && status != VK_SHADER_STATUS_FAILED && status != VK_SHADER_STATUS_NOT_READY)
 	{
 		handle = host_vk_shader_make(stage, hash);
 		if (handle)
@@ -2986,8 +2992,9 @@ static uint32_t shader_handle(uint32_t stage, uint64_t hash, const struct vertex
 }
 
 /* a vertex shader's identity (vk_shaders.h): the generator's version, the program's hash and its packed mask, and for one
-that hands its lighting on (lit), a word saying so (the unlit ones' are as they always were) */
-static uint64_t vertex_shader_hash(const struct vertex_shader_object *program, unsigned long mask, BOOL lit)
+that hands its lighting on (lit), or is the dynamic lighting's model variant (plasma), a word saying so (the stock ones' are
+as they always were) */
+static uint64_t vertex_shader_hash(const struct vertex_shader_object *program, unsigned long mask, BOOL lit, unsigned int plasma)
 {
 	uint32_t generator = VK_SHADER_GENERATOR_VERSION, mask32 = (uint32_t)mask;
 	uint64_t hash;
@@ -3001,7 +3008,80 @@ static uint64_t vertex_shader_hash(const struct vertex_shader_object *program, u
 
 		hash = vk_hash_mix(hash, marker, sizeof(marker));
 	}
+	if (plasma)
+	{
+		static const char marker[] = "plasma";
+
+		hash = vk_hash_mix(hash, marker, sizeof(marker));
+		hash = vk_hash_mix(hash, &plasma, sizeof(plasma));
+	}
 	return hash;
+}
+
+/* ---------- the dynamic lighting's model variant
+
+Only a draw of a program with both point lights, with a light of the feature's in one of them, asks for it. It is compiled
+in the background, and meanwhile (and for good, if it fails) the draw uses the stock shaders, so that a model never leaves
+the screen because a light has touched it. Every other draw's key, hash and shaders are as they were. */
+
+static struct
+{
+	/* the variant this draw uses (XGPU_PLASMA_MODEL_*; 0 for stock) */
+	unsigned int bits;
+	float parameters[4], transforms[2][4];
+	uint32_t images[2];
+} plasma_draw;
+static uint32_t plasma_images_told[2];
+
+/* what the draw would use, if its shaders are ready: the slots selected, and the fields bound for them */
+static void plasma_draw_prepare(const struct vertex_shader_object *program, BOOL immediate)
+{
+	unsigned int mask;
+	int slot;
+
+	plasma_draw.bits = 0;
+	if (immediate || program->lighting.lights != 2 || program->plasma_failed)
+		return;
+	mask = plasma_model_lighting_mask();
+	if (!mask)
+		return;
+	memset(&plasma_draw, 0, sizeof(plasma_draw));
+	plasma_draw.bits = XGPU_PLASMA_MODEL_FALLOFF;
+	for (slot = 0; slot < 2; slot++)
+	{
+		const DWORD *field;
+
+		plasma_draw.parameters[slot] = (mask & (1u << slot)) ? 1.0f : 0.0f;
+		field = plasma_occlusion_model_texture(slot, plasma_draw.transforms[slot]);
+		if (field)
+		{
+			struct xgpu_texture_description description;
+			int kind;
+			uint32_t id = vk_texture_get(field, NULL, &kind, &description);
+
+			if (id && kind == VK_IMAGE_3D)
+			{
+				plasma_draw.images[slot] = id;
+				plasma_draw.parameters[2 + slot] = 1.0f;
+				plasma_draw.bits |= XGPU_PLASMA_MODEL_OCCLUSION;
+			}
+		}
+	}
+	/* (a slot with no field does not read its image, but has to have one to bind) */
+	if (plasma_draw.bits & XGPU_PLASMA_MODEL_OCCLUSION)
+	{
+		if (!plasma_draw.images[0])
+			plasma_draw.images[0] = plasma_draw.images[1];
+		if (!plasma_draw.images[1])
+			plasma_draw.images[1] = plasma_draw.images[0];
+	}
+}
+
+static void plasma_variant_failed(struct vertex_shader_object *program)
+{
+	platform_log("GPU: vertex shader %lu's dynamic lighting variant failed to compile (refer to the host's shader log): "
+		"stock from now on", program->id);
+	program->plasma_failed = TRUE;
 }
 
 /* a pixel shader's: the generator's version and the key's bytes */
@@ -3027,6 +3107,7 @@ static BOOL draw_shaders(BOOL immediate, struct nv2a_pixel_shader_key *key, unsi
 	if (device.fixed_function ? !immediate : !program || !device.vertex_shader || !program->instructions)
 		return FALSE;
 	pixel_key_make(key);
+	plasma_draw_prepare(program, immediate);
 	mask = immediate ? 0 : device.vertex_shader->packed_mask;
 	*mask_out = mask;
 	if (folder)
@@ -3044,9 +3125,31 @@ static BOOL draw_shaders(BOOL immediate, struct nv2a_pixel_shader_key *key, unsi
 		BOOL failed = FALSE;
 
 		key->per_pixel_lighting = (unsigned char)program->lighting.lights;
-		*vertex = shader_handle(VK_SHADER_STAGE_VERTEX, vertex_shader_hash(program, mask, TRUE), program, mask, TRUE, NULL,
-			&failed);
-		*pixel = shader_handle(VK_SHADER_STAGE_PIXEL, pixel_shader_hash(key), NULL, 0, FALSE, key, &failed);
+		if (plasma_draw.bits)
+		{
+			BOOL plasma_failed = FALSE;
+
+			key->plasma_model = (unsigned char)plasma_draw.bits;
+			*pixel = shader_handle(VK_SHADER_STAGE_PIXEL, pixel_shader_hash(key), NULL, 0, FALSE, 0, key, FALSE, &plasma_failed);
+			if (plasma_failed)
+				plasma_variant_failed(program);
+			key->plasma_model = 0;
+			if (*pixel)
+			{
+				*vertex = shader_handle(VK_SHADER_STAGE_VERTEX, vertex_shader_hash(program, mask, TRUE, 0), program, mask, TRUE, 0,
+					NULL, TRUE, &failed);
+				if (*vertex)
+				{
+					key->plasma_model = (unsigned char)plasma_draw.bits;
+					return TRUE;
+				}
+			}
+			plasma_draw.bits = 0;
+			failed = FALSE;
+		}
+		*vertex = shader_handle(VK_SHADER_STAGE_VERTEX, vertex_shader_hash(program, mask, TRUE, 0), program, mask, TRUE, 0, NULL,
+			TRUE, &failed);
+		*pixel = shader_handle(VK_SHADER_STAGE_PIXEL, pixel_shader_hash(key), NULL, 0, FALSE, 0, key, TRUE, &failed);
 		if (!failed)
 			return TRUE;
 		platform_log("GPU: vertex shader %lu cannot be lit for each pixel here (refer to the host's shader log): "
@@ -3057,9 +3160,21 @@ static BOOL draw_shaders(BOOL immediate, struct nv2a_pixel_shader_key *key, unsi
 	{
 		BOOL failed = FALSE;
 
-		*vertex = shader_handle(VK_SHADER_STAGE_VERTEX, vertex_shader_hash(program, mask, FALSE), program, mask, FALSE, NULL,
-			&failed);
-		*pixel = shader_handle(VK_SHADER_STAGE_PIXEL, pixel_shader_hash(key), NULL, 0, FALSE, key, &failed);
+		if (plasma_draw.bits)
+		{
+			BOOL plasma_failed = FALSE;
+
+			*vertex = shader_handle(VK_SHADER_STAGE_VERTEX, vertex_shader_hash(program, mask, FALSE, plasma_draw.bits), program,
+				mask, FALSE, plasma_draw.bits, NULL, FALSE, &plasma_failed);
+			if (plasma_failed)
+				plasma_variant_failed(program);
+			if (!*vertex)
+				plasma_draw.bits = 0;
+		}
+		if (!plasma_draw.bits)
+			*vertex = shader_handle(VK_SHADER_STAGE_VERTEX, vertex_shader_hash(program, mask, FALSE, 0), program, mask, FALSE, 0, NULL,
+				TRUE, &failed);
+		*pixel = shader_handle(VK_SHADER_STAGE_PIXEL, pixel_shader_hash(key), NULL, 0, FALSE, 0, key, TRUE, &failed);
 	}
 	return TRUE;
 }
@@ -3426,6 +3541,13 @@ static void uniforms_make(struct vk_command_draw *draw, const float texture_scal
 	parameters.point_and_screen[0] = D3D__RenderState[D3DRS_POINTSIZE] ? dword_to_float(D3D__RenderState[D3DRS_POINTSIZE]) : 1.0f;
 	parameters.point_and_screen[1] = (float)UI_OFFSET;
 	parameters.point_and_screen[2] = parameters.point_and_screen[3] = 0.0f;
+	/* (the variant's alone: zero for every other draw) */
+	memset(parameters.plasma_model, 0, sizeof(parameters.plasma_model) + sizeof(parameters.plasma_occ_transform));
+	if (plasma_draw.bits)
+	{
+		memcpy(parameters.plasma_model, plasma_draw.parameters, sizeof(parameters.plasma_model));
+		memcpy(parameters.plasma_occ_transform, plasma_draw.transforms, sizeof(parameters.plasma_occ_transform));
+	}
 	if (!puts_this_frame.parameters_valid || !words_equal(&puts_this_frame.parameters, &parameters, sizeof(parameters)))
 	{
 		puts_this_frame.parameters = parameters;
@@ -3436,6 +3558,11 @@ static void uniforms_make(struct vk_command_draw *draw, const float texture_scal
 	draw->vertex_parameters = puts_this_frame.parameters_ref;
 
 	pixel_parameters_make(&pixel, texture_scale, lit);
+	if (plasma_draw.bits)
+	{
+		memcpy(pixel.plasma_model, plasma_draw.parameters, sizeof(pixel.plasma_model));
+		memcpy(pixel.plasma_occ_transform, plasma_draw.transforms, sizeof(pixel.plasma_occ_transform));
+	}
 	if (!puts_this_frame.pixel_valid || !words_equal(&puts_this_frame.pixel, &pixel, sizeof(pixel)))
 	{
 		puts_this_frame.pixel = pixel;
@@ -3965,6 +4092,17 @@ static void draw_make(D3DPRIMITIVETYPE type, unsigned long count, BOOL immediate
 	textures_make(&record, &key, texture_scale);
 	record.vertex_shader = vertex;
 	record.pixel_shader = pixel;
+	if (plasma_draw.bits & XGPU_PLASMA_MODEL_OCCLUSION)
+	{
+		record.plasma_occlusion = 1;
+		if (memcmp(plasma_images_told, plasma_draw.images, sizeof(plasma_images_told)))
+		{
+			struct vk_command_plasma_occlusion *command = stream_command(VK_COMMAND_PLASMA_OCCLUSION, sizeof(*command));
+
+			memcpy(command->images, plasma_draw.images, sizeof(command->images));
+			memcpy(plasma_images_told, plasma_draw.images, sizeof(plasma_images_told));
+		}
+	}
 	raster_state_make(&record, targets_told.color.kind != VK_SURFACE_NONE, has_depth);
 	record.state.topology = topology_of(type);
 

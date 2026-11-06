@@ -88,6 +88,7 @@ DYNAMIC_LIGHTING_GAME_SOURCES = {
     "muzzle_lighting.c", "needler_lighting.c", "plasma_falloff.c", "plasma_lighting.c",
     "plasma_occlusion_stub.c", "rocket_lighting.c",
 }
+DYNAMIC_LIGHTING_PLATFORM_SOURCES = {"plasma_model_shader.c"}
 # the Vulkan probe's shader compiler (port/android/VULKAN.md, phase 0, step 4)
 GLSLANG_TAG = "16.6.0"
 GLSLANG_DIR = THIRD_PARTY / "glslang"
@@ -602,7 +603,9 @@ def generate_guest_image(n: Writer, sln: Any, config: Dict[str, Any], *, arch: G
     for source in sorted((LINUX_DIR / "src").glob("*.c")):
         if source.name.startswith("posix_") or source.name in guest_host_only:
             continue
-        if source.name == "updater.c" and updater_cflags:
+        if source.name in DYNAMIC_LIGHTING_PLATFORM_SOURCES:
+            dynamic_lighting_objects.append(guest_object(source, platform_cflags))
+        elif source.name == "updater.c" and updater_cflags:
             objects.append(guest_object(source, f"{platform_cflags} {updater_cflags}"))
         else:
             objects.append(guest_object(source, platform_cflags))

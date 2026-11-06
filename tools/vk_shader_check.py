@@ -125,7 +125,7 @@ def expected_layout(defines):
     d = defines
     vertex_constants = ("vertex_constants", d["VK_BINDING_VERTEX_CONSTANTS"], d["VK_VERTEX_CONSTANTS_SIZE"],
                         {"c": d["VK_VERTEX_CONSTANTS_C"]})
-    vertex_parameters = ("vertex_parameters", d["VK_BINDING_VERTEX_PARAMETERS"], d["VK_VERTEX_PARAMETERS_SIZE"],
+    vertex_parameters = ("vertex_parameters", d["VK_BINDING_VERTEX_PARAMETERS"], d["VK_VERTEX_PARAMETERS_STOCK_SIZE"],
                          {"viewport_scale": d["VK_VERTEX_PARAMETERS_VIEWPORT_SCALE"],
                           "viewport_offset": d["VK_VERTEX_PARAMETERS_VIEWPORT_OFFSET"],
                           "point_and_screen": d["VK_VERTEX_PARAMETERS_POINT_AND_SCREEN"]})

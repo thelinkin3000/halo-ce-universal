@@ -2224,6 +2224,10 @@ static void submit_run(uint32_t commands, uint32_t size)
 			if (header->size >= sizeof(struct vk_command_texture_data))
 				host_vk_texture_data_command((const struct vk_command_texture_data *)header);
 			break;
+		case VK_COMMAND_PLASMA_OCCLUSION:
+			if (header->size >= sizeof(struct vk_command_plasma_occlusion))
+				host_vk_plasma_occlusion_command((const struct vk_command_plasma_occlusion *)header);
+			break;
 		case VK_COMMAND_DATA_PATCH:
 			if (header->size >= sizeof(struct vk_command_data_patch) &&
 				host_vk_data_patch_command((const struct vk_command_data_patch *)header, header->size))

@@ -223,6 +223,14 @@ static void barrier(VkCommandBuffer command, struct host_vk_image *image, VkImag
 
 	host_vk_barrier_scope(image->layout, to, &source_stage, &barrier.srcAccessMask, &destination_stage,
 		&barrier.dstAccessMask);
+	/* a 3D image can be read by a vertex shader too (the dynamic lighting's fields, VK_PLASMA_SET) */
+	if (image->kind == VK_IMAGE_3D)
+	{
+		if (image->layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+			source_stage |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+		if (to == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+			destination_stage |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+	}
 	barrier.oldLayout = image->layout;
 	barrier.newLayout = to;
 	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
