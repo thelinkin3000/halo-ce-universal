@@ -1,0 +1,68 @@
+CREDITS
+
+SLIPSTREAMCE
+A fork of OpenCE, built from the decompilation of Halo: Combat Evolved for Xbox.
+- This project: GNU AGPL 3.0 or later. Commits and releases up to Build 106: CC0 1.0.
+- On the PS5, the title as a whole: GNU GPL 3.0 or later, as PS5_Vulkan requires.
+Source and license texts: github.com/thelinkin3000/SlipstreamCE
+
+THE GAME'S ORIGINS
+- OpenCE, the upstream project: AGPL 3.0 or later
+- punpckhdq/halo, the decompilation: AGPL 3.0
+- bnunu/halo-1, its continuation: CC0 1.0
+
+ART AND DATA
+- puginatux: the menu assets, the logo and the Switch's shared shader keys
+- MrBruh: the high-res HUD, from reference photos by Aerocatia
+- saulob: the controller's A, B, X and Y buttons
+- pugzysixtyfour: the menus' mouse cursor
+- Kenney, Input Prompts: CC0 1.0
+- AL2009man, Gamepad Asset Pack: MIT
+- Lucide Icons and Contributors, Lucide: ISC
+
+FONTS
+- Overpass, The Overpass Project Authors: SIL OFL 1.1
+- OpenCE font, respaced from Newtown: SIL OFL 1.1
+- Newtown, Roger White: public domain
+
+IN EVERY BUILD
+- Expat, Thai Open Source Software Center Ltd, Clark Cooper and the Expat maintainers: MIT
+- jsmn, Serge A. Zaitsev: MIT
+- kcp, Lin Wei: MIT
+- miniupnpc, Thomas Bernard: BSD 3-Clause
+- Monocypher, Loup Vaillant, Michael Savage and Fabio Scotoni: BSD 2-Clause or CC0 1.0
+- musl, Rich Felker and others: MIT
+- Opus, Xiph.Org, Skype Limited, Octasic, Jean-Marc Valin, Timothy B. Terriberry, CSIRO, Gregory Maxwell, Mark Borgerding, Erik de Castro Lopo, Mozilla and Amazon: BSD 3-Clause
+- stb_truetype and stb_vorbis, Sean Barrett: MIT or public domain
+- tomlc17, CK Tan: MIT
+- zlib, Jean-loup Gailly and Mark Adler: zlib License
+
+ON ANDROID
+- SDL3, Sam Lantinga: zlib License
+- glslang, The Khronos Group and others: BSD 3-Clause, MIT and others
+- libadrenotools and linkernsbypass, Billy Laws: BSD 2-Clause
+- GT7 tone mapping, Polyphony Digital Inc.: MIT
+- Mbed TLS, the Mbed TLS Contributors: Apache 2.0 or GPL 2.0 or later
+- Turnip, part of Mesa, downloaded when chosen, from K11MCH1's builds: MIT
+
+ON THE NINTENDO SWITCH
+- SDL2, Sam Lantinga, devkitPro's port: zlib License
+- libnx, the switchbrew authors: ISC
+- deko3d, fincs: zlib License
+- UAM, fincs: zlib License, with Mesa's code under MIT
+- Mesa and libdrm_nouveau, devkitPro's ports: MIT
+- NanoSVG, Mikko Mononen: zlib License
+- QR Code generator, Project Nayuki: MIT
+
+ON THE PLAYSTATION 5
+- PS5_Vulkan, mpereiraesaa: GPL 3.0 or later
+- PS5_PayloadSDK and its public payload SDK: GPL 3.0 or later
+- Mesa (RADV): MIT, with parts under Apache 2.0, BSL 1.0, SGI-B 2.0, Berkeley SoftFloat and, for the kernel's headers, GPL 2.0 with the Linux Syscall Note
+- SDL2, Sam Lantinga: zlib License
+- GNU libiconv: LGPL 2.1 or later
+- glslang, The Khronos Group and others: BSD 3-Clause, MIT and others
+- Mbed TLS, the Mbed TLS Contributors: Apache 2.0 or GPL 2.0 or later
+- QR Code generator, Project Nayuki: MIT
+- SMAA, Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro and Diego Gutierrez: MIT
+
+Halo is a trademark of Microsoft. This project is not affiliated with or endorsed by Microsoft, Bungie or 343 Industries.

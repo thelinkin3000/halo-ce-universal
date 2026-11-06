@@ -6,7 +6,7 @@
 - the Switch's (port/switch/art/icon.jpg, 256x256) and the PS5's (port/ps5/sce_sys/icon0.png, 512x512);
 - the desktop builds' window icon (port/assets/icon/slipstream-icon-256.png), the Windows executable's
   (port/windows/slipstream-icon.ico) and the web page's (port/web/site/icons): each the logo whole;
-- Settings' About picture (the logo's artwork alone, white);
+- Settings' About and Credits pictures (the logo's artwork alone, white);
 - the launcher icon of the Android app of the new package name (ar.com.slipstreamce):
 
 The logo is white artwork on a flat colour, so that colour is the adaptive icon's background layer, and the artwork,
@@ -38,6 +38,11 @@ ABOUT_PICTURE = ROOT / "port/assets/menus/ce/shell/main_menu/settings_select/pla
 # (x, y, side) in the frame: the middle of the panel it is drawn in, across
 # and between the panel's top and the description's text
 ABOUT_SQUARE = (92, 15, 380)
+# Credits' picture (port_settings.py's _credits_screen): 256 units at 4 pixels
+# a unit, the artwork 160 units across in its middle
+CREDITS_PICTURE = ROOT / "port/assets/menus/ce/port/main_menu/settings_select/player_setup/player_profile_edit/credits/credits_logo.png"
+CREDITS_PICTURE_SIZE = 1024
+CREDITS_SIDE = 640
 LAYER_DP = 108
 SAFE_DP = 66
 DENSITIES = {"mdpi": 1.0, "hdpi": 1.5, "xhdpi": 2.0, "xxhdpi": 3.0, "xxxhdpi": 4.0}
@@ -105,6 +110,12 @@ def main() -> None:
     alpha.paste(fitted, (x, y))
     white = Image.new("L", about, 255)
     Image.merge("RGBA", (white, white, white, alpha)).save(ABOUT_PICTURE, optimize=True)
+    fitted = art.crop((left, top, left + box, top + box)).resize((CREDITS_SIDE, CREDITS_SIDE), Image.LANCZOS)
+    alpha = Image.new("L", (CREDITS_PICTURE_SIZE, CREDITS_PICTURE_SIZE), 0)
+    alpha.paste(fitted, ((CREDITS_PICTURE_SIZE - CREDITS_SIDE) // 2, (CREDITS_PICTURE_SIZE - CREDITS_SIDE) // 2))
+    white = Image.new("L", alpha.size, 255)
+    CREDITS_PICTURE.parent.mkdir(parents=True, exist_ok=True)
+    Image.merge("RGBA", (white, white, white, alpha)).save(CREDITS_PICTURE, optimize=True)
     print(f"background {colour}; artwork radius {radius:.0f} px of the logo, scaled {scale:.3f}")
 
 

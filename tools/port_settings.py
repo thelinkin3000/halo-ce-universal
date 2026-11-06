@@ -45,8 +45,8 @@ QUIT_ITEM_PLACE = main_menu_item_place("quit_game")
 # the Theater (port/linux/REPLAY.md): the replays a host records, its rows
 # (_theater)
 THEATER = "main_menu/theater"
-# the profile settings' rows, in order: the PC version's nine and Gameplay,
-# second to last, all in the nine's room (78 to About's top, 342) so the
+# the profile settings' rows, in order: the PC version's nine, Gameplay before
+# About and Credits after it, all in the nine's room (78 to About's top, 342) so the
 # last one's 32-unit highlight stays beside the description panel. Each is
 # moved from its tag's top (the second number; Gameplay's is ours) by its
 # list's child offset (tools/ce_menus.py's CHILD_OFFSETS)
@@ -54,7 +54,7 @@ PROFILE_ROWS = [("name_profile_item", 78), ("controller_setup_profile_item", 111
                 ("gamepads_profile_item", 144), ("mouse_settings_profile_item", 177),
                 ("audio_settings_profile_item", 210), ("video_settings_profile_item", 243),
                 ("network_settings_profile_item", 277), ("color_profile_item", 277),
-                ("gameplay_profile_item", None), ("about_item", 310)]
+                ("gameplay_profile_item", None), ("about_item", 310), ("credits_item", None)]
 PROFILE_ROWS_TOP = 78
 PROFILE_ROWS_LAST_TOP = 342
 
@@ -811,6 +811,7 @@ STRING_OVERRIDES = {
          "ps5": "SlipstreamCE, a fork of OpenCE.\\nHalo: Combat Evolved on your\\nPS5\\nProfile:",
          "android": "SlipstreamCE, a fork of OpenCE.\\nHalo: Combat Evolved on your\\nAndroid Device\\nProfile:",
          "desktop web": "SlipstreamCE, a fork of OpenCE.\\nHalo: Combat Evolved on your\\nComputer\\nProfile:"},
+        "The people behind the game, and\\nthe licenses of what it uses.\\n\\nProfile:",
     ],
 }
 
@@ -1403,7 +1404,7 @@ STRING_OVERRIDES.update({
 # menu_tags.c's map_strings); the inserted strings (STRING_INSERTS) are the
 # port's own, the rest of their lists the PC version's
 OVERRIDE_ORIGINALS = {
-    f"{PE}/profile_edit_descriptions": [0, None, None, None, None, None, None, 7, None, None],
+    f"{PE}/profile_edit_descriptions": [0, None, None, None, None, None, None, 7, None, None, None],
     f"{MT}/multiplayer_options": [0, 1, 2, 3, None, 5, None, None],
     f"{MT}/multiplayer_option_descriptions": [0, 1, None, None, 4, None, 5],
     "main_menu/gametype_select/var_gametype_banks": [0, None, 2],
@@ -1433,6 +1434,13 @@ NEWS_ROWS = 12
 # its widget's corner: the panel is its texels 49 to 556 across and 104 to
 # 349 down), placed in the middle of the screen
 NEWS_PANEL = (17, 14)
+# the settings' Credits: the news's window (its panel, rows and buttons), the
+# text narrower, on the left, and the logo on the right (tools/slipstream_icon.py's
+# CREDITS_PICTURE, its artwork CREDITS_LOGO units across in the middle of its
+# 256), both filled and scrolled by menu_functions.c ("port credits ...")
+CREDITS = f"{PE}/credits"
+CREDITS_LINE_WIDTH = 310
+CREDITS_LOGO = 160
 
 
 # changes to the PC version's widgets (by our names): attributes set, all
@@ -1540,6 +1548,7 @@ WIDGET_PATCHES = {
     # places, PROFILE_ROWS)
     f"{PE}/profile_edit_select_list": {"insert_before": {
         f"{PE}/about_item": [f'<child widget="{PE}/gameplay_profile_item"/>'],
+        f"{PE}/profile_edit_button_bar": [f'<child widget="{PE}/credits_item"/>'],
     }},
     # (straight to their screens: no "checking for updates" dialog, which
     # asked the PC version's servers)
@@ -2803,6 +2812,55 @@ def _news_screen() -> list:
     return lines
 
 
+def _credits_screen() -> list:
+    """Settings' Credits row, after About, and its screen: the news window's
+    panel, with port/assets/credits.txt scrolled in NEWS_ROWS lines on the
+    left and the logo on the right. Up and down scroll a line, left and right
+    a page, B or Back close it"""
+    base = CREDITS
+    left, top = NEWS_PANEL[0] + 49, NEWS_PANEL[1] + 104
+    text_left = left + 16
+    # (the logo in the middle of what the text leaves of the panel, and of the
+    # rows' height; its picture's margin is transparent)
+    logo_x = round((text_left + CREDITS_LINE_WIDTH + left + 507) / 2) - 128
+    logo_y = top + 12 + round(18 * NEWS_ROWS / 2) - 128
+    close = ['<on event="b" run="port credits close"/>', '<on event="back" run="port credits close"/>']
+    scroll = [f'<on event="{event}" run="port credits up"/>' for event in ("up", "stick_up", "right_stick_up")]
+    scroll += [f'<on event="{event}" run="port credits down"/>' for event in ("down", "stick_down", "right_stick_down")]
+    scroll += ['<on event="left" run="port credits page up"/>', '<on event="right" run="port credits page down"/>']
+    lines = _widget(f"{PE}/credits_item", [("type", "text"), ("left", 51), ("top", profile_row_top("credits_item")),
+                                           ("width", 232), ("height", 32), ("bitmap", "bitmaps/list_item_bkd"),
+                                           ("text", "CREDITS"), ("font", "ui\\large_ui"), ("color", "#FF2896FF"),
+                                           ("text_x", 13), ("text_y", 5)],
+                    [f'<on event="a" open="{base}/credits_screen"/>',
+                     f'<on event="start" open="{base}/credits_screen"/>',
+                     '<on event="left_mouse" run="mouse emit accept event"/>'])
+    lines += _widget(f"{base}/credits_screen", [("width", 640), ("height", 480), ("bitmap", "bitmaps/gradient_big")],
+                     ['<data input="port credits update"/>', '<on event="created" run="port credits init"/>', *close,
+                      *scroll, f'<child widget="{NEWS}/news_panel" x="{NEWS_PANEL[0]}" y="{NEWS_PANEL[1]}"/>',
+                      f'<child widget="{base}/credits_title" x="{left}" y="{top - 34}"/>',
+                      f'<child widget="{base}/credits_logo" x="{logo_x}" y="{logo_y}"/>',
+                      *[f'<child widget="{base}/credits_line" x="{text_left}" y="{top + 12 + 18 * row}"/>'
+                        for row in range(NEWS_ROWS)],
+                      # (the news's buttons, in its places: _news_screen)
+                      f'<child widget="{base}/dpad_up_butn_credits" x="{left + 164}" y="{top + 253 + 7}"/>',
+                      f'<child widget="{NEWS}/news_scroll_text" x="{left + 198}" y="{top + 253}"/>',
+                      f'<child widget="{base}/dpad_down_butn_credits" x="{left + 254}" y="{top + 253 + 7}"/>',
+                      f'<child widget="{base}/b_butn_credits_back" x="{left + 300}" y="{top + 253}"/>',
+                      f'<child widget="{NEWS}/news_back_text" x="{left + 300}" y="{top + 253}"/>'])
+    lines += _widget(f"{base}/credits_title", [("type", "text"), ("controller", 1), ("width", 507), ("height", 30),
+                                              ("font", "ui\\large_ui"), ("color", "#FF2896FF")], [])
+    lines += _widget(f"{base}/credits_logo", [("width", 256), ("height", 256), ("bitmap", f"{base}/credits_logo")], [])
+    lines += _widget(f"{base}/credits_line", [("type", "text"), ("controller", 1), ("width", CREDITS_LINE_WIDTH),
+                                             ("height", 18), ("font", "ui\\small_ui"), ("color", "#FFFFFFFF"),
+                                             ("text_flags", "no_focus_test")], [])
+    for name in ("up", "down"):
+        lines += _widget(f"{base}/dpad_{name}_butn_credits", [("width", 16), ("height", 16),
+                                                              ("bitmap", f"bitmaps/arrow_sm_{name}")], [])
+    lines += _widget(f"{base}/b_butn_credits_back", [("width", 16), ("height", 20)], [])
+    return lines
+
+
 def _invite_qr_screen() -> list:
     """(the Switch's) Server Setup's invite link as a QR code, for a phone
     to read: its own screen, opened by the invite row's A (menu_functions.c's
@@ -2840,6 +2898,8 @@ def multiplayer_files() -> dict:
         PROFILE.replace("/", ".") + ".port.xml": head + _hint_widgets(PROFILE, PROFILE_HINTS) + ["</menus>", ""],
         # (and the main menu's news)
         NEWS.replace("/", ".") + ".xml": head + _news_screen() + ["</menus>", ""],
+        # (and the settings' Credits)
+        CREDITS.replace("/", ".") + ".xml": head + _credits_screen() + ["</menus>", ""],
         "main_menu/settings_select/multiplayer_setup/item_options_edit".replace("/", ".") + ".port.xml": head + _item_options_extras() + ["</menus>", ""],
         PLAYER_EDIT.replace("/", ".") + ".port.xml": head + _player_options_extras() + ["</menus>", ""],
         TEAMPLAY_EDIT.replace("/", ".") + ".port.xml": head + _teamplay_options_extras() + ["</menus>", ""],

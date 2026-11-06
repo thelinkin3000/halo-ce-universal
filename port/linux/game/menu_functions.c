@@ -7961,6 +7961,8 @@ or X close it. */
 /* (tools/embed_assets.py's: the notes, ASCII ending in a NUL, and their size) */
 extern const unsigned int halo_news_words[];
 extern const unsigned int halo_news_size;
+/* (and the settings' Credits, port/assets/credits.txt) */
+extern const unsigned int halo_credits_words[];
 
 /* the window's rows (port_settings.py's NEWS_ROWS), the most wrapped lines
 kept, and the longest */
@@ -7970,7 +7972,8 @@ kept, and the longest */
 /* the characters a line holds until its font is known */
 #define NEWS_LINE_CHARACTERS 80
 
-static struct
+/* a window of wrapped text, a row at a time: the news's, and Credits' */
+struct news_window
 {
 	/* the wrapped lines, and the font and width they were wrapped to (NONE
 	before one was drawn) */
@@ -7985,7 +7988,10 @@ static struct
 	long first;
 	/* the title: the release's (its first line) */
 	char title[64];
-} news_screen = { { { 0 } }, 0, NONE, 0, NONE, 0, 0, { 0 } };
+};
+
+static struct news_window news_screen = { { { 0 } }, 0, NONE, 0, NONE, 0, 0, { 0 } };
+static struct news_window credits_screen = { { { 0 } }, 0, NONE, 0, NONE, 0, 0, { 0 } };
 
 /* the build's own release notes, asked of GitHub the first time the window
 opens, on a thread of its own (news_fetch_main): the release named after the
@@ -8156,7 +8162,7 @@ static char const *news_text(void)
 }
 
 /* whether `count` characters of text fit across a row */
-static boolean news_fits(char const *text, long count)
+static boolean news_fits(struct news_window const *window, char const *text, long count)
 {
 	static real_argb_color const white = { 1.0f, 1.0f, 1.0f, 1.0f };
 	wchar_t wide[NEWS_LINE_LENGTH];
@@ -8165,7 +8171,7 @@ static boolean news_fits(char const *text, long count)
 
 	if (count >= NEWS_LINE_LENGTH)
 		return FALSE;
-	if (news_screen.font == NONE || news_screen.width <= 0)
+	if (window->font == NONE || window->width <= 0)
 		return count <= NEWS_LINE_CHARACTERS;
 	for (index = 0; index < count; index++)
 		wide[index] = (wchar_t)(unsigned char)text[index];
@@ -8174,35 +8180,34 @@ static boolean news_fits(char const *text, long count)
 	bounds.y0 = 0;
 	bounds.x1 = 0x3FFF;
 	bounds.y1 = 480;
-	draw_string_set_draw_mode(news_screen.font, NONE, 0, 0, &white);
+	draw_string_set_draw_mode(window->font, NONE, 0, 0, &white);
 	draw_unicode_string_compute_bounds(&bounds, wide, &text_bounds, &cursor);
-	return MAX(text_bounds.x1, cursor.x0) - bounds.x0 <= news_screen.width - MOD_TEXT_MARGIN;
+	return MAX(text_bounds.x1, cursor.x0) - bounds.x0 <= window->width - MOD_TEXT_MARGIN;
 }
 
-static void news_add_line(char const *text, long count)
+static void news_add_line(struct news_window *window, char const *text, long count)
 {
-	if (news_screen.count >= NEWS_MAXIMUM_LINES)
+	if (window->count >= NEWS_MAXIMUM_LINES)
 		return;
 	count = MIN(count, NEWS_LINE_LENGTH - 1);
-	memcpy(news_screen.lines[news_screen.count], text, (size_t)count);
-	news_screen.lines[news_screen.count][count] = 0;
-	news_screen.count++;
+	memcpy(window->lines[window->count], text, (size_t)count);
+	window->lines[window->count][count] = 0;
+	window->count++;
 }
 
-/* the notes wrapped to the rows: their first line the title, each other a
+/* the text wrapped to the rows: its first line the title, each other a
 paragraph wrapped at its spaces, a list item's ("- ...") lines after its
 first indented under its text */
-static void news_wrap(void)
+static void news_wrap(struct news_window *window, char const *text)
 {
-	char const *text = news_text();
 	char const *end = text + strlen(text);
 	char const *line_end;
 	boolean first = TRUE;
 
-	news_screen.count = 0;
-	news_screen.title[0] = 0;
-	news_screen.wrapped_font = news_screen.font;
-	news_screen.wrapped_width = news_screen.width;
+	window->count = 0;
+	window->title[0] = 0;
+	window->wrapped_font = window->font;
+	window->wrapped_width = window->width;
 	for (; text < end; text = line_end + (line_end < end))
 	{
 		char const *paragraph = text;
@@ -8214,19 +8219,19 @@ static void news_wrap(void)
 			line_end = end;
 		if (first)
 		{
-			long length = MIN((long)(line_end - text), (long)sizeof(news_screen.title) - 1);
+			long length = MIN((long)(line_end - text), (long)sizeof(window->title) - 1);
 
-			memcpy(news_screen.title, text, (size_t)length);
-			news_screen.title[length] = 0;
+			memcpy(window->title, text, (size_t)length);
+			window->title[length] = 0;
 			first = FALSE;
 			continue;
 		}
 		/* (the blank line after the title) */
-		if (!news_screen.count && line_end == text)
+		if (!window->count && line_end == text)
 			continue;
 		if (line_end == text)
 		{
-			news_add_line("", 0);
+			news_add_line(window, "", 0);
 			continue;
 		}
 		while (paragraph < line_end)
@@ -8239,7 +8244,7 @@ static void news_wrap(void)
 			memcpy(line, indent, (size_t)indent_length);
 			memcpy(line + indent_length, paragraph, (size_t)length);
 			/* (as much as fits, cut at a space when there is one) */
-			while (cut > 1 && !news_fits(line, indent_length + cut))
+			while (cut > 1 && !news_fits(window, line, indent_length + cut))
 			{
 				long space = cut - 1;
 
@@ -8247,7 +8252,7 @@ static void news_wrap(void)
 					space--;
 				cut = space > 0 ? space : cut - 1;
 			}
-			news_add_line(line, indent_length + cut);
+			news_add_line(window, line, indent_length + cut);
 			if (!indent_length && paragraph == text && paragraph[0] == '-' && paragraph[1] == ' ')
 			{
 				strcpy(indent, "  ");
@@ -8261,11 +8266,36 @@ static void news_wrap(void)
 }
 
 /* the top line, kept within the lines */
-static void news_scroll(long by)
+static void news_scroll(struct news_window *window, long by)
 {
-	long last = MAX(0, news_screen.count - NEWS_ROWS);
+	long last = MAX(0, window->count - NEWS_ROWS);
 
-	news_screen.first = PIN(news_screen.first + by, 0, last);
+	window->first = PIN(window->first + by, 0, last);
+}
+
+/* a window's rows, the widgets named line, from its top line */
+static void news_rows_update(struct widget_instance *screen, struct news_window const *window, char const *line_name)
+{
+	wchar_t text[NEWS_LINE_LENGTH];
+	long row;
+
+	for (row = 0; row < NEWS_ROWS; row++)
+	{
+		struct widget_instance *line = named(screen, line_name, row);
+		long index = window->first + row;
+		long character;
+
+		if (!line)
+			continue;
+		text[0] = 0;
+		if (index < window->count)
+		{
+			for (character = 0; window->lines[index][character] && character < NEWS_LINE_LENGTH - 1; character++)
+				text[character] = (wchar_t)(unsigned char)window->lines[index][character];
+			text[character] = 0;
+		}
+		text_set_length(line, text, NEWS_LINE_LENGTH);
+	}
 }
 
 /* "port news init" */
@@ -8283,7 +8313,7 @@ static boolean news_initialize(void)
 			news_fetch.done = TRUE;
 	}
 	news_screen.first = 0;
-	news_wrap();
+	news_wrap(&news_screen, news_text());
 	return TRUE;
 }
 
@@ -8310,26 +8340,10 @@ static void news_update(struct widget_instance *screen)
 	}
 	if (news_screen.font != news_screen.wrapped_font || news_screen.width != news_screen.wrapped_width)
 	{
-		news_wrap();
-		news_scroll(0);
+		news_wrap(&news_screen, news_text());
+		news_scroll(&news_screen, 0);
 	}
-	for (row = 0; row < NEWS_ROWS; row++)
-	{
-		struct widget_instance *line = named(screen, "news_line", row);
-		long index = news_screen.first + row;
-		long character;
-
-		if (!line)
-			continue;
-		text[0] = 0;
-		if (index < news_screen.count)
-		{
-			for (character = 0; news_screen.lines[index][character] && character < NEWS_LINE_LENGTH - 1; character++)
-				text[character] = (wchar_t)(unsigned char)news_screen.lines[index][character];
-			text[character] = 0;
-		}
-		text_set_length(line, text, NEWS_LINE_LENGTH);
-	}
+	news_rows_update(screen, &news_screen, "news_line");
 	{
 		char title[96];
 
@@ -8363,7 +8377,35 @@ static void news_update(struct widget_instance *screen)
 	}
 }
 
-/* "port news close" (B, Back, X): back to the main menu */
+/* "port credits init" */
+static boolean credits_initialize(void)
+{
+	credits_screen.first = 0;
+	news_wrap(&credits_screen, (char const *)halo_credits_words);
+	return TRUE;
+}
+
+/* "port credits update": wrapped again once the rows' font is known, then
+the rows and the title */
+static void credits_update(struct widget_instance *screen)
+{
+	wchar_t text[NEWS_LINE_LENGTH];
+	long index;
+
+	if (credits_screen.font != credits_screen.wrapped_font || credits_screen.width != credits_screen.wrapped_width)
+	{
+		news_wrap(&credits_screen, (char const *)halo_credits_words);
+		news_scroll(&credits_screen, 0);
+	}
+	news_rows_update(screen, &credits_screen, "credits_line");
+	for (index = 0; credits_screen.title[index] && index < (long)NUMBEROF(text) - 1; index++)
+		text[index] = (wchar_t)(unsigned char)credits_screen.title[index];
+	text[index] = 0;
+	text_set(named(screen, "credits_title", 0), text);
+}
+
+/* "port news close" (B, Back, X) and "port credits close" (B, Back): back to
+where it was opened from */
 static boolean news_close(struct widget_instance *widget, boolean *widget_deleted)
 {
 	ui_widget_port_go_back(widget);
@@ -8400,6 +8442,13 @@ void menu_functions_text_box_drawn(struct widget_instance *widget, rectangle2d c
 	{
 		news_screen.font = draw_string_get_font();
 		news_screen.width = (short)(bounds->x1 - bounds->x0);
+		return;
+	}
+	/* (and Credits') */
+	if (widget->name && !strcmp(widget->name, "credits_line"))
+	{
+		credits_screen.font = draw_string_get_font();
+		credits_screen.width = (short)(bounds->x1 - bounds->x0);
 		return;
 	}
 	/* (the Mods screen's texts: the fonts and widths their lines are
@@ -10356,7 +10405,23 @@ boolean pc_menu_event_function_invoke(
 		{
 			long by = strstr(name, "page") ? NEWS_ROWS - 1 : 1;
 
-			news_scroll(strstr(name, "up") ? -by : by);
+			news_scroll(&news_screen, strstr(name, "up") ? -by : by);
+			return TRUE;
+		}
+		else if (!strcmp(name, "port credits init"))
+		{
+			return credits_initialize();
+		}
+		else if (!strcmp(name, "port credits close"))
+		{
+			return news_close(widget, widget_deleted);
+		}
+		else if (!strcmp(name, "port credits up") || !strcmp(name, "port credits down") ||
+			!strcmp(name, "port credits page up") || !strcmp(name, "port credits page down"))
+		{
+			long by = strstr(name, "page") ? NEWS_ROWS - 1 : 1;
+
+			news_scroll(&credits_screen, strstr(name, "up") ? -by : by);
 			return TRUE;
 		}
 		else if (!strcmp(name, "ss start game"))
@@ -10650,6 +10715,8 @@ void pc_menu_game_data_function_invoke(
 		server_settings_update(widget);
 	else if (!strcmp(name, "port news update"))
 		news_update(widget);
+	else if (!strcmp(name, "port credits update"))
+		credits_update(widget);
 	else if (!strcmp(name, "port password update"))
 		password_screen_update(widget);
 	else if (!strcmp(name, "gamespy screen update"))

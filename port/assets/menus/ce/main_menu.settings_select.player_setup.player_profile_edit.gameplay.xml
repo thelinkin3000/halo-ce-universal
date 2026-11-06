@@ -71,7 +71,7 @@
 		<string text="How an AI's body falls:\nthe animation, a loose ragdoll, or Halo 2's."/>
 		<string text="The game's messages at the bottom left: never,\nin the menus only, or in games too."/>
 	</strings>
-	<widget name="main_menu/settings_select/player_setup/player_profile_edit/gameplay_profile_item" type="text" left="51" top="313" width="232" height="32" bitmap="bitmaps/list_item_bkd" text="GAMEPLAY" font="ui\large_ui" color="#FF2896FF" text_x="13" text_y="5">
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/gameplay_profile_item" type="text" left="51" top="289" width="232" height="32" bitmap="bitmaps/list_item_bkd" text="GAMEPLAY" font="ui\large_ui" color="#FF2896FF" text_x="13" text_y="5">
 		<on event="a" open="main_menu/settings_select/player_setup/player_profile_edit/gameplay/gameplay_settings_screen"/>
 		<on event="start" open="main_menu/settings_select/player_setup/player_profile_edit/gameplay/gameplay_settings_screen"/>
 		<on event="left_mouse" run="mouse emit accept event"/>

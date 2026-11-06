@@ -2283,8 +2283,9 @@ static void player_profile_edit_select_menu_update_extended_description(
 		/* port: Gameplay is the row before About (tools/port_settings.py's
 		PROFILE_ROWS). The picture's frames are one for each of the nine
 		rows the PC version had, About's last, and then Gameplay's: About,
-		the row after Gameplay, shows its own */
+		the row after Gameplay, shows its own, and Credits, the last, About's */
 		picture_index = child && child->name && !strcmp(child->name, "gameplay_profile_item") ? 9 :
+			child && child->name && !strcmp(child->name, "credits_item") ? 8 :
 			index > 8 ? index - 1 : index;
 		description_child->next->animation.current_frame_index = picture_index;
 	}

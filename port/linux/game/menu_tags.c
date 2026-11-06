@@ -405,6 +405,9 @@ static char const *const port_function_names[] =
 	/* (the main menu's news: menu_functions.c) */
 	"port news init", "port news close", "port news up", "port news down", "port news page up",
 	"port news page down",
+	/* (the settings' Credits: menu_functions.c) */
+	"port credits init", "port credits close", "port credits up", "port credits down", "port credits page up",
+	"port credits page down",
 	/* (the main menu's Theater: menu_functions.c) */
 	"port theater record", "port theater export", "port theater import", "port theater watch",
 	"port theater delete",
@@ -445,6 +448,8 @@ static char const *const port_game_data_input_names[] =
 	"port playlist edit desc",
 	/* (the main menu's news) */
 	"port news update",
+	/* (the settings' Credits) */
+	"port credits update",
 	/* (the main menu's Theater) */
 	"port theater update",
 	/* (Gamepad Setup's BUTTON LAYOUT, and the profile settings' picture of
@@ -2148,13 +2153,14 @@ the profile itself. */
 
 /* Change Name's keyboard and Change Color's pictures are ui.map's, Network
 Setup is for others' games (shown in co-op: its pages, pause_network_patch),
-and About is nothing to it */
+and About and Credits are nothing to it */
 static char const *const pause_settings_hidden_items[] =
 {
 	"main_menu/settings_select/player_setup/player_profile_edit/name_profile_item",
 	PAUSE_NETWORK_ITEM,
 	"main_menu/settings_select/player_setup/player_profile_edit/color_profile_item",
 	"main_menu/settings_select/player_setup/player_profile_edit/about_item",
+	"main_menu/settings_select/player_setup/player_profile_edit/credits_item",
 };
 
 #if defined(HALO_SWITCH) || defined(HALO_PS5)

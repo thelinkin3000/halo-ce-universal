@@ -54,6 +54,8 @@ FONT_ASSETS = Path("port/assets/fonts")
 FONT_LIST = FONT_ASSETS / "fonts.json"
 MENU_ASSETS = Path("port/assets/menus")
 MENU_LIST = MENU_ASSETS / "menus.json"
+# the settings' Credits (menu_functions.c's credits screen)
+CREDITS_TEXT = ROOT / "port/assets/credits.txt"
 # SMAA's files and the names port/linux/src/xgpu_post.c declares them by
 SMAA_ASSETS = Path("port/third_party/smaa")
 SMAA_FILES = (("SMAA.hlsl", "xgpu_smaa_shader"), ("area_tex.zlib", "xgpu_smaa_area_texture"),
@@ -229,7 +231,7 @@ def hud_assets_build(n: Any, prefix: str, output: Path) -> List[Path]:
         description=f"{prefix.upper()} EMBED $out",
     )
     n.build(outputs=output, rule=f"{prefix}_embed_assets",
-            implicit=[Path("tools/embed_assets.py"), *inputs, *news_inputs()])
+            implicit=[Path("tools/embed_assets.py"), CREDITS_TEXT.relative_to(ROOT), *inputs, *news_inputs()])
     return [output]
 
 
@@ -371,6 +373,12 @@ def main() -> None:
     lines.extend(words(data))
     lines.append("};")
     lines.append(f"const unsigned int halo_news_size = {len(data) - 1};")
+    # the settings' Credits (port/assets/credits.txt), ASCII ending in a NUL
+    data = CREDITS_TEXT.read_text(encoding="ascii").replace("\r", "").encode("ascii") + b"\0"
+    lines.append("")
+    lines.append("const unsigned int halo_credits_words[] = {")
+    lines.extend(words(data))
+    lines.append("};")
     lines.append("")
     # SMAA's shader, as text a GLSL compiler takes (ASCII, ending in a NUL),
     # and its lookup textures (xgpu_post.c); each of size 0 that the

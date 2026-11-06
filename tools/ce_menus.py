@@ -102,7 +102,7 @@ CHILD_OFFSETS = {
      "ui\\shell\\main_menu\\multiplayer_type_select\\multiplayer_type_gametypes_item"): (0, 358),
     ("ui\\shell\\main_menu\\multiplayer_type_select\\multiplayer_type_select_screen",
      "ui\\shell\\main_menu\\blueline"): (64, 349),
-    # the profile settings' rows, ten in the nine's room
+    # the profile settings' rows, eleven in the nine's room
     # (port_settings.PROFILE_ROWS)
     **{("ui\\shell\\main_menu\\settings_select\\player_setup\\player_profile_edit\\profile_edit_select_list",
         f"ui\\shell\\main_menu\\settings_select\\player_setup\\player_profile_edit\\{row}"):
@@ -755,6 +755,12 @@ def main() -> None:
     lines.append(art.port_picture("mods/status", port_settings.mod_status_frames(ROOT / "port/assets/icons/lucide")))
     lines.append(art.port_picture("mods/status_small",
                                   port_settings.mod_status_frames(ROOT / "port/assets/icons/lucide", 16)))
+    # (Credits' logo, already drawn: tools/slipstream_icon.py)
+    logo = f"{port_settings.CREDITS}/credits_logo"
+    art.pngs.append(f"ce/port/{logo}.png")
+    lines += [f"\t<bitmap{attributes([('name', logo)])}>",
+              f"\t\t<frame{attributes([('png', f'ce/port/{logo}.png'), ('width', 256), ('height', 256)])}/>",
+              "\t</bitmap>"]
     # (the button-layout overlay's controllers, AL2009man's Gamepad Asset
     # Pack's, beside the pictures that draw them: port_settings.CONTROLLERS)
     (MENUS / "port_svg/controllers").mkdir(parents=True, exist_ok=True)

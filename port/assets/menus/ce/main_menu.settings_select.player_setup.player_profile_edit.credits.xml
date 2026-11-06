@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The port's multiplayer screens, in the PC version's style (tools/port_settings.py) -->
+<menus>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/credits_item" type="text" left="51" top="342" width="232" height="32" bitmap="bitmaps/list_item_bkd" text="CREDITS" font="ui\large_ui" color="#FF2896FF" text_x="13" text_y="5">
+		<on event="a" open="main_menu/settings_select/player_setup/player_profile_edit/credits/credits_screen"/>
+		<on event="start" open="main_menu/settings_select/player_setup/player_profile_edit/credits/credits_screen"/>
+		<on event="left_mouse" run="mouse emit accept event"/>
+	</widget>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/credits/credits_screen" width="640" height="480" bitmap="bitmaps/gradient_big">
+		<data input="port credits update"/>
+		<on event="created" run="port credits init"/>
+		<on event="b" run="port credits close"/>
+		<on event="back" run="port credits close"/>
+		<on event="up" run="port credits up"/>
+		<on event="stick_up" run="port credits up"/>
+		<on event="right_stick_up" run="port credits up"/>
+		<on event="down" run="port credits down"/>
+		<on event="stick_down" run="port credits down"/>
+		<on event="right_stick_down" run="port credits down"/>
+		<on event="left" run="port credits page up"/>
+		<on event="right" run="port credits page down"/>
+		<child widget="main_menu/news/news_panel" x="17" y="14"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/credits/credits_title" x="66" y="84"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/credits/credits_logo" x="354" y="110"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/credits/credits_line" x="82" y="130"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/credits/credits_line" x="82" y="148"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/credits/credits_line" x="82" y="166"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/credits/credits_line" x="82" y="184"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/credits/credits_line" x="82" y="202"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/credits/credits_line" x="82" y="220"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/credits/credits_line" x="82" y="238"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/credits/credits_line" x="82" y="256"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/credits/credits_line" x="82" y="274"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/credits/credits_line" x="82" y="292"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/credits/credits_line" x="82" y="310"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/credits/credits_line" x="82" y="328"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/credits/dpad_up_butn_credits" x="230" y="378"/>
+		<child widget="main_menu/news/news_scroll_text" x="264" y="371"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/credits/dpad_down_butn_credits" x="320" y="378"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/credits/b_butn_credits_back" x="366" y="371"/>
+		<child widget="main_menu/news/news_back_text" x="366" y="371"/>
+	</widget>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/credits/credits_title" type="text" controller="1" width="507" height="30" font="ui\large_ui" color="#FF2896FF">
+	</widget>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/credits/credits_logo" width="256" height="256" bitmap="main_menu/settings_select/player_setup/player_profile_edit/credits/credits_logo">
+	</widget>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/credits/credits_line" type="text" controller="1" width="310" height="18" font="ui\small_ui" color="#FFFFFFFF" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/credits/dpad_up_butn_credits" width="16" height="16" bitmap="bitmaps/arrow_sm_up">
+	</widget>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/credits/dpad_down_butn_credits" width="16" height="16" bitmap="bitmaps/arrow_sm_down">
+	</widget>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/credits/b_butn_credits_back" width="16" height="20">
+	</widget>
+</menus>
