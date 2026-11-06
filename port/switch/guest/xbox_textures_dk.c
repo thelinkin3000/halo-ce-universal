@@ -406,7 +406,8 @@ static void decode_level(const struct xgpu_texture_description *description, uns
 }
 /* ---------- the 3D textures' reach (dk_texture_reach) */
 
-#define REACH_LIMIT 16
+/* (the map's, the dynamic lighting's falloff and its 24 visibility fields' with room to spare) */
+#define REACH_LIMIT 64
 
 static unsigned long decoded_bytes(const struct xgpu_texture_description *description, unsigned long level);
 
@@ -461,11 +462,12 @@ static void reach_note(const struct xgpu_texture_description *description, unsig
 			reach_count++;
 		else
 			index = reach_next++ % REACH_LIMIT;
+		/* (once for each: the dynamic lighting's fields are written many times) */
+		platform_log("3D texture %lux%lux%lu at %08lx: reaches %.3f of its box's 0.866 from its centre", description->width,
+			description->height, description->depth, address, reach);
 	}
 	reaches[index].address = address;
 	reaches[index].reach = reach;
-	platform_log("3D texture %lux%lux%lu at %08lx: reaches %.3f of its box's 0.866 from its centre", description->width,
-		description->height, description->depth, address, reach);
 }
 
 float dk_texture_reach(unsigned long address)

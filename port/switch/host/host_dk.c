@@ -2161,6 +2161,10 @@ static struct
 	int targets_copied;
 	uint32_t stage_id[4];
 	uint32_t stage_sampler[4];
+	/* the dynamic lighting's visibility fields, and their sampler, once there
+	are any (DK_COMMAND_PLASMA_OCCLUSION) */
+	uint32_t plasma_image[2];
+	uint32_t plasma_sampler;
 	int stages_dirty;
 	int descriptors_bound;
 	/* texels were written since the last barrier, or draws were recorded
@@ -3650,6 +3654,19 @@ static int textures_apply(void)
 	for (stage = 0; stage < 4; stage++)
 		trace.handles[stage] = handles[stage];
 	dkCmdBufBindTextures(dk.commands, DkStage_Fragment, DK_BINDING_TEXTURE0, handles, 4);
+	if (tex.plasma_image[0])
+	{
+		DkResHandle fields[2];
+
+		for (stage = 0; stage < 2; stage++)
+		{
+			uint32_t id = tex.plasma_image[stage];
+			const struct texture *texture = id < DK_TEXTURE_LIMIT && tex.table[id].present ? &tex.table[id] : &tex.dummy;
+
+			fields[stage] = dkMakeTextureHandle(texture->slot, tex.plasma_sampler);
+		}
+		dkCmdBufBindTextures(dk.commands, DkStage_Vertex, DK_BINDING_PLASMA_TEXTURE0, fields, 2);
+	}
 	tex.stages_dirty = 0;
 	return 1;
 }
@@ -4524,6 +4541,17 @@ static void submit_run(const unsigned char *at, uint32_t size)
 			break;
 		case DK_COMMAND_TEXTURES:
 			textures_receive((const struct dk_command_textures *)header);
+			break;
+		case DK_COMMAND_PLASMA_OCCLUSION:
+			if (header->size >= sizeof(struct dk_command_plasma_occlusion) && tex.sampler_descriptors)
+			{
+				const struct dk_command_plasma_occlusion *fields = (const struct dk_command_plasma_occlusion *)header;
+
+				tex.plasma_image[0] = fields->images[0];
+				tex.plasma_image[1] = fields->images[1];
+				tex.plasma_sampler = sampler_slot(&fields->sampler);
+				tex.stages_dirty = 1;
+			}
 			break;
 		case DK_COMMAND_TEXTURE_ROWS:
 			texture_rows_receive((const struct dk_command_texture_rows *)header);

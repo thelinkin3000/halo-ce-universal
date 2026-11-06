@@ -38,6 +38,7 @@ clip-space position again.
 
 #include "xgpu.h"
 #include "dk_shaders.h"
+#include "plasma_model_shader.h"
 
 #include <stdlib.h>
 
@@ -196,7 +197,14 @@ char *nv2a_dk_vertex_shader_to_glsl(const uint32_t *instructions, unsigned long 
 {
 	struct xgpu_text text = { 0 };
 	unsigned long index;
+	/* (the key's mask holds the dynamic lighting's variant above the attributes') */
+	unsigned int plasma = (unsigned int)(packed_attribute_mask >> DK_VERTEX_KEY_PLASMA_SHIFT);
+	struct nv2a_vertex_lighting plasma_lighting;
 
+	packed_attribute_mask &= (1UL << DK_VERTEX_KEY_PLASMA_SHIFT) - 1;
+	if (plasma && (!nv2a_vertex_shader_lighting((const DWORD *)instructions, instruction_count, &plasma_lighting) ||
+		plasma_lighting.lights != 2))
+		plasma = 0;
 	xgpu_text_append(&text,
 		"#version 460\n"
 		"layout(std140, binding = %d) uniform vertex_constants { vec4 c[%d]; };\n"
@@ -204,9 +212,18 @@ char *nv2a_dk_vertex_shader_to_glsl(const uint32_t *instructions, unsigned long 
 		"{\n"
 		"\tvec4 viewport_scale;\n"
 		"\tvec4 viewport_offset;\n"
-		"\tvec4 point_and_screen;\n"
-		"};\n",
+		"\tvec4 point_and_screen;\n",
 		DK_BINDING_VERTEX_CONSTANTS, XGPU_VERTEX_CONSTANT_COUNT, DK_BINDING_VERTEX_PARAMETERS);
+	if (plasma)
+		xgpu_text_append(&text, "\tvec4 plasma_model_parameters;\n\tvec4 plasma_occ_transform[2];\n");
+	xgpu_text_append(&text, "};\n");
+	if (plasma & XGPU_PLASMA_MODEL_OCCLUSION)
+		xgpu_text_append(&text,
+			"layout(binding = %d) uniform sampler3D plasma_occ_texture0;\n"
+			"layout(binding = %d) uniform sampler3D plasma_occ_texture1;\n",
+			DK_BINDING_PLASMA_TEXTURE0, DK_BINDING_PLASMA_TEXTURE1);
+	if (plasma)
+		plasma_model_emit_visibility(&text, plasma);
 	xgpu_text_append(&text,
 		"layout(location = %d) out vec4 xD0;\n"
 		"layout(location = %d) out vec4 xD1;\n"
@@ -270,6 +287,8 @@ char *nv2a_dk_vertex_shader_to_glsl(const uint32_t *instructions, unsigned long 
 		xgpu_text_append(&text, "\tA = "); operand(&text, instruction, 'A', relative); xgpu_text_append(&text, ";\n");
 		xgpu_text_append(&text, "\tB = "); operand(&text, instruction, 'B', relative); xgpu_text_append(&text, ";\n");
 		xgpu_text_append(&text, "\tC = "); operand(&text, instruction, 'C', relative); xgpu_text_append(&text, ";\n");
+		if (plasma)
+			plasma_model_emit_vertex(&text, instruction, index, &plasma_lighting);
 
 		switch (mac)
 		{

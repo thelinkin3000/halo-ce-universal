@@ -25,6 +25,8 @@ and presenting go there; a draw and a visibility test do nothing yet.
 #include "dk_commands.h"
 #include "dk_shaders.h"
 #include "dk_textures.h"
+#include "plasma_model_shader.h"
+#include "plasma_occlusion.h"
 #include "../../linux/game/cache_file_formats.h"
 
 #include <math.h>
@@ -394,11 +396,6 @@ long halo_shadow_map_scale(void)
 	return 1;
 }
 
-void halo_vertex_shader_lighting(unsigned long handle)
-{
-	(void)handle;
-}
-
 void halo_screen_anti_alias(short x0, short y0, short x1, short y1)
 {
 	(void)x0; (void)y0; (void)x1; (void)y1;
@@ -608,6 +605,10 @@ struct vertex_shader_object
 	struct vertex_element elements[XGPU_VERTEX_ATTRIBUTE_COUNT];
 	unsigned long element_count;
 	unsigned long packed_mask;
+	/* one of the game's model lighting programs with both point lights
+	(halo_vertex_shader_lighting): its draws can have the dynamic lighting's
+	variant */
+	BOOL plasma_model;
 };
 
 /* ---------- the device */
@@ -2027,6 +2028,20 @@ HRESULT WINAPI D3DDevice_CreateVertexShader(CONST DWORD *declaration, CONST DWOR
 	return S_OK;
 }
 
+static struct vertex_shader_object *vertex_shader_from_handle(DWORD handle);
+
+/* (every draw is lit as its vertex shader lights it: above. What is asked of
+it here is whether the dynamic lighting can add to that) */
+void halo_vertex_shader_lighting(unsigned long handle)
+{
+	struct vertex_shader_object *object = vertex_shader_from_handle((DWORD)handle);
+	struct nv2a_vertex_lighting lighting;
+
+	if (object && object->instructions)
+		object->plasma_model = nv2a_vertex_shader_lighting(object->instructions, object->instruction_count, &lighting) &&
+			lighting.lights == 2;
+}
+
 static struct vertex_shader_object *vertex_shader_from_handle(DWORD handle)
 {
 	struct vertex_shader_object *object = (struct vertex_shader_object *)handle;
@@ -2464,7 +2479,7 @@ static unsigned long long constants_told;
 
 /* the state the uniform blocks above come from: when none of it has changed
 they need no converting (most draws share it with the draw before) */
-#define DRAW_UNIFORM_INPUT_COUNT (4 + 4 + 16 + 1 + 16 + 2 + 4 + 1 + 1 + 3 + 6 * D3DTSS_MAXSTAGES)
+#define DRAW_UNIFORM_INPUT_COUNT (4 + 4 + 16 + 1 + 16 + 2 + 4 + 1 + 1 + 3 + 6 * D3DTSS_MAXSTAGES + 12)
 
 static DWORD draw_uniform_inputs[DRAW_UNIFORM_INPUT_COUNT];
 static BOOL draw_uniform_inputs_known;
@@ -2645,6 +2660,87 @@ static void draw_constants_send(void)
 /* the uniforms that are not the vertex constants (d3d8_gl.c's
 draw_uniforms), converted when the state they come from has changed, and
 written when the host does not hold the result */
+/* ---------- the dynamic lighting's model variant
+
+Only a draw of a program with both point lights, with a light of the feature's
+in one of them, asks for it. It is compiled in the background, and meanwhile
+(and for good, if it fails) the draw uses the stock shader, so that a model
+never leaves the screen because a light has touched it. Every other draw's key
+and shader are as they were. */
+
+static struct
+{
+	/* the variant this draw uses (XGPU_PLASMA_MODEL_*; 0 for stock), and for
+	it what the shader reads; zero otherwise, as the parameters are for stock */
+	unsigned int bits;
+	float parameters[4], transforms[2][4];
+	uint32_t images[2];
+} plasma_draw;
+static uint32_t plasma_images_told[2];
+
+static void plasma_draw_prepare(const struct vertex_shader_object *program, BOOL immediate)
+{
+	unsigned int mask = 0;
+	int slot;
+
+	if (!immediate && program->plasma_model)
+		mask = plasma_model_lighting_mask();
+	if (!mask)
+	{
+		if (plasma_draw.bits)
+			memset(&plasma_draw, 0, sizeof(plasma_draw));
+		return;
+	}
+	memset(&plasma_draw, 0, sizeof(plasma_draw));
+	plasma_draw.bits = XGPU_PLASMA_MODEL_FALLOFF;
+	for (slot = 0; slot < 2; slot++)
+	{
+		const DWORD *field;
+
+		plasma_draw.parameters[slot] = (mask & (1u << slot)) ? 1.0f : 0.0f;
+		field = plasma_occlusion_model_texture(slot, plasma_draw.transforms[slot]);
+		if (field)
+		{
+			struct xgpu_texture_description description;
+			int kind = 0;
+			uint32_t id = dk_texture_get(field, NULL, &kind, &description);
+
+			if (id && kind == DK_TEXTURE_3D)
+			{
+				plasma_draw.images[slot] = id;
+				plasma_draw.parameters[2 + slot] = 1.0f;
+				plasma_draw.bits |= XGPU_PLASMA_MODEL_OCCLUSION;
+			}
+		}
+	}
+	/* (a slot with no field does not read its image, but its binding has to
+	hold a 3D one) */
+	if (plasma_draw.bits & XGPU_PLASMA_MODEL_OCCLUSION)
+	{
+		if (!plasma_draw.images[0])
+			plasma_draw.images[0] = plasma_draw.images[1];
+		if (!plasma_draw.images[1])
+			plasma_draw.images[1] = plasma_draw.images[0];
+	}
+}
+
+/* the fields the draw reads, told to the host when they change */
+static void plasma_images_send(void)
+{
+	struct dk_command_plasma_occlusion *command;
+
+	if (!memcmp(plasma_images_told, plasma_draw.images, sizeof(plasma_images_told)))
+		return;
+	command = stream_command(DK_COMMAND_PLASMA_OCCLUSION, sizeof(*command));
+	memcpy(command->images, plasma_draw.images, sizeof(command->images));
+	memset(&command->sampler, 0, sizeof(command->sampler));
+	command->sampler.min_linear = command->sampler.mag_linear = 1;
+	command->sampler.mip_filter = DK_MIP_NONE;
+	command->sampler.wrap[0] = command->sampler.wrap[1] = command->sampler.wrap[2] = DK_WRAP_CLAMP;
+	command->sampler.anisotropy = 1.0f;
+	memcpy(plasma_images_told, plasma_draw.images, sizeof(plasma_images_told));
+}
+
 static void draw_parameters_send(float texture_scale[4][4])
 {
 	DWORD inputs[DRAW_UNIFORM_INPUT_COUNT];
@@ -2673,6 +2769,10 @@ static void draw_parameters_send(float texture_scale[4][4])
 	inputs[count++] = (DWORD)UI_OFFSET;
 	memcpy(&inputs[count], texture_clip, 3 * sizeof(float));
 	count += 3;
+	memcpy(&inputs[count], plasma_draw.parameters, 4 * sizeof(float));
+	count += 4;
+	memcpy(&inputs[count], plasma_draw.transforms, 8 * sizeof(float));
+	count += 8;
 	for (stage = 0; stage < D3DTSS_MAXSTAGES; stage++)
 	{
 		DWORD *state = D3D__TextureState[stage];
@@ -2699,6 +2799,8 @@ static void draw_parameters_send(float texture_scale[4][4])
 		vertex.point_and_screen[0] = D3D__RenderState[D3DRS_POINTSIZE] ?
 			dword_to_float(D3D__RenderState[D3DRS_POINTSIZE]) : 1.0f;
 		vertex.point_and_screen[1] = (float)UI_OFFSET;
+		memcpy(vertex.plasma_model, plasma_draw.parameters, sizeof(vertex.plasma_model));
+		memcpy(vertex.plasma_occ_transform, plasma_draw.transforms, sizeof(vertex.plasma_occ_transform));
 
 
 		for (stage = 0; stage < 8; stage++)
@@ -3049,8 +3151,21 @@ static BOOL draw_prepare(BOOL immediate)
 		vertex_key.program_hash = program->program_hash;
 		vertex_key.packed_mask = immediate ? 0 : (uint32_t)device.vertex_shader->packed_mask;
 	}
+	/* (the dynamic lighting's variant if it is ready, else the stock shader) */
+	plasma_draw_prepare(program, immediate);
+	vertex_shader = 0;
+	if (plasma_draw.bits)
+	{
+		struct dk_vertex_key plasma_key = vertex_key;
+
+		plasma_key.packed_mask |= (uint32_t)plasma_draw.bits << DK_VERTEX_KEY_PLASMA_SHIFT;
+		vertex_shader = dk_shader_for_draw(DK_SHADER_STAGE_VERTEX, &plasma_key);
+		if (!vertex_shader)
+			memset(&plasma_draw, 0, sizeof(plasma_draw));
+	}
 	/* (both are asked for, so that both are queued if neither is ready) */
-	vertex_shader = dk_shader_for_draw(DK_SHADER_STAGE_VERTEX, &vertex_key);
+	if (!vertex_shader)
+		vertex_shader = dk_shader_for_draw(DK_SHADER_STAGE_VERTEX, &vertex_key);
 	pixel_shader = dk_shader_for_draw(DK_SHADER_STAGE_PIXEL, &pixel_key);
 	if (!vertex_shader || !pixel_shader)
 	{
@@ -3066,6 +3181,8 @@ static BOOL draw_prepare(BOOL immediate)
 	draw_constants_send();
 	draw_parameters_send(texture_scale);
 	draw_textures_send(&textures);
+	if (plasma_draw.bits & XGPU_PLASMA_MODEL_OCCLUSION)
+		plasma_images_send();
 	return TRUE;
 }
 
