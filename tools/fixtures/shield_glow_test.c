@@ -52,6 +52,8 @@ int config_boolean(char const *name){return on;}
 char const *config_string(char const *name){return intensity;}
 unsigned long config_changes(void){return changes;}
 static short network_shield_effects(void){return policy;}
+static int forced;
+static int lighting_forced_off(char const *name){(void)name;return forced;}
 static void overshield_effect_reset(void){resets++;}
 static real render_interpolation_game_time_sec(long t){return clock_time;}
 static long game_time_get(void){return (long)(clock_time*30);}
@@ -112,6 +114,8 @@ int main(void)
  light=shield_glow_find(11)->light_index;shield_glow_update();CHECK(shield_glow_find(11)->light_index==light);
  on=0;changes++;shield_glow_update();for(i=0;i<8;i++)CHECK(shield_glows[i].unit_index==NONE);
  policy=_shield_effects_glow;CHECK(shield_glow_enabled());shield_glow_update();CHECK(shield_glow_find(11));
+ forced=1;CHECK(!shield_glow_enabled());shield_glow_update();for(i=0;i<8;i++)CHECK(shield_glows[i].unit_index==NONE);
+ forced=0;CHECK(shield_glow_enabled());shield_glow_update();CHECK(shield_glow_find(11));
  policy=_shield_effects_stock;on=1;changes++;shield_glow_frame_end();CHECK(!shield_glow_enabled()&&!shield_glow_find(11));
  shield_glow_reset();CHECK(resets>0);return 0;
 }

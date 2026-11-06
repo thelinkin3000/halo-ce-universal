@@ -11,6 +11,9 @@ static struct
 {
 	const char *name;
 	int value;
+	/* the overlay's Force Lighting Off: never saved, so config.toml stays the
+	   source of truth and a restart clears it */
+	int forced_off;
 } preferences[] = {
 	{"display.plasma_lighting", 0},
 	{"display.muzzle_lighting", 0},
@@ -23,7 +26,8 @@ static struct
 	{"display.weapon_glow", 0},
 	{"display.plasma_prong_lighting", 0},
 	{"display.vehicle_lighting", 0},
-	{"display.world_lighting", 0}
+	{"display.world_lighting", 0},
+	{"display.shield_glow", 0}
 };
 
 /* port: to limit a whole platform, name a toggle's key here (it then reads as
@@ -61,6 +65,26 @@ int lighting_config_boolean(const char *name)
 		ready = 1;
 	}
 	for (i = 0; i < sizeof(preferences) / sizeof(preferences[0]); i++)
-		if (!strcmp(name, preferences[i].name)) return preferences[i].value;
+		if (!strcmp(name, preferences[i].name)) return preferences[i].value && !preferences[i].forced_off;
 	return config_boolean(name);
+}
+
+int lighting_force_off(const char *name, int forced)
+{
+	unsigned int i;
+	for (i = 0; i < sizeof(preferences) / sizeof(preferences[0]); i++)
+		if (!strcmp(name, preferences[i].name))
+		{
+			preferences[i].forced_off = forced != 0;
+			return 1;
+		}
+	return 0;
+}
+
+int lighting_forced_off(const char *name)
+{
+	unsigned int i;
+	for (i = 0; i < sizeof(preferences) / sizeof(preferences[0]); i++)
+		if (!strcmp(name, preferences[i].name)) return preferences[i].forced_off;
+	return 0;
 }

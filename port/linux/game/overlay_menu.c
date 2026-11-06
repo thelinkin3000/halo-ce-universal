@@ -10,8 +10,9 @@ speed, the bots' difficulty), or a folder of more entries. They began as
 hardran3's OpenCE-Ultrahand and HaloDrones packages' (the bots': its
 difficulty is the bots' bots.skill here), with the bots' vehicles and routes
 besides. A command is run at once: a line for the console
-(hs_compile_and_evaluate), or "config <setting> <value>" (config_set_text,
-saved as the menus save it).
+(hs_compile_and_evaluate), "config <setting> <value>" (config_set_text,
+saved as the menus save it), or "lighting_force_off <setting> <true|false>"
+(lighting_config.c: for this run, not saved).
 
 Holding L and R (the shoulders) and pressing the d-pad's down opens it and
 closes it, on any controller; on Android without one, three fingers (or
@@ -48,6 +49,8 @@ the data root (below, "the files' entries").
 #include "text/font_group.h"
 #include "halo_overlay_menu.h"
 #include "halo_ui_pointer.h"
+#include "lighting_config.h"
+#include "lighting_menu.h"
 
 #include "../src/posix.h"
 #include "../../third_party/tomlc17/tomlc17.h"
@@ -153,6 +156,8 @@ enum overlay_entry_state
 	or "config:<setting>=<word>" (on while it is that word), of any kind of
 	setting (config_text) */
 	_overlay_state_config_text,
+	/* a lighting setting forced off for this run (lighting_config.c) */
+	_overlay_state_lighting_forced,
 };
 
 /* ---------- definitions */
@@ -391,6 +396,31 @@ static struct overlay_entry overlay_system_entries[] =
 };
 static struct overlay_source overlay_system = OVERLAY_FOLDER_OF("System", overlay_system_entries);
 
+/* debugging: each switches a lighting feature off until the game restarts,
+leaving config.toml as it is. ON here can only turn a feature off: one the
+config has off stays off either way. Not offered where lighting_menu_available
+says the image has no dynamic lighting. */
+#define OVERLAY_FORCE_OFF(label, setting) \
+	OVERLAY_TOGGLE_NOTE(label, _overlay_state_lighting_forced, "lighting_force_off " setting " true", \
+		"lighting_force_off " setting " false", setting, "ON forces it off until restart. The config is not changed")
+static struct overlay_entry overlay_lighting_entries[] =
+{
+	OVERLAY_FORCE_OFF("Projectile Lights", "display.plasma_lighting"),
+	OVERLAY_FORCE_OFF("Muzzle Flash Lights", "display.muzzle_lighting"),
+	OVERLAY_FORCE_OFF("Weapon Glow", "display.weapon_glow"),
+	OVERLAY_FORCE_OFF("Fuel Rod Lights", "display.fuel_rod_lighting"),
+	OVERLAY_FORCE_OFF("Ammo Counter Lights", "display.ammo_counter_lighting"),
+	OVERLAY_FORCE_OFF("Needler Lights", "display.needler_lighting"),
+	OVERLAY_FORCE_OFF("Plasma Prong Lighting", "display.plasma_prong_lighting"),
+	OVERLAY_FORCE_OFF("Jackal Shield Lights", "display.jackal_shield_lighting"),
+	OVERLAY_FORCE_OFF("Covenant Shield Lights", "display.covenant_shield_lighting"),
+	OVERLAY_FORCE_OFF("Vehicle Lights", "display.vehicle_lighting"),
+	OVERLAY_FORCE_OFF("World Emitters", "display.world_lighting"),
+	OVERLAY_FORCE_OFF("Light Occlusion", "display.plasma_occlusion"),
+	OVERLAY_FORCE_OFF("Shield Glow", "display.shield_glow"),
+};
+static struct overlay_source overlay_lighting = OVERLAY_FOLDER_OF("Force Lighting Off", overlay_lighting_entries);
+
 static struct overlay_entry overlay_root_entries[] =
 {
 	OVERLAY_FOLDER("Cheats", overlay_cheats),
@@ -398,6 +428,7 @@ static struct overlay_entry overlay_root_entries[] =
 	OVERLAY_FOLDER("Game Speed", overlay_speed),
 	OVERLAY_FOLDER("HUD", overlay_hud),
 	OVERLAY_FOLDER("Camera", overlay_camera),
+	OVERLAY_FOLDER("Force Lighting Off", overlay_lighting),
 	OVERLAY_FOLDER("System", overlay_system),
 };
 static struct overlay_source overlay_root = OVERLAY_FOLDER_OF(OVERLAY_TITLE, overlay_root_entries);
@@ -596,6 +627,8 @@ static boolean overlay_entry_on(
 		/* (true, or a number not 0) */
 		return !strcmp(text, "true") || atof(text) != 0.0;
 	}
+	case _overlay_state_lighting_forced:
+		return lighting_forced_off(entry->state_name) != 0;
 	}
 	return FALSE;
 }
@@ -615,13 +648,14 @@ static boolean overlay_run(
 	size_t error_size)
 {
 	error[0] = 0;
-	if (!strncmp(command, "config ", 7))
+	if (!strncmp(command, "config ", 7) || !strncmp(command, "lighting_force_off ", 19))
 	{
 		char name[128];
 		char const *value;
 		size_t length;
+		boolean forcing = command[0] == 'l';
 
-		command += 7;
+		command += forcing ? 19 : 7;
 		length = strcspn(command, " ");
 		if (length >= sizeof(name))
 			length = sizeof(name) - 1;
@@ -630,6 +664,13 @@ static boolean overlay_run(
 		value = command + length;
 		while (*value == ' ')
 			value++;
+		if (forcing)
+		{
+			if (lighting_force_off(name, !strcmp(value, "true")))
+				return TRUE;
+			snprintf(error, error_size, "not a lighting setting");
+			return FALSE;
+		}
 		return config_set_text(name, value, error, error_size) != 0;
 	}
 	if (hs_compile_and_evaluate(command))
@@ -1024,6 +1065,8 @@ static struct overlay_folder *overlay_build_folder(
 	{
 		struct overlay_entry *entry = &source->entries[index];
 
+		if (entry->source == &overlay_lighting && !lighting_menu_available())
+			continue;
 		if (entry->type == _overlay_entry_folder && entry->source && depth + 1 < MAXIMUM_OVERLAY_DEPTH)
 		{
 			char child[OVERLAY_PATH_SIZE];

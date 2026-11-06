@@ -20,6 +20,7 @@
 #include "plasma_occlusion.h"
 #include <math.h>
 #include <string.h>
+#include "lighting_config.h"
 
 int config_boolean(const char *name);
 const char *config_string(const char *name);
@@ -79,6 +80,9 @@ boolean shield_glow_enabled(
 	static boolean enabled = FALSE;
 	short effects = network_shield_effects();
 
+	/* (before the host's choice: it only ever hides this machine's glow) */
+	if (lighting_forced_off("display.shield_glow"))
+		return FALSE;
 	if (effects != NONE)
 	{
 		changes = (unsigned long)-1;

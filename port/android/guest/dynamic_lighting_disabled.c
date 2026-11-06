@@ -99,3 +99,5 @@ int covenant_emitter_lighting_vehicle_occlusion(long light) { (void)light; retur
 int lighting_menu_text(const char *name, char *text, unsigned int size, int defaults) { return -1; }
 int lighting_menu_write(const char *name, const char *value) { return -1; }
 int lighting_menu_available(void) { return 0; }
+int lighting_force_off(const char *name, int forced) { return 0; }
+int lighting_forced_off(const char *name) { return 0; }
