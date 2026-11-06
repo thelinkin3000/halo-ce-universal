@@ -144,6 +144,7 @@ symbols in this file:
 #include "cseries/errors.h"
 #include "effects/decals.h"
 #include "game/game_globals.h"
+#include "plasma_lighting.h" /* port: port/linux/game/plasma_falloff.c */
 #include "interface/hud_draw.h"
 #include "bitmaps/bitmaps_inlines.h"
 #include "math/periodic_functions.h"
@@ -1171,6 +1172,7 @@ void _rasterizer_environment_lightmap_begin(
 void _rasterizer_environment_diffuse_light_end(
 	void)
 {
+	plasma_falloff_end(); /* port: restore stock attenuation before the next light */
 	return;
 }
 
@@ -1273,6 +1275,7 @@ void _rasterizer_environment_diffuse_light_begin(
 		D3DDevice_SetRenderState(
 			D3DRS_PSCONSTANT0_0,
 			real_rgb_color_to_pixel32(&light->color));
+		plasma_falloff_begin(light_index); /* port: scoped to this selected plasma light */
 	}
 	return;
 }
@@ -1797,6 +1800,7 @@ void _rasterizer_environment_diffuse_texture_draw(
 void _rasterizer_environment_specular_light_end(
 	void)
 {
+	plasma_falloff_end(); /* port: restore the selected plasma specular pass */
 	return;
 }
 
@@ -1851,6 +1855,7 @@ void _rasterizer_environment_specular_lights_begin(
 void _rasterizer_environment_specular_light_begin(
 	long light_index)
 {
+	plasma_specular_begin(light_index); /* port: hue for selected enhanced lights only */
 	match_assert(
 		"c:\\halo\\SOURCE\\rasterizer\\xbox\\rasterizer_xbox_environment.c",
 		0x5C0,
@@ -1959,6 +1964,7 @@ void _rasterizer_environment_specular_light_begin(
 			pixel_shader.final_combiner_inputs_abcd = 0x0C0F0000;
 			pixel_shader.final_combiner_inputs_efg = 0x1D200D00;
 			rasterizer_set_pixel_shader(&pixel_shader);
+			plasma_falloff_specular_begin(light_index); /* port: selected omni plasma attenuation */
 		}
 	}
 	return;
@@ -2043,6 +2049,9 @@ void _rasterizer_environment_specular_light_draw(
 				real_rgb_color_to_pixel32(&shader_environment->environment.specular.view_perpendicular_color);
 			pixel_shader.constant_1[3] =
 				real_rgb_color_to_pixel32(&shader_environment->environment.specular.view_parallel_color);
+			/* port: keep enhanced reflections the colour of their emitting light. */
+			pixel_shader.constant_0[3] = plasma_specular_color(pixel_shader.constant_0[3]);
+			pixel_shader.constant_1[3] = plasma_specular_color(pixel_shader.constant_1[3]);
 
 			if (TEST_FLAG(
 				shader_environment->environment.flags,

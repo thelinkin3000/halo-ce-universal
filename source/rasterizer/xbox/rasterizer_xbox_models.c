@@ -123,6 +123,8 @@ symbols in this file:
 #include "rasterizer/xbox/rasterizer_xbox_draw_primitives.h"
 #include "rasterizer/xbox/rasterizer_xbox_internal.h"
 #include "rasterizer/xbox/rasterizer_xbox_models.h"
+#include "needler_lighting.h" /* port: port/linux/game/needler_lighting.c */
+#include "ammo_counter_lighting.h" /* port: port/linux/game/ammo_counter_lighting.c */
 #include "view_fov.h" /* port: port/linux/game/view_fov.c */
 
 /* ---------- constants */
@@ -1991,6 +1993,11 @@ void _rasterizer_model_draw(
 					self_illumination_color.blue *= external_color->blue;
 				}
 
+				/* port: optional AR screen emission, confined to its authored mask. */
+				ammo_counter_lighting_screen(shader, &self_illumination_color);
+				/* port: optional masked needle emission in both weapon models. */
+				needler_lighting_material(shader, &self_illumination_color);
+
 				if (shader_model->model.change_color_source>0 &&
 					shader_model->model.change_color_source<
 						NUMBER_OF_SHADER_ANIMATION_SOURCES)
@@ -2331,6 +2338,9 @@ void _rasterizer_model_draw(
 						shader_model->model.flags,
 						_shader_model_true_atmospheric_fog_bit));
 
+				/* port: boost only the optional AR display material draw. */
+				ammo_counter_lighting_draw_begin(shader, pixel_shader.rgb_outputs[7]);
+
 				IDirect3DDevice8_SetRenderState(
 					global_d3d_device,
 					D3DRS_CULLMODE,
@@ -2419,6 +2429,8 @@ void _rasterizer_model_draw(
 								vertex_buffer);
 					}
 				}
+				/* port: restore the display output before fog or another material. */
+				ammo_counter_lighting_draw_end();
 			}
 
 			if (local_environment_fog_screen_flag)

@@ -45,6 +45,7 @@ tick, such as a nav marker, is moved as far as the object is drawn from there
 #include "render/render_cameras.h"
 #include "units/units.h"
 #include "biped_ragdoll.h"
+#include "plasma_lighting.h" /* port: port/linux/game/plasma_lighting.c */
 
 /* port/linux/src/port_config.c */
 int config_boolean(const char *name);
@@ -521,6 +522,7 @@ void render_interpolation_frame_end(void)
 {
 	interpolation_rendering = FALSE;
 	interpolation_drawing = FALSE;
+	plasma_lighting_frame_end();
 }
 
 real render_interpolation_fraction(void)

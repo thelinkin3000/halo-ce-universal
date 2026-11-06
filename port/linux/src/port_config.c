@@ -665,6 +665,43 @@ static const struct config_setting config_settings[] =
 		"plays on an Elite's shield. Only what is drawn and heard changes.\n"
 		"In a network game, the host's network.shield_effects decides, unless\n"
 		"it is \"players\" (each player's own) or the game is co-op." },
+	{ "display.plasma_occlusion", _config_boolean, "false", "HALO_PLASMA_OCCLUSION", _environment_value, _platform_all,
+		"Light Occlusion: dynamic lights stop at walls and vehicles, from rays\n"
+		"traced on the CPU. Projectile, muzzle, Covenant, vehicle and Shield Glow\n"
+		"lights all follow it; off, no rays are traced. At most eight occluded\n"
+		"lights. Vulkan and deko3d only." },
+	{ "display.plasma_lighting", _config_boolean, "false", "HALO_PLASMA_LIGHTING", _environment_value, _platform_all,
+		"Supported plasma, Covenant and rocket flight lights follow rendered poses\n"
+		"with soft world and model falloff and omni highlights. Off keeps stock\n"
+		"lighting. Vulkan and deko3d only." },
+	{ "display.muzzle_lighting", _config_boolean, "false", "HALO_MUZZLE_LIGHTING", _environment_value, _platform_all,
+		"Soft muzzle illumination with a smooth render-time fade. Stock flash\n"
+		"effects remain intact. Off keeps stock lighting. Vulkan and deko3d only." },
+	{ "display.weapon_glow", _config_boolean, "false", "HALO_WEAPON_GLOW", _environment_value, _platform_all,
+		"Held energy weapons cast soft light. Vulkan and deko3d only." },
+	{ "display.fuel_rod_lighting", _config_boolean, "false", "HALO_FUEL_ROD_LIGHTING", _environment_value, _platform_all,
+		"Soft green illumination from exposed Grunt and Hunter fuel rods. Stock\n"
+		"weapon effects remain intact. Vulkan and deko3d only." },
+	{ "display.ammo_counter_lighting", _config_boolean, "false", "HALO_AMMO_COUNTER_LIGHTING", _environment_value, _platform_all,
+		"Blue spill and screen emission from held Assault Rifle ammo counters.\n"
+		"Vulkan and deko3d only." },
+	{ "display.needler_lighting", _config_boolean, "false", "HALO_NEEDLER_LIGHTING", _environment_value, _platform_all,
+		"Soft pink-purple spill and luminous crystals on held Needlers. Vulkan\n"
+		"and deko3d only." },
+	{ "display.plasma_prong_lighting", _config_boolean, "false", "HALO_PLASMA_PRONG_LIGHTING", _environment_value, _platform_all,
+		"Short, soft forward spill from plasma-weapon prongs, apart from Weapon\n"
+		"Glow. Vulkan and deko3d only." },
+	{ "display.jackal_shield_lighting", _config_boolean, "false", "HALO_JACKAL_SHIELD_LIGHTING", _environment_value, _platform_all,
+		"Soft illumination from visible Jackal shields, following their colour and\n"
+		"pose. Stock shield effects remain intact. Vulkan and deko3d only." },
+	{ "display.covenant_shield_lighting", _config_boolean, "false", "HALO_COVENANT_SHIELD_LIGHTING", _environment_value, _platform_all,
+		"Soft illumination from active stationary Covenant shield emitters. Stock\n"
+		"shield effects remain intact. Vulkan and deko3d only." },
+	{ "display.vehicle_lighting", _config_boolean, "false", "HALO_VEHICLE_LIGHTING", _environment_value, _platform_all,
+		"Vehicle engines and headlights illuminate nearby surfaces. Vulkan and\n"
+		"deko3d only." },
+	{ "display.world_lighting", _config_boolean, "false", "HALO_WORLD_LIGHTING", _environment_value, _platform_all,
+		"Visible powerups and teleporters cast soft light. Vulkan and deko3d only." },
 	{ "display.shield_glow", _config_boolean, "false", "HALO_SHIELD_GLOW", _environment_value, _platform_all,
 		"Energy shields light what is around them as they flare, as plasma\n"
 		"does, in the shield's own color. In a network game, the host's\n"

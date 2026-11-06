@@ -79,6 +79,15 @@ SDL_URL = "https://github.com/libsdl-org/SDL.git"
 SDL_ANDROID_MOUSE_PATCH = Path("port/android/patches/sdl-relative-mouse.patch")
 SDL_ANDROID_MOUSE_LISTENER = "android-project/app/src/main/java/org/libsdl/app/SDLControllerManager.java"
 ANDROID_API = 28
+# The dynamic lighting's modules (docs/dynamic_lighting_port.md): the Vulkan and
+# deko3d images link them. An OpenGL image links dynamic_lighting_disabled.c in
+# their place, so that it has none of their lights, rays, textures or shaders.
+DYNAMIC_LIGHTING_GAME_SOURCES = {
+    "ambient_emitter_lighting.c", "ammo_counter_falloff.c", "ammo_counter_lighting.c",
+    "authored_emitter_lighting.c", "covenant_emitter_lighting.c", "covenant_lighting.c", "lighting_config.c",
+    "muzzle_lighting.c", "needler_lighting.c", "plasma_falloff.c", "plasma_lighting.c",
+    "plasma_occlusion_stub.c", "rocket_lighting.c",
+}
 # the Vulkan probe's shader compiler (port/android/VULKAN.md, phase 0, step 4)
 GLSLANG_TAG = "16.6.0"
 GLSLANG_DIR = THIRD_PARTY / "glslang"
@@ -569,8 +578,12 @@ def generate_guest_image(n: Writer, sln: Any, config: Dict[str, Any], *, arch: G
         if source.as_posix() in VARIADIC_PROTOTYPE_FILES:
             cflags += f" -include {PORT_DIR}/include/halo_android_variadic_prototypes.h"
         objects.append(guest_object(source, cflags))
+    dynamic_lighting_objects = []
     for source in sorted(Path(config["game_sources"]).glob("*.c")):
-        objects.append(guest_object(source, game_cflags))
+        if source.name in DYNAMIC_LIGHTING_GAME_SOURCES:
+            dynamic_lighting_objects.append(guest_object(source, game_cflags))
+        else:
+            objects.append(guest_object(source, game_cflags))
     objects.append(guest_object(STB_VORBIS_SOURCE, game_cflags))
 
     # the platform layer shared with Linux, and the guest runtime
@@ -692,7 +705,9 @@ def generate_guest_image(n: Writer, sln: Any, config: Dict[str, Any], *, arch: G
     if relocatable:
         link_implicit.append(Path("tools/guest_relocations.py"))
     relocations = build / "halo_guest.relocs"
-    n.build(outputs=image, rule=f"{prefix}_guest_link", inputs=objects,
+    # (the OpenGL renderer's image: the dynamic lighting's hooks do nothing)
+    gl_objects = objects + [guest_object(PORT_DIR / "guest" / "dynamic_lighting_disabled.c", game_cflags)]
+    n.build(outputs=image, rule=f"{prefix}_guest_link", inputs=gl_objects,
             implicit_outputs=[relocations] if relocatable else None, implicit=link_implicit,
             variables={"relocations": str(relocations)} if relocatable else None)
     # what the host cannot give the image: thread-local storage, the thread
@@ -718,6 +733,7 @@ def generate_guest_image(n: Writer, sln: Any, config: Dict[str, Any], *, arch: G
         # (its texture cache, xbox_textures_vk.c, takes the place of xbox_textures.c the same way)
         vk_image = build / "halo_guest_vk.elf"
         vk_objects = [obj for obj in objects if obj not in (gl_renderer_object, gl_textures_object, gl_post_object)]
+        vk_objects.extend(dynamic_lighting_objects)
         vk_objects.append(guest_object(PORT_DIR / "guest" / "xbox_textures_vk.c", platform_cflags))
         vk_objects.append(guest_object(PORT_DIR / "guest" / "d3d8_vk.c", platform_cflags))
         # the generators for glslang (port/android/VULKAN.md, phase 4): the originals stay in both images

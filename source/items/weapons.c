@@ -218,6 +218,7 @@ symbols in this file:
 #include "effects/effect_definitions.h"
 #include "effects/effects.h"
 #include "game/cheats.h"
+#include "muzzle_lighting.h" /* port: port/linux/game/muzzle_lighting.c */
 #include "game/game.h"
 #include "game/game_engine.h"
 #include "infection.h" /* port: port/linux/game/infection.c */
@@ -2867,6 +2868,7 @@ static void weapon_trigger_fire(
 			else
 			{
 				trigger_create_projectiles(weapon_index, trigger_index);
+				muzzle_lighting_shot(weapon_index, trigger_index); /* port: successful shot only */
 				ai_handle_unit_effect(owner_object_index, _ai_unit_effect_shooting, trigger_definition->firing_noise);
 			}
 		}

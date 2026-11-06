@@ -386,6 +386,7 @@ symbols in this file:
 /* ---------- headers */
 
 #include "cseries.h"
+#include "plasma_model_shader.h" /* port: port/linux/game/plasma_lighting.c */
 #include "bitmaps/bitmap_group.h"
 #include "bitmaps/bitmap_group_internal.h"
 #include "bitmaps/bitmaps.h"
@@ -1098,6 +1099,7 @@ void rasterizer_set_model_lighting_point_light(
 		"c:\\halo\\SOURCE\\rasterizer\\xbox\\rasterizer_xbox.c",
 		2826,
 		lighting_constants);
+	plasma_model_lighting_slot(light_index, constant_index); /* port: select only this model light slot */
 	if (light_index != NONE)
 	{
 		struct rasterizer_light_submit_parameters const *light;
@@ -1194,6 +1196,7 @@ void rasterizer_set_model_lighting(
 		"c:\\halo\\SOURCE\\rasterizer\\xbox\\rasterizer_xbox.c",
 		2898,
 		lighting->distant_light_count>=0 && lighting->distant_light_count<=MAXIMUM_RENDERED_DISTANT_LIGHTS);
+	plasma_model_lighting_reset(); /* port: each model owns its light selection, including ambient-only draws */
 	if (rasterizer_debug_options.model_lighting_ambient > 0.0f)
 	{
 		csmemset(&lighting_constants, 0, sizeof(lighting_constants));

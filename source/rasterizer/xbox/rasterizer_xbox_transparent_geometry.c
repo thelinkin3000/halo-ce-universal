@@ -170,6 +170,7 @@ symbols in this file:
 #include "rasterizer/xbox/rasterizer_xbox_plasma_energy.h"
 #include "rasterizer/xbox/rasterizer_xbox_water.h"
 #include "rasterizer/xbox/shader_transparent_chicago_preprocessor.h"
+#include "needler_lighting.h" /* port: port/linux/game/needler_lighting.c */
 
 /* ---------- constants */
 
@@ -2402,6 +2403,9 @@ void rasterizer_transparent_geometry_group_draw(
 								pixel_shader.constant_0[stage_index] =
 									real_argb_color_to_pixel32(&constant_color0);
 							}
+							/* port: brighten the optional Needler core before fog. */
+							needler_lighting_transparent(group->shader, &pixel_shader,
+								shader_transparent_generic->generic.stages.count);
 							break;
 						}
 
@@ -2691,6 +2695,9 @@ void rasterizer_transparent_geometry_group_draw(
 							success = success && shader_transparent_chicago_create(
 								group->shader,
 								&pixel_shader);
+							/* port: optional world-model needle emission, before fog. */
+							needler_lighting_transparent(group->shader, &pixel_shader,
+								shader_transparent_chicago->chicago.maps.count);
 
 							if (rasterizer_debug_options.draw_environment_fog)
 							{

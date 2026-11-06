@@ -184,7 +184,13 @@ symbols in this file:
 #include "tag_files/tag_groups.h"
 #include "units/units.h"
 #include "cache/cache_files.h" /* port: (tag_iterator: light_port_glow_definition_get) */
-void shield_glow_update(void); /* port: port/linux/game/shield_glow.c */
+#include "plasma_occlusion.h" /* port: port/linux/game/plasma_occlusion.c */
+#include "muzzle_lighting.h" /* port: port/linux/game/muzzle_lighting.c */
+#include "covenant_lighting.h" /* port: port/linux/game/covenant_lighting.c */
+#include "covenant_emitter_lighting.h" /* port: port/linux/game/covenant_emitter_lighting.c */
+#include "rocket_lighting.h" /* port: port/linux/game/rocket_lighting.c */
+#include "plasma_lighting.h" /* port: port/linux/game/plasma_lighting.c */
+#include "shield_glow.h" /* port: port/linux/game/shield_glow.c */
 
 /* port: port/linux/src (halo.log) */
 void platform_log(const char *format, ...);
@@ -714,12 +720,18 @@ void lights_initialize(
 void lights_dispose(
 	void)
 {
+	muzzle_lighting_forget(); /* port: discard render-owned pulse identities */
+	covenant_lighting_forget(); /* port: discard owned Covenant light identities */
+	covenant_emitter_lighting_forget(); /* port: discard render-owned emitter identities */
+	rocket_lighting_forget(); /* port: partition and light storage are being discarded */
+	plasma_falloff_dispose(); /* port: release optional resources on shutdown too */
+	shield_glow_reset(); /* port: discard shield and overshield render state */
 	cluster_partition_delete(&light_cluster_partition);
 
 	return;
 }
 
-/* port: glows the port lights itself (port/linux/game/shield_glow.c): an
+/* port: glows owned by the optional dynamic lighting modules: an
 unattached light (light_new_unattached) on an object's node, kept alive and
 colored and sized each frame by its maker, gone a moment after its maker
 stops. Drawn with a light definition the map has (one without a lens flare
@@ -779,10 +791,100 @@ boolean light_port_glow_set(
 	return TRUE;
 }
 
+/* port: move a feature-owned, unattached glow without exposing private light
+   storage. Muzzle markers may use a different rendered pose for each view. */
+boolean light_port_glow_move(long light_index, real_point3d const *position)
+{
+	struct light_datum *light;
+	if (!light_data->valid || light_index == NONE)
+		return FALSE;
+	light = (struct light_datum *)datum_try_and_get(light_data, light_index);
+	if (!light || light->object_index != NONE || light->definition_index != light_port_glow_definition ||
+		!TEST_FLAG(light->flags, _point_light_port_glow_bit))
+		return FALSE;
+	if (TEST_FLAG(light->flags, _point_light_connected_to_map_bit))
+		light_disconnect_from_map(light_index);
+	light->position = *position;
+	light_reconnect_to_map(light_index);
+	return TRUE;
+}
+
+/* port: the light definition layout is private to this implementation. */
+float plasma_occlusion_specular_scale(long rasterizer_index)
+{
+	real scale;
+	if (rasterizer_index < 0 || rasterizer_index >= rasterizer_lights.light_count)
+		return 1.0f;
+	scale = rasterizer_lights.lights[rasterizer_index].definition->specular_radius_multiplier;
+	return scale > 0.0f ? scale : 1.0f;
+}
+
+/* port: this bridge keeps private light storage and partition ownership here.
+   The caller restores attachments after render interpolation ends. */
+int light_port_refresh_attachment(long light_index, long object_index)
+{
+	struct light_datum *light;
+
+	if (!light_data->valid || light_index == NONE || object_index == NONE)
+		return FALSE;
+	light = (struct light_datum *)datum_try_and_get(light_data, light_index);
+	if (!light || light->object_index != object_index ||
+		light->parent_light_index != NONE || !object_try_and_get(object_index))
+		return FALSE;
+	/* port: the engine can retain attachments while their object is outside
+	   the map. Render interpolation must not reconnect those lights. */
+	if (TEST_FLAG(light->flags, _point_light_connects_to_map_bit) &&
+		!TEST_FLAG(light->flags, _point_light_connected_to_map_bit))
+		return FALSE;
+	light_disconnect_from_map(light_index);
+	light_reconnect_to_map(light_index);
+	return TRUE;
+}
+
+/* port: save/restore a render-owned radius without exposing light datums. */
+int light_port_attachment_radius(long light_index, long object_index, float *radius, int restore)
+{
+	struct light_datum *light;
+	if (!light_data->valid || light_index == NONE || object_index == NONE)
+		return FALSE;
+	light = (struct light_datum *)datum_try_and_get(light_data, light_index);
+	if (!light || light->object_index != object_index || light->parent_light_index != NONE ||
+		!object_try_and_get(object_index))
+		return FALSE;
+	if (restore)
+		light->radius = *radius;
+	else
+		*radius = light->radius;
+	return TRUE;
+}
+
+/* port: render-only promotion of a selected lens-flare attachment. Return its
+   original dynamic flag so the feature can restore it without changing tags. */
+int light_port_dynamic_set(long light_index, long object_index, int enabled)
+{
+	struct light_datum *light;
+	int previous;
+	if (!light_data->valid || light_index == NONE || object_index == NONE)
+		return FALSE;
+	light = (struct light_datum *)datum_try_and_get(light_data, light_index);
+	if (!light || light->object_index != object_index || light->parent_light_index != NONE)
+		return FALSE;
+	previous = TEST_FLAG(light->flags, _point_light_dynamic_bit);
+	SET_FLAG(light->flags, _point_light_dynamic_bit, enabled);
+	return previous;
+}
+
 void lights_initialize_for_new_map(
 	void)
 {
+	muzzle_lighting_forget(); /* port: discard render-owned pulse identities */
+	covenant_lighting_forget(); /* port: discard owned Covenant light identities */
+	covenant_emitter_lighting_forget(); /* port: discard render-owned emitter identities */
+	rocket_lighting_forget(); /* port: includes light-array recovery */
 	light_port_glow_definition = NONE - 1; /* port: (looked for again) */
+	plasma_lighting_reset(); /* port: discard render-only attachment identities */
+	plasma_falloff_dispose(); /* port: release the previous map's optional texture */
+	shield_glow_reset(); /* port: discard handles from the previous light array */
 	data_make_valid(light_data);
 	lights_game_globals->render_lights = TRUE;
 	cluster_partition_make_valid(&light_cluster_partition);
@@ -793,6 +895,13 @@ void lights_initialize_for_new_map(
 void lights_dispose_from_old_map(
 	void)
 {
+	muzzle_lighting_forget(); /* port: discard render-owned pulse identities */
+	covenant_lighting_forget(); /* port: discard owned Covenant light identities */
+	covenant_emitter_lighting_forget(); /* port: discard render-owned emitter identities */
+	rocket_lighting_forget(); /* port: no flight-light handles cross map loads */
+	plasma_lighting_reset(); /* port: no attachment identities cross map loads */
+	plasma_falloff_dispose(); /* port: release feature-owned attenuation */
+	shield_glow_reset(); /* port: release feature state before invalidating map lights */
 	data_make_invalid(light_data);
 	cluster_partition_make_invalid(&light_cluster_partition);
 
@@ -976,6 +1085,10 @@ void lights_preprocess_scene(
 	/* port: the lights in order before they are drawn (a frame can come
 	between ticks: lights_port_recover) */
 	lights_port_recover();
+	muzzle_lighting_update(); /* port: render-time muzzle poses and pulse fade */
+	covenant_lighting_update(); /* port: missing Covenant flight lights */
+	covenant_emitter_lighting_update(); /* port: feature-owned rendered emitter poses */
+	rocket_lighting_update(); /* port: create flight lights before visibility collection */
 	shield_glow_update(); /* port: port/linux/game/shield_glow.c */
 	for (light_index = data_next_index(light_data, NONE);
 		light_index != NONE;
@@ -989,6 +1102,11 @@ void lights_preprocess_scene(
 			FALSE);
 		light->rasterizer_light_index = NONE;
 		lights_port.radius_writes++;
+		/* port: pass the private definition identity for exact emitter selection;
+		   refresh selected persistent attachments at the render pose,
+		   before visibility and receiver selection (plasma_lighting.c). */
+		if (light->parent_light_index == NONE)
+			plasma_lighting_prepare(light_index, light->object_index, light->definition_index);
 		if (light->parent_light_index != NONE)
 		{
 			struct point_light_definition *definition = light_definition_get(
@@ -1022,6 +1140,7 @@ void lights_preprocess_scene(
 		light_mark);
 	light_marker_end();
 	rasterizer_lights_begin();
+	plasma_lighting_window_begin(); /* port: submitted light indices belong to this view */
 	for (rendered_cluster_index = 0;
 		rendered_cluster_index < render.rendered_cluster_count;
 		rendered_cluster_index++)
@@ -1152,6 +1271,8 @@ void lights_preprocess_scene(
 				/* port: a glow's radius is as set (light_port_glow_set) */
 				if (TEST_FLAG(light->flags, _point_light_port_glow_bit))
 					light->radius = light->intensity_scale;
+				/* port: feature-owned radius policy also feeds receiver selection. */
+				light->radius = plasma_lighting_radius(scene_light_handle, light->object_index, light->radius);
 				lights_port.radius_writes++;
 				if (light->radius != 0.0f)
 				{
@@ -1164,6 +1285,10 @@ void lights_preprocess_scene(
 					light_parameters.up = light->up;
 					light_parameters.radius = light->radius;
 					light_parameters.color = light->color;
+					/* port: optional flight-light tint affects only this render copy;
+					   the authored datum still supplies flares and simulation queries. */
+					if (light->parent_light_index == NONE)
+						covenant_lighting_color(light->object_index, light->definition_index, &light_parameters.color);
 					match_assert(
 						"c:\\halo\\SOURCE\\objects\\object_lights.c",
 						0x1EE,
@@ -1235,6 +1360,8 @@ void lights_preprocess_scene(
 
 					light->rasterizer_light_index = rasterizer_light_submit(
 						&light_parameters);
+					/* port: identify only this feature's existing submitted lights. */
+					plasma_lighting_submitted(scene_light_handle, light->rasterizer_light_index);
 					/* (port: the lights submitted so far: not a light the
 					window had no room for (MAXIMUM_LIGHTS_PER_WINDOW), whose
 					index is NONE: that made the count 0, and every object
@@ -1758,6 +1885,18 @@ static void light_compute_bounding_sphere(
 	real light_radius = maximum
 		? definition->radius_modifier_upper_bound * definition->radius
 		: light->radius;
+
+	/* port: expanded render lights must reach the same visibility clusters.
+	   Owned glow radii are independent of their borrowed light template. */
+	if (maximum)
+	{
+		light_radius = shield_glow_radius(light_index, light_radius); /* port: body-sized shield bounds */
+		light_radius = muzzle_lighting_radius(light_index, light_radius); /* port: owned flash bounds */
+		light_radius = covenant_emitter_lighting_radius(light_index, light_radius); /* port: owned emitter bounds */
+		light_radius = covenant_lighting_radius(light_index, light->object_index, light_radius); /* port: owned Covenant bounds */
+		light_radius = rocket_lighting_radius(light_index, light->object_index, light_radius);
+		light_radius = plasma_lighting_radius(light_index, light->object_index, light_radius);
+	}
 
 	if (!TEST_FLAG(definition->flags, _light_definition_no_specular_bit)
 		&& (specular || maximum))

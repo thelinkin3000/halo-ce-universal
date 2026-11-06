@@ -17,10 +17,10 @@ Two renderers need the work: Vulkan, which covers Android and PS5, and deko3d on
 | Platform | Renderer | Files | Guest CPU | Effect on the port |
 | --- | --- | --- | --- | --- |
 | PS5 | Vulkan | `port/android/guest/d3d8_vk.c`, `nv2a_*_vk.c` | x32 (x86) | Should get the SSE2 visibility path; confirm it compiles. Most GPU headroom. |
-| Android | Vulkan by default, GLES selectable | Same as PS5 | arm64_32 | Scalar visibility path only. |
-| Switch | deko3d by default, Mesa selectable | `port/switch/guest/d3d8_dk.c`, `nv2a_*_dk.c` | ARM | Scalar visibility path only. Tightest GPU budget. |
+| Android | Vulkan or GLES, by `display.renderer` | Same as PS5 | arm64_32 | Scalar visibility path only. |
+| Switch | deko3d only (checked: `tools/switch_build.py` links no GL image, so there is no Mesa option) | `port/switch/guest/d3d8_dk.c`, `nv2a_*_dk.c` | ARM | Scalar visibility path only. Tightest GPU budget. |
 
-**Keep it off the GL renderers.** Android's GLES path is where GulchCE saw dark models and missing geometry. Our GL images should link GulchCE's inert stub, `port/android/guest/dynamic_lighting_disabled.c`, and hide the menu rows.
+**Keep it off the GL renderers.** Android's GLES path is where GulchCE saw dark models and missing geometry. Our GL images (Android's and PS5's `halo_guest.elf`; the Switch has none) link GulchCE's inert stub, `port/android/guest/dynamic_lighting_disabled.c`, and hide the menu rows.
 
 **Desktop is out of scope.** This fork ships only on Android, Switch and PS5, so nothing here should fix or plan around Windows or Linux builds.
 
@@ -62,6 +62,8 @@ I ran `git apply --check` on the full `da8d45562..4159d0d1` diff of each file ag
 | `source/rasterizer/xbox/rasterizer_xbox_environment.c` | 13/0 | Clean | Falloff begin and end around world diffuse and specular passes |
 | `source/rasterizer/xbox/rasterizer_xbox_models.c` | 18/1 | Clean | AR screen and Needler material hooks |
 | `source/rasterizer/xbox/rasterizer_xbox_transparent_geometry.c` | 16/0 | Clean | Needler transparent-draw hook |
+| `source/rasterizer/xbox/rasterizer_xbox.c` | 9/0 (2 lighting lines) | Taken by hand | Model light slot and reset hooks. Missing from the first version of this table |
+| `port/linux/game/render_interpolation.c` | 1 line | Taken by hand | `plasma_lighting_frame_end` at frame end. Missing from the first version of this table |
 | `port/linux/game/shield_glow.c` | 255/203 | Clean | Shared-lighting version of Shield Glow |
 | `port/linux/game/menu_functions.c` | 599/13 | **Conflict** | Three small `lighting_menu_*` calls; add them by hand |
 | `port/linux/src/d3d8_gl.c` | 311/33 | **Conflict** | Don't port; it's the GL model path |
@@ -91,15 +93,17 @@ There are eight phases, and each one leaves all three platforms shippable with t
 **Take:** every module from the inventory except occlusion and collision, the stub, the lighting hunks in `object_lights.c`, `weapons.c` and the three rasterizer files, and the config keys.
 
 1. Add the modules to the Vulkan and deko3d guest images in `tools/android_build.py`, `tools/ps5_build.py` and `tools/switch_build.py`.
-2. Link `dynamic_lighting_disabled.c` into the GLES and Mesa images.
+2. Link `dynamic_lighting_disabled.c` into the GL images.
 3. Register the keys as `_platform_all`, as `display.shield_glow` is. GulchCE's `_platform_desktop` would hide them on Android.
 4. Temporarily stub the occlusion functions, with `plasma_occlusion_texture` returning NULL, so no rays are traced yet.
 
 **Exit criteria:**
 
-- [ ] All three platforms build, including the GL images.
-- [ ] With everything off, no feature lights, shader keys or texture allocations appear, and a capture matches the current build.
-- [ ] Imported harnesses for these modules pass.
+- [x] All three platforms build, including the GL images.
+- [ ] With everything off, no feature lights, shader keys or texture allocations appear, and a capture matches the current build. (Code and harness "off" cases only; the capture needs a device.)
+- [x] Imported harnesses for these modules pass.
+
+**Status (Phase 1):** built and harnessed, not run on a device. GulchCE's other hunks in the same files (MCC, third person, shield look) were left out. The current Shield Glow stays in every image until Phase 5, reached through the temporary `shield_glow_bridge.c`. `plasma_occlusion_stub.c` stands in for occlusion until Phase 6.
 
 ### Phase 2: World lighting for projectiles and muzzle flashes
 
@@ -196,7 +200,7 @@ Model lighting is the only part that needs new backend code; world lighting shou
 +---------------------------------------------------------------+
 ```
 
-The GLES and Mesa images aren't shown, because they link the inert stub and never run this feature.
+The GL images aren't shown, because they link the inert stub and never run this feature.
 
 ### World lighting: verify, don't rebuild
 
