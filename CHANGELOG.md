@@ -1,5 +1,24 @@
 # Changelog
 
+## Build 136: Halo is now SlipstreamCE!
+
+- SlipstreamCE: this fork of OpenCE has a new name and a new logo, by puginatux, on Android, Switch and PS5. The project is now at github.com/thelinkin3000/SlipstreamCE, and old links redirect there. Your saves and settings stay yours on every platform. (thelinkin3000)
+- Switch: because the game's name and icon are changing, rebuild your forwarder if you start the game from one on your homescreen. Until you do, it keeps the old name and icon. The game stays at `/switch/halo/halo.nro`. (thelinkin3000)
+- Switch: builds older than v94 can no longer update themselves. If you're on one, install this release by hand. (thelinkin3000)
+- PS5: because the game's name and icon are changing, uninstall the game from the home screen after this update. ShadowMountPlus then loads it again with the correct name and icon. (thelinkin3000)
+- Android: the game is now a new app, SlipstreamCE (`ar.com.slipstreamce`), because Android can't change an installed app's package name. Your update to the old Halo app downloads the new one and offers to install it. The first time it starts, the new app copies your saves, settings, mods, replays, maps and touch layouts. Don't remove the old app until the new one offers to remove it. (thelinkin3000)
+- Multiplayer Color: your Spartan is now the game's real model in your color, holding the assault rifle, the plasma rifle and the skull in turn. The right stick turns him, the north button changes what he holds, and he walks when left alone. Select Profile shows him too. Without `wizard.map`, the screens keep their picture. (thelinkin3000)
+- Theater: the cinematic camera now stays in place like a tripod, turning, framing and zooming to follow the player, and moves only when they get far away. It cuts to a new spot when it loses sight of them, and brings whoever is hurting them into frame. The free camera backs away from corners. (thelinkin3000)
+- Settings: a new CREDITS page lists the licenses the game uses, beside the logo. The full license texts come with each release. (thelinkin3000)
+- Settings: About says what this is, for your platform, and shows the logo. (thelinkin3000)
+- Menus: new icons for Audio, Video, Network, Gameplay, Internet, LAN and Gametypes. (thelinkin3000)
+- Main menu: the corner now shows SlipstreamCE and the build number. (thelinkin3000)
+- Theater: pressing left in the Theater with no replays no longer crashes the game. (thelinkin3000)
+- Custom Edition maps: the flamethrower is now a flamethrower on Custom Edition maps, instead of turning into a rocket launcher. The Classic and Covenant weapon sets treat it to match. (thelinkin3000)
+- Switch: mod models with a lot of detail no longer fill the frame's upload buffer, which left the world flat and overbright and could drop the HUD, in replays with many players and bodies in view. In a Blood Gulch replay, 7 seconds of lost frames went to none. (thelinkin3000)
+- Switch: removed a wrong warning that Custom Edition maps can't run on some consoles. (thelinkin3000)
+- HUD: the timing counter left on by The Library's and The Maw's last cutscenes no longer sits over your ammo count. (thelinkin3000)
+
 ## Build 135: Hotfix for the Turnip crash, and mod packs import!
 
 - Vulkan: on some phones with the Turnip driver (an Adreno 750 phone, for one), the game crashed a moment after it started drawing at the screen's size. It was a bug in the driver, which the game no longer runs into. (thelinkin3000)
