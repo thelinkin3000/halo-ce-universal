@@ -21,6 +21,8 @@
 		<child widget="main_menu/settings_select/player_setup/player_profile_edit/video_settings/dynamic_lighting/op_vehicle_lighting" x="54" y="203"/>
 		<child widget="main_menu/settings_select/player_setup/player_profile_edit/video_settings/dynamic_lighting/op_world_lighting" x="54" y="229"/>
 		<child widget="main_menu/settings_select/player_setup/player_profile_edit/video_settings/dynamic_lighting/op_plasma_occlusion" x="54" y="255"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/video_settings/dynamic_lighting/op_shield_glow" x="54" y="281"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/video_settings/dynamic_lighting/op_shield_glow_intensity" x="54" y="307"/>
 		<child widget="main_menu/settings_select/player_setup/player_profile_edit/video_settings/dynamic_lighting/button_bar" y="414"/>
 	</widget>
 	<widget name="main_menu/settings_select/player_setup/player_profile_edit/video_settings/dynamic_lighting/button_bar" type="column_list" width="640" height="28" flags="pass_unhandled_to_focused_child left_right_tabs_items">
@@ -100,6 +102,24 @@
 	<widget name="main_menu/settings_select/player_setup/player_profile_edit/video_settings/dynamic_lighting/plasma_occlusion_spinner" type="spinner" left="3" top="2" width="147" height="20" flags="pass_unhandled_to_focused_child left_right_tabs_items" strings="ON|OFF" setting="display.plasma_occlusion" values="true|false" font="ui\large_ui" color="#FF2896FF" align="center" text_y="1" header_bitmap="bitmaps/arrow_sm_left" footer_bitmap="bitmaps/arrow_sm_right" header_bounds="7 -6 19 0" footer_bounds="7 150 19 156">
 		<on event="created" run="port setting load"/>
 	</widget>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/video_settings/dynamic_lighting/op_shield_glow" width="512" height="28" flags="pass_unhandled_to_focused_child" bitmap="bitmaps/option_bkds" color="#FF2896FF">
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/video_settings/dynamic_lighting/shield_glow_label"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/video_settings/dynamic_lighting/shield_glow_spinner" x="320" y="1"/>
+	</widget>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/video_settings/dynamic_lighting/shield_glow_label" type="text" controller="1" width="300" height="22" string_list="main_menu/settings_select/player_setup/player_profile_edit/video_settings/dynamic_lighting/labels" string_index="8" font="ui\large_ui" color="#FF2896FF" text_x="13" text_y="4">
+	</widget>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/video_settings/dynamic_lighting/shield_glow_spinner" type="spinner" left="3" top="2" width="147" height="20" flags="pass_unhandled_to_focused_child left_right_tabs_items" strings="ON|OFF" setting="display.shield_glow" values="true|false" font="ui\large_ui" color="#FF2896FF" align="center" text_y="1" header_bitmap="bitmaps/arrow_sm_left" footer_bitmap="bitmaps/arrow_sm_right" header_bounds="7 -6 19 0" footer_bounds="7 150 19 156">
+		<on event="created" run="port setting load"/>
+	</widget>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/video_settings/dynamic_lighting/op_shield_glow_intensity" width="512" height="28" flags="pass_unhandled_to_focused_child" bitmap="bitmaps/option_bkds" color="#FF2896FF">
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/video_settings/dynamic_lighting/shield_glow_intensity_label"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/video_settings/dynamic_lighting/shield_glow_intensity_spinner" x="320" y="1"/>
+	</widget>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/video_settings/dynamic_lighting/shield_glow_intensity_label" type="text" controller="1" width="300" height="22" string_list="main_menu/settings_select/player_setup/player_profile_edit/video_settings/dynamic_lighting/labels" string_index="9" font="ui\large_ui" color="#FF2896FF" text_x="13" text_y="4">
+	</widget>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/video_settings/dynamic_lighting/shield_glow_intensity_spinner" type="spinner" left="3" top="2" width="147" height="20" flags="pass_unhandled_to_focused_child left_right_tabs_items" strings="DEFAULT|LIGHT SHOW" setting="display.shield_glow_intensity" values="default|light_show" font="ui\large_ui" color="#FF2896FF" align="center" text_y="1" header_bitmap="bitmaps/arrow_sm_left" footer_bitmap="bitmaps/arrow_sm_right" header_bounds="7 -6 19 0" footer_bounds="7 150 19 156">
+		<on event="created" run="port setting load"/>
+	</widget>
 	<widget name="main_menu/settings_select/player_setup/player_profile_edit/video_settings/dynamic_lighting/button_defaults" type="text" width="128" height="24" bitmap="bitmaps/text_button_background" string_list="strings/common_button_captions" string_index="3" font="ui\small_ui" color="#FFFFFFFF" align="center" text_y="2">
 		<on event="a" run="port settings defaults"/>
 		<on event="start" run="port settings defaults"/>
@@ -119,6 +139,8 @@
 		<string text="VEHICLE LIGHTS:"/>
 		<string text="WORLD EMITTERS:"/>
 		<string text="LIGHT OCCLUSION:"/>
+		<string text="SHIELD GLOW:"/>
+		<string text="GLOW INTENSITY:"/>
 	</strings>
 	<strings name="main_menu/settings_select/player_setup/player_profile_edit/video_settings/dynamic_lighting/help_strings">
 		<string text=""/>
@@ -130,5 +152,7 @@
 		<string text="Engine glow and directional headlights illuminate\nvehicles and nearby surfaces."/>
 		<string text="Visible powerups and teleporters cast soft light.\nStock effects and gameplay remain unchanged."/>
 		<string text="Block added light behind walls and vehicles.\nOff traces no rays, so light can pass through them."/>
+		<string text="Shields light their surroundings as they flare.\nOnline: the host's choice."/>
+		<string text="Light Show: three times as far, at full from a\nthird of the flare. Online: the host's choice."/>
 	</strings>
 </menus>

@@ -87,7 +87,7 @@ DYNAMIC_LIGHTING_GAME_SOURCES = {
     "authored_emitter_lighting.c", "covenant_emitter_lighting.c", "covenant_lighting.c", "lighting_config.c",
     "lighting_menu.c",
     "muzzle_lighting.c", "needler_lighting.c", "plasma_falloff.c", "plasma_lighting.c",
-    "plasma_occlusion_stub.c", "rocket_lighting.c",
+    "plasma_occlusion_stub.c", "rocket_lighting.c", "shield_glow.c",
 }
 DYNAMIC_LIGHTING_PLATFORM_SOURCES = {"plasma_model_shader.c"}
 # the Vulkan probe's shader compiler (port/android/VULKAN.md, phase 0, step 4)

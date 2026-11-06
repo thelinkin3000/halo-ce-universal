@@ -168,7 +168,14 @@ There are eight phases, and each one leaves all three platforms shippable with t
 **Exit criteria:**
 
 - [ ] `network.shield_effects` still overrides local settings, and a client with its setting off follows the host.
-- [ ] Network version and `network_format.txt` are unchanged.
+- [x] Network version and `network_format.txt` are unchanged. (`tools/network_format.py` says "the wire format is the one recorded"; no network source is touched.)
+
+**Status (Phase 5):** `shield_glow.c` taken and adapted, and both rows moved. `network_shield_effects()` still decides inside `shield_glow_enabled`, shown by `test_shield_lighting.py` and `test_shield_effects.py`, but the "client follows the host" criterion also needs two machines, so it stays open. Differences from GulchCE:
+
+- GulchCE's `shield_glow.c` depends on its Shield Look feature, which we don't have, so the file is adapted to use the unit's own shader. `test_shield_lighting.py` and its fixture lost the matching Shield Look lines.
+- Only `overshield_effect_reset` and `overshield_effect_light_sample` were taken from GulchCE's `overshield_effect.c`. Its surface changes (green outer layer, new arms route) aren't lighting. `overshield_effect_reset` now runs at map and light-array changes in every image, including GL, which is a small change to the GL images' overshield state: it no longer carries over a map change.
+- Moving the rows leaves Extra Effects with nothing on the Switch and PS5, since overshield and HDR are the OpenGL renderer's. So that entry now shows only on `desktop android web`.
+- **GL images lose Shield Glow.** They link the stub as decided, and its rows are hidden with the rest. Before this phase, Android's GL renderer had the old Shield Glow, including when a host asked for it online. See the status file's decisions.
 
 ### Phase 6: Occlusion
 

@@ -13,6 +13,8 @@
 #include "ammo_counter_lighting.h"
 #include "needler_lighting.h"
 #include "lighting_menu.h"
+#include "shield_glow.h"
+#include "overshield_effect.h"
 
 void plasma_lighting_prepare(long light, long object, long definition) {}
 float plasma_lighting_radius(long light, long object, float radius) { return radius; }
@@ -82,6 +84,15 @@ int needler_lighting_position(long weapon, real_point3d *position, real_vector3d
 void needler_lighting_material(struct shader *shader, real_rgb_color *color) {}
 void needler_lighting_forget(void) {}
 void needler_lighting_transparent(struct shader *shader, struct pixel_shader_definition *pixel, int stages) {}
+
+boolean shield_glow_enabled(void) { return FALSE; }
+void shield_glow_reset(void) { overshield_effect_reset(); }
+void shield_glow_update(void) {}
+void shield_glow_frame_end(void) {}
+void shield_glow_window_begin(void) {}
+void shield_glow_submitted(long light, long rasterizer) {}
+boolean shield_glow_selected(long rasterizer) { return FALSE; }
+float shield_glow_radius(long light, float radius) { return radius; }
 
 int covenant_emitter_lighting_vehicle_occlusion(long light) { (void)light; return 0; }
 

@@ -56,8 +56,7 @@
 		<child widget="main_menu/settings_select/player_setup/player_profile_edit/video_settings/op_dynamic_lighting" x="54" y="223" platform="ps5"/>
 		<child widget="main_menu/settings_select/player_setup/player_profile_edit/video_settings/op_extra_effects" x="54" y="373" platform="desktop"/>
 		<child widget="main_menu/settings_select/player_setup/player_profile_edit/video_settings/op_extra_effects" x="54" y="343" platform="android"/>
-		<child widget="main_menu/settings_select/player_setup/player_profile_edit/video_settings/op_extra_effects" x="54" y="313" platform="switch web"/>
-		<child widget="main_menu/settings_select/player_setup/player_profile_edit/video_settings/op_extra_effects" x="54" y="253" platform="ps5"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/video_settings/op_extra_effects" x="54" y="313" platform="web"/>
 		<child widget="main_menu/settings_select/player_setup/player_profile_edit/video_settings/button_bar" y="414"/>
 	</widget>
 	<widget name="main_menu/settings_select/player_setup/player_profile_edit/video_settings/button_bar" type="column_list" width="640" height="28" flags="pass_unhandled_to_focused_child left_right_tabs_items">
@@ -238,7 +237,7 @@
 	</widget>
 	<widget name="main_menu/settings_select/player_setup/player_profile_edit/video_settings/dynamic_lighting_label" type="text" controller="1" width="512" height="22" string_list="main_menu/settings_select/player_setup/player_profile_edit/video_settings/labels" string_index="18" font="ui\large_ui" color="#FF2896FF" text_x="13" text_y="4">
 	</widget>
-	<widget name="main_menu/settings_select/player_setup/player_profile_edit/video_settings/op_extra_effects" width="512" height="28" flags="pass_unhandled_to_focused_child" bitmap="bitmaps/option_bkds" color="#FF2896FF">
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/video_settings/op_extra_effects" width="512" height="28" flags="pass_unhandled_to_focused_child" bitmap="bitmaps/option_bkds" color="#FF2896FF" platform="desktop android web">
 		<on event="a" open="main_menu/settings_select/player_setup/player_profile_edit/video_settings/extra_effects/extra_effects_settings_screen"/>
 		<on event="start" open="main_menu/settings_select/player_setup/player_profile_edit/video_settings/extra_effects/extra_effects_settings_screen"/>
 		<on event="left_mouse" run="mouse emit accept event"/>
@@ -298,7 +297,7 @@
 		<string text="The HUD, text, anti-aliasing, shadows,\nlighting and HDR."/>
 		<string text="The field of view and the first-person\nweapon. Their defaults keep the stock view."/>
 		<string text="How fast the console runs the game: a steadier\nframe rate, or a cooler console."/>
-		<string text="Added light from projectiles, weapons and\nvehicles. Added lights default to off."/>
-		<string text="Visual modifiers the stock game does not\nhave, such as the shield glow."/>
+		<string text="Added light from projectiles, weapons and\nenergy shields. Added lights default to off."/>
+		<string text="Visual modifiers the stock game does not\nhave, such as HDR and overshields."/>
 	</strings>
 </menus>

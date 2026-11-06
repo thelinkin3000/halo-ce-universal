@@ -478,8 +478,9 @@ _graphics = {"display.show_fps", "display.high_res_hud", "display.hud_button_sty
              "display.anisotropic_filtering", "display.shadow_resolution", "display.per_pixel_lighting",
              "display.model_detail"}
 # (the visual modifiers: a screen of their own, Extra Effects)
-_extra_effects = {"display.shield_glow", "display.shield_glow_intensity",
-                  "display.overshield_effect", "display.hdr", "display.hdr_output", "display.hdr_tone_mapping",
+_shield_lighting = {"display.shield_glow", "display.shield_glow_intensity"}
+_shield_rows = [row for row in _video["rows"] if row[1] in _shield_lighting]
+_extra_effects = {"display.overshield_effect", "display.hdr", "display.hdr_output", "display.hdr_tone_mapping",
                   "display.hdr_paper_white", "display.hdr_peak_brightness"}
 # (each platform's rows packed: the Switch has none of the renderer's rows
 # between the text and the model detail, which left it gaps; the two
@@ -514,7 +515,7 @@ SCREENS["video_settings/hdr_calibration"] = {
          "How bright white is (the menus, the HUD, the\ngrey bars), in nits. Choose what looks right.", None),
     ],
 }
-_video["rows"] = [row for row in _video["rows"] if row[1] not in _graphics | _extra_effects]
+_video["rows"] = [row for row in _video["rows"] if row[1] not in _graphics | _extra_effects | _shield_lighting]
 _video["categories"] = [
     ("GRAPHICS:", "video_settings/graphics", "The HUD, text, anti-aliasing, shadows,\nlighting and HDR."),
     ("FOV AND VIEWMODELS:", "video_settings/fov_viewmodels",
@@ -524,9 +525,11 @@ _video["categories"] = [
     # (hidden in an image without the feature, the GL ones:
     # menu_functions.c's dynamic_lighting_row_show)
     ("DYNAMIC LIGHTING:", "video_settings/dynamic_lighting",
-     "Added light from projectiles, weapons and\nvehicles. Added lights default to off."),
+     "Added light from projectiles, weapons and\nenergy shields. Added lights default to off."),
+    # (with the shield glow's rows moved, the Switch and the PS5 have none of
+    # its rows left: the overshield and HDR are the OpenGL renderer's)
     ("EXTRA EFFECTS:", "video_settings/extra_effects",
-     "Visual modifiers the stock game does not\nhave, such as the shield glow."),
+     "Visual modifiers the stock game does not\nhave, such as HDR and overshields.", "desktop android web"),
 ]
 SCREENS["video_settings/dynamic_lighting"] = {
     "screen": "dynamic_lighting_settings_screen", "header": _video["header"], "spacing": 26,
@@ -548,7 +551,7 @@ SCREENS["video_settings/dynamic_lighting"] = {
          "Visible powerups and teleporters cast soft light.\nStock effects and gameplay remain unchanged.", None),
         ("LIGHT OCCLUSION:", "display.plasma_occlusion", ON_OFF,
          "Block added light behind walls and vehicles.\nOff traces no rays, so light can pass through them.", None),
-    ],
+    ] + _shield_rows,
 }
 # the Switch's clocks (port/switch/host/host_sdl2.c)
 SCREENS["video_settings/performance"] = {

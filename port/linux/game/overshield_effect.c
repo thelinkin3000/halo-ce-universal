@@ -46,6 +46,8 @@ from below its lowest node to above its highest.
 #include "sound/sound_definitions.h"
 #include "objects/light_definitions.h"
 #include "network_shield_effects.h"
+#include "overshield_effect.h"
+#include <string.h>
 
 /* port/linux/game/view_fov.c */
 boolean viewmodel_shield_is_visible(void);
@@ -432,6 +434,38 @@ boolean overshield_effect_color(
 	if (!overshield_effect_draw(values, &energy_speed, &inverse_softness, &height))
 		return FALSE;
 	*color = overshield_effect_rgb;
+	return TRUE;
+}
+
+/* Model tags and queued draw identities never cross a map or light-array
+reset (from GulchCE; its surface changes are not taken) */
+void overshield_effect_reset(
+	void)
+{
+	short index;
+
+	memset(overshield_effects, 0, sizeof(overshield_effects));
+	for (index = 0; index < OVERSHIELD_EFFECT_MAXIMUM; index++)
+		overshield_effects[index].unit_index = NONE;
+	memset(overshield_effect_models, 0, sizeof(overshield_effect_models));
+	for (index = 0; index < OVERSHIELD_EFFECT_MODELS; index++)
+		overshield_effect_models[index].model_index = NONE;
+	overshield_effect_next_model = 0;
+	overshield_effects_initialized = TRUE;
+}
+
+/* for its glow: one sample of the hue and of how far up the charge has come */
+boolean overshield_effect_light_sample(
+	long unit_index,
+	real_rgb_color *color,
+	real *coverage)
+{
+	struct overshield_effect *effect = overshield_effect_get(unit_index);
+
+	if (!effect)
+		return FALSE;
+	*color = overshield_effect_rgb;
+	*coverage = effect->progress;
 	return TRUE;
 }
 
