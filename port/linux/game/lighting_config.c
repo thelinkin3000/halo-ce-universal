@@ -26,6 +26,26 @@ static struct
 	{"display.world_lighting", 0}
 };
 
+/* port: to limit a whole platform, name a toggle's key here (it then reads as
+   off, whatever config.toml says), and tag its row in tools/port_settings.py
+   so that the menu does not offer it. Nothing is limited yet: those decisions
+   wait for measurements (docs/dynamic_lighting_port.md). */
+static const char *const platform_off[] = {
+#if defined(HALO_SWITCH)
+#elif defined(HALO_PS5)
+#elif defined(HALO_ANDROID)
+#endif
+	NULL
+};
+
+static int platform_allows(const char *name)
+{
+	unsigned int i;
+	for (i = 0; platform_off[i]; i++)
+		if (!strcmp(name, platform_off[i])) return 0;
+	return 1;
+}
+
 int lighting_config_boolean(const char *name)
 {
 	static unsigned long changes;
@@ -37,7 +57,7 @@ int lighting_config_boolean(const char *name)
 		   than label partially read preferences with the newer generation. */
 		changes = config_changes();
 		for (i = 0; i < sizeof(preferences) / sizeof(preferences[0]); i++)
-			preferences[i].value = config_boolean(preferences[i].name);
+			preferences[i].value = platform_allows(preferences[i].name) && config_boolean(preferences[i].name);
 		ready = 1;
 	}
 	for (i = 0; i < sizeof(preferences) / sizeof(preferences[0]); i++)

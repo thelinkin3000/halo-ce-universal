@@ -8,6 +8,13 @@ int config_boolean(const char *name)
 int main(int argc,char **argv)
 {
  unsigned int i;int before;
+ if(argc>1&&!strcmp(argv[1],"limited"))
+ {
+  enabled=1;generation++;
+  CHECK(!lighting_config_boolean("display.muzzle_lighting"),"a key the platform leaves out reads as off");
+  CHECK(lighting_config_boolean("display.plasma_lighting"),"and the others as they are");
+  return 0;
+ }
  CHECK(!lighting_config_boolean("display.plasma_lighting"),"initial zero generation loads off defaults");
  before=reads;
  for(i=0;i<10000;i++) CHECK(!lighting_config_boolean(preferences[i%12].name),"cached value remains off");

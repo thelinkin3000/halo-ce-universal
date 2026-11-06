@@ -10,3 +10,11 @@ def test_lighting_preferences_refresh_on_change():
     code=re.sub(r'^#include.*$','',read('port/linux/game/lighting_config.c'),flags=re.M)
     status,output=run(build('lighting_config',(('under_test.inc',code),)),'settings')
     assert status==0,output
+
+
+def test_a_platform_can_leave_a_key_out():
+    code=re.sub(r'^#include.*$','',read('port/linux/game/lighting_config.c'),flags=re.M)
+    assert code.count('\tNULL\n};')==1
+    limited=code.replace('\tNULL\n};','\t"display.muzzle_lighting",\n\tNULL\n};')
+    status,output=run(build('lighting_config',(('under_test.inc',limited),)),'limited')
+    assert status==0,output
