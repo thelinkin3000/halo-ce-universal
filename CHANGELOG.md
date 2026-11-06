@@ -1,5 +1,10 @@
 # Changelog
 
+## Build 137: Hotfix for the Android download
+
+- Android: Build 136 left out the new SlipstreamCE app, so the old Halo app said "The new game could not be found." The app is included now. Open the old Halo app and it downloads the new one. Your saves and settings are still in the old app until the new one copies them, so don't remove the old app before that. (thelinkin3000)
+- If you're updating from before Build 136, its notes still apply: Switch players should rebuild their forwarders, and PS5 players should uninstall the game from the home screen so ShadowMountPlus loads it again with the correct name and icon. (thelinkin3000)
+
 ## Build 136: Halo is now SlipstreamCE!
 
 - SlipstreamCE: this fork of OpenCE has a new name and a new logo, by puginatux, on Android, Switch and PS5. The project is now at github.com/thelinkin3000/SlipstreamCE, and old links redirect there. Your saves and settings stay yours on every platform. (thelinkin3000)
