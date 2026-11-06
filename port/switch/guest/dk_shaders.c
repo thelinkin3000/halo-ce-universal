@@ -1454,11 +1454,22 @@ static void stall_frame(void)
 		stall_close();
 }
 
+/* a dk_shader_variant_for_draw is asking; and whether it found the host did
+not know the key */
+static BOOL asking_variant;
+static BOOL variant_unknown;
+
 /* whether a draw now may wait for its shader (the window opened at the
 map's first draw, and said when it closes) */
 static BOOL stall_allowed(void)
 {
-	unsigned long long now = now_ms();
+	unsigned long long now;
+
+	/* (a variant with a stock shader to fall back on waits for nothing, and
+	spends none of the window's time: dk_shader_variant_for_draw) */
+	if (asking_variant)
+		return FALSE;
+	now = now_ms();
 
 	if (stall_armed)
 	{
@@ -1601,6 +1612,7 @@ uint32_t dk_shader_for_draw(uint32_t stage, const void *key_data)
 	/* unknown to the host: kept in console.dkk if this console has never
 	met it, and queued at the draw's priority - the compile is a few frames
 	away and the draws that need it are skipped until then */
+	variant_unknown = asking_variant;
 	if (key_add(stage, current_map, &data))
 		console_append(stage, current_map, &data, size);
 	{
@@ -1620,4 +1632,16 @@ uint32_t dk_shader_for_draw(uint32_t stage, const void *key_data)
 		}
 	}
 	return 0;
+}
+
+uint32_t dk_shader_variant_for_draw(const void *key_data, int *unknown)
+{
+	uint32_t handle;
+
+	asking_variant = TRUE;
+	variant_unknown = FALSE;
+	handle = dk_shader_for_draw(DK_SHADER_STAGE_VERTEX, key_data);
+	asking_variant = FALSE;
+	*unknown = variant_unknown;
+	return handle;
 }

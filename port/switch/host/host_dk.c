@@ -2135,6 +2135,9 @@ static struct
 	uint32_t block_count;
 	struct texture table[DK_TEXTURE_LIMIT];
 	struct texture dummy;
+	/* what a vertex shader's sampler3D reads if a field's image could not be
+	made: white, so fully visible (made once there are fields) */
+	struct texture plasma_dummy;
 
 	struct release releases[RELEASE_LIMIT];
 	uint32_t release_count;
@@ -3142,10 +3145,26 @@ static void dummy_make(void)
 		texture_write(&tex.dummy, &command, black);
 }
 
+static void plasma_dummy_make(void)
+{
+	static const unsigned char white[4] = { 255, 255, 255, 255 };
+	struct dk_command_texture command;
+
+	if (tex.plasma_dummy.present)
+		return;
+	memset(&command, 0, sizeof(command));
+	command.kind = DK_TEXTURE_3D;
+	command.format = DK_TEXTURE_BGRA;
+	command.width = command.height = command.depth = command.levels = 1;
+	command.face_bytes = command.source_bytes = 4;
+	if (texture_make(&tex.plasma_dummy, &command))
+		texture_write(&tex.plasma_dummy, &command, white);
+}
+
 /* who a texture's slot is for: its id, or the dummy */
 static uint32_t texture_owner(const struct texture *texture)
 {
-	return texture == &tex.dummy ? SLOT_OWNER_DUMMY : (uint32_t)(texture - tex.table);
+	return texture == &tex.dummy || texture == &tex.plasma_dummy ? SLOT_OWNER_DUMMY : (uint32_t)(texture - tex.table);
 }
 
 /* ---------- samplers */
@@ -3614,6 +3633,8 @@ static int textures_apply(void)
 		tex.stages_dirty = 1;
 	}
 	dummy_make();
+	if (tex.plasma_image[0])
+		plasma_dummy_make();
 	/* what was written since the last barrier is made visible to this draw */
 	textures_fence(0);
 	if (!tex.stages_dirty)
@@ -3661,7 +3682,7 @@ static int textures_apply(void)
 		for (stage = 0; stage < 2; stage++)
 		{
 			uint32_t id = tex.plasma_image[stage];
-			const struct texture *texture = id < DK_TEXTURE_LIMIT && tex.table[id].present ? &tex.table[id] : &tex.dummy;
+			const struct texture *texture = id < DK_TEXTURE_LIMIT && tex.table[id].present ? &tex.table[id] : &tex.plasma_dummy;
 
 			fields[stage] = dkMakeTextureHandle(texture->slot, tex.plasma_sampler);
 		}

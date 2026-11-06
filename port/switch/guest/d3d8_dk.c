@@ -609,6 +609,10 @@ struct vertex_shader_object
 	(halo_vertex_shader_lighting): its draws can have the dynamic lighting's
 	variant */
 	BOOL plasma_model;
+	/* how many times a variant's key was sent to be compiled: a second time
+	means the first failed, and this program draws as stock from then on */
+	unsigned char plasma_sent[4];
+	BOOL plasma_failed;
 };
 
 /* ---------- the device */
@@ -2683,7 +2687,7 @@ static void plasma_draw_prepare(const struct vertex_shader_object *program, BOOL
 	unsigned int mask = 0;
 	int slot;
 
-	if (!immediate && program->plasma_model)
+	if (!immediate && program->plasma_model && !program->plasma_failed)
 		mask = plasma_model_lighting_mask();
 	if (!mask)
 	{
@@ -3157,9 +3161,15 @@ static BOOL draw_prepare(BOOL immediate)
 	if (plasma_draw.bits)
 	{
 		struct dk_vertex_key plasma_key = vertex_key;
+		int unknown = 0;
 
 		plasma_key.packed_mask |= (uint32_t)plasma_draw.bits << DK_VERTEX_KEY_PLASMA_SHIFT;
-		vertex_shader = dk_shader_for_draw(DK_SHADER_STAGE_VERTEX, &plasma_key);
+		vertex_shader = dk_shader_variant_for_draw(&plasma_key, &unknown);
+		if (unknown && ++program->plasma_sent[plasma_draw.bits & 3] > 1)
+		{
+			platform_log("GPU: vertex shader %lu's dynamic lighting variant failed to compile: stock from now on", program->id);
+			program->plasma_failed = TRUE;
+		}
 		if (!vertex_shader)
 			memset(&plasma_draw, 0, sizeof(plasma_draw));
 	}

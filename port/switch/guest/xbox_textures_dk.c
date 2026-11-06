@@ -415,6 +415,10 @@ static struct
 {
 	unsigned long address;
 	float reach;
+	/* how many times it was written: more than once, one of the dynamic
+	lighting's fields, which goes first if the table is full. A stock
+	attenuation that lost its entry would change its pixel key */
+	unsigned long writes;
 } reaches[REACH_LIMIT];
 static unsigned long reach_count, reach_next;
 
@@ -461,13 +465,23 @@ static void reach_note(const struct xgpu_texture_description *description, unsig
 		if (reach_count < REACH_LIMIT)
 			reach_count++;
 		else
+		{
+			unsigned long tried;
+
 			index = reach_next++ % REACH_LIMIT;
+			for (tried = 0; tried < REACH_LIMIT && reaches[index].writes < 2; tried++)
+				index = (index + 1) % REACH_LIMIT;
+			if (tried == REACH_LIMIT)
+				index = reach_next % REACH_LIMIT;
+		}
+		reaches[index].writes = 0;
 		/* (once for each: the dynamic lighting's fields are written many times) */
 		platform_log("3D texture %lux%lux%lu at %08lx: reaches %.3f of its box's 0.866 from its centre", description->width,
 			description->height, description->depth, address, reach);
 	}
 	reaches[index].address = address;
 	reaches[index].reach = reach;
+	reaches[index].writes++;
 }
 
 float dk_texture_reach(unsigned long address)

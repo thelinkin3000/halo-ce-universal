@@ -45,7 +45,7 @@ def test_deko3d_falls_back():
     parameters zeroed so that they are the stock draw's. (The service it calls is the same one a stock draw waits on.)"""
     code = function(read(DK), 'draw_prepare')
     variant = code.index('plasma_key.packed_mask |= (uint32_t)plasma_draw.bits << DK_VERTEX_KEY_PLASMA_SHIFT;')
-    asked = code.index('vertex_shader = dk_shader_for_draw(DK_SHADER_STAGE_VERTEX, &plasma_key);')
+    asked = code.index('vertex_shader = dk_shader_variant_for_draw(&plasma_key, &unknown);')
     cleared = code.index('memset(&plasma_draw, 0, sizeof(plasma_draw));')
     stock = code.index('vertex_shader = dk_shader_for_draw(DK_SHADER_STAGE_VERTEX, &vertex_key);')
     assert variant < asked < cleared < stock

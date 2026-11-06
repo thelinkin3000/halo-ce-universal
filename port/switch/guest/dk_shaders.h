@@ -149,6 +149,11 @@ the draw's priority and the key appended to console.dkk. key_data: a struct
 dk_vertex_key (DK_SHADER_STAGE_VERTEX) or an nv2a_pixel_shader_key
 (DK_SHADER_STAGE_PIXEL) */
 uint32_t dk_shader_for_draw(uint32_t stage, const void *key_data);
+/* the same, for a vertex key of the dynamic lighting's variant: the draw has
+the stock shader to fall back on, so it never waits for this one, nor spends
+the map's first seconds' time on it. *unknown: the host did not know the key,
+and it was sent (again, if it was sent before: its compile failed) */
+uint32_t dk_shader_variant_for_draw(const void *key_data, int *unknown);
 
 /* uniform block bindings, per stage */
 #define DK_BINDING_VERTEX_CONSTANTS 0
