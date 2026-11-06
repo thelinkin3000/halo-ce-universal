@@ -214,7 +214,7 @@ static const struct config_setting config_settings[] =
 		"The menus' pointer for the mouse: the game's blue arrow, \"small\",\n"
 		"\"medium\", \"large\" or \"extra_large\" (18, 24, 32 or 40 of the menus'\n"
 		"480 lines tall, at any resolution), or \"off\" for the system's pointer." },
-	{ "display.direct_camera", _config_boolean, "true", "HALO_DIRECT_CAMERA", _environment_value, _platform_desktop,
+	{ "display.direct_camera", _config_boolean, "true", "HALO_DIRECT_CAMERA", _environment_value, _platform_desktop | _platform_android,
 		"In first person, point the view where the player aims now instead of\n"
 		"where the last tick left it: the view turns the frame the mouse moves,\n"
 		"not up to two ticks (66 ms) later." },
