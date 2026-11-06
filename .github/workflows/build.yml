@@ -794,7 +794,9 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          pattern: halo-*
+          # (slipstreamce-android-* is the game itself, which the bridge in
+          # halo-android-* downloads: without it, Android players are stuck)
+          pattern: "{halo,slipstreamce}-*"
           path: artifacts
 
       - name: Package
@@ -812,6 +814,16 @@ jobs:
               *) level= ;;
             esac
             (cd "$build" && zip $level -qr "$GITHUB_WORKSPACE/release/$name.zip" .)
+          done
+          # (what the updaters ask for: a release without one strands its
+          # players, so it is not published)
+          for required in halo-android slipstreamce-android; do
+            for flavor in release debug; do
+              if [ ! -f "release/$required-$flavor.zip" ]; then
+                echo "::error::the release has no $required-$flavor.zip"
+                exit 1
+              fi
+            done
           done
           python3 tools/ci_build.py sums release
           ls -l release
