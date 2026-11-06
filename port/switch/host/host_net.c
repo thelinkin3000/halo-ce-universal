@@ -272,8 +272,9 @@ socket's datagrams are read here up to DATAGRAM_BATCH at a time with one
 recvmmsg, and handed out one per call; select, recv and FIONREAD count the
 ones held. Only reads with no flags into buffers of DATAGRAM_SLOT bytes at
 most are batched (the game's are 1200, internet play's tunnel's about
-1500), each received as the caller's buffer would have, so a datagram too
-large for it still fails as Winsock's does (WSAEMSGSIZE). */
+1500). Prefetched datagrams use the full slot, since later calls can use
+different buffer sizes; truncation is checked again when each is read, so
+a datagram too large for that call fails as Winsock's does (WSAEMSGSIZE). */
 
 #define DATAGRAM_BATCH 16
 #define DATAGRAM_SLOT 2048
@@ -355,7 +356,7 @@ static int datagram_take(int socket, void *buffer, int length, int flags, struct
 		for (index = 0; index < DATAGRAM_BATCH; index++)
 		{
 			vectors[index].iov_base = queue->datagrams[index].data;
-			vectors[index].iov_len = (size_t)length;
+			vectors[index].iov_len = DATAGRAM_SLOT;
 			messages[index].msg_hdr.msg_name = &queue->datagrams[index].address;
 			messages[index].msg_hdr.msg_namelen = sizeof(queue->datagrams[index].address);
 			messages[index].msg_hdr.msg_iov = &vectors[index];
@@ -384,7 +385,7 @@ static int datagram_take(int socket, void *buffer, int length, int flags, struct
 		memcpy(address, &queue->datagrams[queue->next].address, sizeof(*address));
 	if (address_length)
 		*address_length = queue->datagrams[queue->next].address_length;
-	*truncated = queue->datagrams[queue->next].truncated;
+	*truncated = queue->datagrams[queue->next].truncated || queue->datagrams[queue->next].size > length;
 	queue->next++;
 	pthread_mutex_unlock(&datagram_lock);
 	return size;
