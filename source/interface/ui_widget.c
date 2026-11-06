@@ -2935,6 +2935,16 @@ boolean widget_event_function_list_widget_goto_previous_item(
 			{
 				child = widget->child;
 				item_index = 0;
+				/* port: a list can have no children on this platform (the
+				Theater's button bar on the consoles), as goto_next_item allows */
+				if (!child)
+				{
+					error(
+						_error_silent,
+						"failed to set focus to the previous list item of a column widget");
+
+					return FALSE;
+				}
 				while (child->next)
 				{
 					child = child->next;
