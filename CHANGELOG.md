@@ -1,5 +1,12 @@
 # Changelog
 
+## Build 138: Hotfix for input lag
+
+- Switch: much less input lag. In our tests, the time from the stick moving to the view turning went from about 102 ms to about 67 ms. In first person on foot, the view now follows your stick on the frame you move it, and the game reads your input later, just before it's needed. To go back, set `display.direct_camera` to `false` or `debug.frame_pace_ahead` to `true` in `config.toml`. (thelinkin3000)
+- Android: in first person on foot, the view now follows your aim on the frame you move it, instead of up to two game ticks later. To go back, set `display.direct_camera` to `false` in `config.toml`. (thelinkin3000)
+- Android: Build 136 left out the new SlipstreamCE app, so the old Halo app said "The new game could not be found." The app is included now. Open the old Halo app and it downloads the new one. Your saves and settings are still in the old app until the new one copies them, so don't remove the old app before that. (thelinkin3000)
+- If you're updating from before Build 136, its notes still apply: Switch players should rebuild their forwarders, and PS5 players should uninstall the game from the home screen so ShadowMountPlus loads it again with the correct name and icon. (thelinkin3000)
+
 ## Build 137: Hotfix for the Android download
 
 - Android: Build 136 left out the new SlipstreamCE app, so the old Halo app said "The new game could not be found." The app is included now. Open the old Halo app and it downloads the new one. Your saves and settings are still in the old app until the new one copies them, so don't remove the old app before that. (thelinkin3000)
