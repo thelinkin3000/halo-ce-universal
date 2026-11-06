@@ -55,3 +55,11 @@ def test_first_person_counter_strength_is_required():
     code = source().replace('counter_pose == 2 ? 1.35f / 0.65f : 1.0f', '1.0f')
     status, output = run(build('covenant_emitter_lighting', (('under_test.inc', code),)), 'emitters')
     assert status == CHECK_FAILED, output
+
+
+def test_multiplayer_needler_is_required():
+    code = source()
+    before = 'strcmp(name, "weapons\\\\needler\\\\mp_needler")'
+    assert code.count(before) == 1
+    status, output = run(build('covenant_emitter_lighting', (('under_test.inc', code.replace(before, '1')),)), 'emitters')
+    assert status == CHECK_FAILED, output

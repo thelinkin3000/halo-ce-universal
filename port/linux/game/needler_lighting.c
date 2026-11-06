@@ -25,7 +25,8 @@ int needler_lighting_position(long index, real_point3d *position, real_vector3d 
 	if (!weapon || TEST_FLAG(weapon->object.flags, _object_invisible_bit))
 		return FALSE;
 	name = tag_get_name(weapon->definition_index);
-	if (!name || strcmp(name, "weapons\\needler\\needler"))
+	/* port: both tags, as muzzle_lighting.c has them: multiplayer maps hold the second */
+	if (!name || (strcmp(name, "weapons\\needler\\needler") && strcmp(name, "weapons\\needler\\mp_needler")))
 		return FALSE;
 	unit = unit_try_and_get(weapon->object.parent_object_index);
 	if (!unit || TEST_FLAG(unit->object.flags, _object_invisible_bit) ||

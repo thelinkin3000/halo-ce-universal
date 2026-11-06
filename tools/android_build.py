@@ -85,6 +85,7 @@ ANDROID_API = 28
 DYNAMIC_LIGHTING_GAME_SOURCES = {
     "ambient_emitter_lighting.c", "ammo_counter_falloff.c", "ammo_counter_lighting.c",
     "authored_emitter_lighting.c", "covenant_emitter_lighting.c", "covenant_lighting.c", "lighting_config.c",
+    "lighting_menu.c",
     "muzzle_lighting.c", "needler_lighting.c", "plasma_falloff.c", "plasma_lighting.c",
     "plasma_occlusion_stub.c", "rocket_lighting.c",
 }

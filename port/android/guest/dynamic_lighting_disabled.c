@@ -12,6 +12,7 @@
 #include "covenant_emitter_lighting.h"
 #include "ammo_counter_lighting.h"
 #include "needler_lighting.h"
+#include "lighting_menu.h"
 
 void plasma_lighting_prepare(long light, long object, long definition) {}
 float plasma_lighting_radius(long light, long object, float radius) { return radius; }
@@ -83,3 +84,7 @@ void needler_lighting_forget(void) {}
 void needler_lighting_transparent(struct shader *shader, struct pixel_shader_definition *pixel, int stages) {}
 
 int covenant_emitter_lighting_vehicle_occlusion(long light) { (void)light; return 0; }
+
+int lighting_menu_text(const char *name, char *text, unsigned int size, int defaults) { return -1; }
+int lighting_menu_write(const char *name, const char *value) { return -1; }
+int lighting_menu_available(void) { return 0; }

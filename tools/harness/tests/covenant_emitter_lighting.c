@@ -242,7 +242,9 @@ int main(int argc,char **argv)
  CHECK(fabs(storage[emitters[0].light-100].color.blue-slow)<.0001,"view order does not change first person brightness");
  first_person=0;ammo_on=0;old=deletes;frame(.01f);
  CHECK(deletes>old,"counter disable releases owned light");
- needler_on=1;names[0]="weapons\\needler\\needler";
+ needler_on=1;names[0]="weapons\\needler\\mp_needler";
+ CHECK(emitter_sample(0,0,&sample)&&sample.kind==4,"held multiplayer Needler admitted");
+ names[0]="weapons\\needler\\needler";
  CHECK(emitter_sample(0,0,&sample)&&sample.kind==4,"held Needler admitted independently of AR");
  CHECK(sample.position.x==marker_x&&sample.direction.k==1,"world needle marker and up axis");
  first_person=1;

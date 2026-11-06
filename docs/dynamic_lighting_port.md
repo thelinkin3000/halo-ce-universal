@@ -155,7 +155,11 @@ There are eight phases, and each one leaves all three platforms shippable with t
 **Exit criteria:**
 
 - [ ] Every row saves, cancels, restores defaults and survives a restart, by touch and by controller.
-- [ ] The GL images don't show the rows.
+- [ ] The GL images don't show the rows. (By code only: the stub's `lighting_menu_available` returns 0 and `dynamic_lighting_row_show` hides the row, so nobody can reach the screen. Not seen on a device.)
+
+**Status (Phase 4):** modules and the `lighting_menu` calls are in, with the group-save and Needler fixes, and the harnesses pass. The `lighting_menu` harness found a real bug in the port: our `setting_write` is a separate route from `setting_save`, so it needed its own call as well. Our setting calls also use `config_profile_*`, so `lighting_menu_write` covers only the two groups and the other rows go the usual way. The save, cancel and defaults route is tested with a fake config for the spinner logic, but not by touch or controller. Menus: `tools/ce_menus.py` needs the game's tags, so only `port_settings.settings_files()` was regenerated. It reproduced all 20 other settings files byte for byte, so the generator and the committed XML agree. No Needler check on a CE map, since that needs a device.
+
+**`ammo_counter_lighting_draw_begin`, by reading the code:** both backends honour it. `D3DRS_PSRGBOUTPUTS7` is 52, below `D3DRS_PS_MAX` and `D3DRS_SIMPLE_MAX`, so `SetRenderState` stores it and both `pixel_key_make`s copy it into the key. Model materials set 8 combiners (`rasterizer_xbox_models.c`), so stage 7 runs, and both translators read flag `0x10` as times two. The doubled draw is one more pixel key (and pipeline on Vulkan), and it isn't covered by the stock fallback: it's an ordinary shader, so on first use it's skipped or waited for as any new one is.
 
 ### Phase 5: Shield Glow integration
 
@@ -251,8 +255,8 @@ Fix these as each file arrives, because several matter more on our hardware than
 | 1 | `lighting_settings_migration.inl:74` | Settings can reset on every launch if the marker never gets written | Don't import the file | Confirmed |
 | 2 | `muzzle_lighting.c:185` | A pulse is dropped if no render happens within 2 ticks, about 100 ms, so flashes vanish in hitches | Keep the pulse until it's rendered or replaced by a newer shot | Fixed, with a harness case |
 | 2 | `plasma_falloff.c:93` | A failed texture creation resets occlusion mid-view and retries for every light | Release only the texture, and remember the failure until the next map | Fixed, with a harness case |
-| 4 | `lighting_menu.c:54` | A failed group save leaves earlier members changed | Restore earlier members on failure | Confirmed |
-| 4 | `needler_lighting.c:28` | Held Needler glow ignores `weapons\needler\mp_needler` | Add the tag, then check it on a CE map | Confirmed |
+| 4 | `lighting_menu.c:54` | A failed group save leaves earlier members changed | Restore earlier members on failure | Fixed, with a harness case |
+| 4 | `needler_lighting.c:28` | Held Needler glow ignores `weapons\needler\mp_needler` | Add the tag, then check it on a CE map | Tag added, with a harness case; the CE map check needs a device |
 | 4 | `covenant_emitter_lighting.c:396` | Teleporter lights may be blocked by their own model | Test with occlusion on; extend the ignore list if needed | Unconfirmed, depends on map tags |
 | 6 | `plasma_occlusion.c:433` | The scene revision is computed per field and per view, even when it can't change the decision | Compute it only when the 12 ms cadence is due and the light is stationary | Confirmed |
 | 6 | `plasma_occlusion.c:444` | Any extent change forces a retrace outside the 12 ms cadence | Rescale cached depths, or store hit distances | Confirmed; how often extents change is unmeasured |

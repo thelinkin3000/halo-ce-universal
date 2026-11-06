@@ -72,6 +72,7 @@ their handlers open opens.
 */
 
 #include "cseries.h"
+#include "lighting_menu.h"
 #include "input/input.h"
 #include "input/input_abstraction.h"
 #include "interface/event_manager.h"
@@ -385,6 +386,10 @@ static char const *settings_profile_folder(void)
 static boolean setting_text(char const *name, char *text, unsigned int size, boolean default_value)
 {
 	short index;
+	int grouped = lighting_menu_text(name, text, size, default_value);
+
+	if (grouped >= 0)
+		return grouped;
 
 	/* (DISCORD ACCOUNT's LINK: no change, until one is chosen; the master a
 	server that refused this machine for its VPN is listed by, chosen
@@ -457,6 +462,10 @@ static boolean setting_text(char const *name, char *text, unsigned int size, boo
 static boolean setting_write(char const *name, char const *value)
 {
 	short index;
+	int grouped = lighting_menu_write(name, value);
+
+	if (grouped >= 0)
+		return grouped;
 
 	/* (DISCORD ACCOUNT's LINK: done, not written: the master's page opened
 	in the browser, or the account forgotten, player_link.c) */
@@ -511,6 +520,7 @@ static boolean setting_load(struct widget_instance *widget)
 static boolean setting_save(struct widget_instance *widget)
 {
 	struct pc_menu_setting *setting = pc_menu_setting_get(widget->definition_tag_index);
+	int written;
 
 	if (spinner_item(widget))
 		return TRUE;
@@ -519,8 +529,11 @@ static boolean setting_save(struct widget_instance *widget)
 		return FALSE;
 	if (widget->parameters.list.selected_index == setting->loaded_index)
 		return TRUE;
-	if (!config_profile_write(settings_profile_folder(), setting->setting,
-		setting->values[widget->parameters.list.selected_index]))
+	written = lighting_menu_write(setting->setting, setting->values[widget->parameters.list.selected_index]);
+	if (written < 0)
+		written = config_profile_write(settings_profile_folder(), setting->setting,
+			setting->values[widget->parameters.list.selected_index]);
+	if (!written)
 	{
 		platform_log("menus: could not write %s", setting->setting);
 		return FALSE;
@@ -2415,6 +2428,25 @@ static void hdr_calibration_row_show(struct widget_instance *list)
 		return;
 	row->visible = halo_hdr_calibration_available() != 0;
 	/* (the focus on it, if the display's HDR went off, to the row before) */
+	if (!row->visible && list->focused_child == row && row->previous)
+	{
+		for (index = 0, child = list->child; child && child != row->previous; child = child->next)
+			index++;
+		list->focused_child = row->previous;
+		list->parameters.list.selected_index = index;
+	}
+}
+
+/* "op_dynamic_lighting": not in an image without the feature (the GL ones) */
+static void dynamic_lighting_row_show(struct widget_instance *list)
+{
+	struct widget_instance *row = named(list, "op_dynamic_lighting", 0);
+	struct widget_instance *child;
+	short index;
+
+	if (!row)
+		return;
+	row->visible = lighting_menu_available() != 0;
 	if (!row->visible && list->focused_child == row && row->previous)
 	{
 		for (index = 0, child = list->child; child && child != row->previous; child = child->next)
@@ -10750,6 +10782,7 @@ void pc_menu_game_data_function_invoke(
 		master_servers_show(widget);
 		discord_account_show(widget);
 		hdr_calibration_row_show(widget);
+		dynamic_lighting_row_show(widget);
 		settings_help(widget);
 	}
 	else if (!strcmp(name, "port hdr calibration"))
