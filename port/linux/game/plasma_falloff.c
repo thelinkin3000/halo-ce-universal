@@ -1,6 +1,7 @@
 /* Feature-owned attenuation for the existing additive world-light pass. */
 #include "cseries.h"
 #include <xtl.h>
+#include "bitmaps/bitmaps_inlines.h"
 #include "game/game_globals.h"
 #include "rasterizer/common/rasterizer_common.h"
 #include "rasterizer/xbox/rasterizer_xbox.h"

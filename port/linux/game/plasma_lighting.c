@@ -50,6 +50,9 @@ void plasma_model_lighting_slot(long light_index, short slot)
 
 unsigned int plasma_model_lighting_mask(void)
 {
+	/* port: asked for every draw of a model program: the common answer first */
+	if (!plasma_model_mask)
+		return 0;
 	return (lighting_config_boolean("display.plasma_lighting") || lighting_config_boolean("display.muzzle_lighting") ||
 		covenant_emitter_lighting_enabled() || authored_emitter_lighting_enabled() || shield_glow_enabled()) ? plasma_model_mask : 0;
 }

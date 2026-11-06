@@ -188,8 +188,16 @@ There are eight phases, and each one leaves all three platforms shippable with t
 **Exit criteria:**
 
 - [ ] Light stops at walls and doesn't leak through vehicles.
-- [ ] Stock collision callers still start at the root and get identical results, shown by GulchCE's paired-ray test.
+- [x] Stock collision callers still start at the root and get identical results, shown by GulchCE's paired-ray test. (`collision_vector_entry.c` and `collision_vector_cache.c` in `test_plasma_collision.py`, over the real `collision_bsp.c`. Asset-free BSPs, not a real map.)
 - [ ] Worst-case CPU cost is recorded per platform, with a decision to ship, limit or hide the toggle.
+
+**Status (Phase 6):** in and harnessed, with no device run. The temporary stub is gone. Steps 2 and 3 need devices, so there's no measurement and no NEON decision yet. `test_scalar_path` runs the whole visibility case over the scalar path the ARM images use, on x86, so it shows the logic and says nothing about ARM's speed.
+
+Changes from GulchCE:
+
+- **Light Occlusion gates every ray.** As decided, `enabled()` and `plasma_occlusion_submit` both require `display.plasma_occlusion`, so muzzle and vehicle lights trace nothing with it off. The catch is that with it off they light through walls and their own vehicle. `plasma_occlusion.c`'s harness now turns the toggle on for those cases, gains "traces no rays" checks, and drops one check that only made sense with the old rule ("vehicle switch cannot select unrelated lights").
+- **`D3DLOCK_NOOVERWRITE` on field rewrites.** Not in the guide. A lock with flags 0 makes the Switch wait for the GPU (`lock_wait`) on every rewritten field. Reading `xbox_textures_dk.c` shows the GPU draws a decoded copy sent in order with the draws, so the wait protects nothing. Not run.
+- **`plasma_model_lighting_mask` answers 0 first.** It's now asked for every draw of a model program, including with the feature off.
 
 ### Phase 7: Release
 
@@ -265,9 +273,9 @@ Fix these as each file arrives, because several matter more on our hardware than
 | 4 | `lighting_menu.c:54` | A failed group save leaves earlier members changed | Restore earlier members on failure | Fixed, with a harness case |
 | 4 | `needler_lighting.c:28` | Held Needler glow ignores `weapons\needler\mp_needler` | Add the tag, then check it on a CE map | Tag added, with a harness case; the CE map check needs a device |
 | 4 | `covenant_emitter_lighting.c:396` | Teleporter lights may be blocked by their own model | Test with occlusion on; extend the ignore list if needed | Unconfirmed, depends on map tags |
-| 6 | `plasma_occlusion.c:433` | The scene revision is computed per field and per view, even when it can't change the decision | Compute it only when the 12 ms cadence is due and the light is stationary | Confirmed |
-| 6 | `plasma_occlusion.c:444` | Any extent change forces a retrace outside the 12 ms cadence | Rescale cached depths, or store hit distances | Confirmed; how often extents change is unmeasured |
-| 6 | `plasma_collision_models.c:47` | The BSP cache is fully cleared for each node of each object | Clear only the entries that node count can use | Confirmed; the cost estimate isn't |
+| 6 | `plasma_occlusion.c:433` | The scene revision is computed per field and per view, even when it can't change the decision | Compute it only when the 12 ms cadence is due and the light is stationary | Fixed, with a harness case. A retrace still takes the revision it stores |
+| 6 | `plasma_occlusion.c:444` | Any extent change forces a retrace outside the 12 ms cadence | Rescale cached depths, or store hit distances | Fixed by rescaling, with a harness case. A ray that missed stays clear until the next trace if the extent grew. How often extents change is unmeasured |
+| 6 | `plasma_collision_models.c:47` | The BSP cache is fully cleared for each node of each object | Clear only the entries that node count can use | Fixed, with a harness case. The saving isn't measured |
 
 Leave `rocket_lighting.c` as a separate module for now, even though the review found it nearly duplicates `covenant_lighting.c`. Keeping the file layout close to GulchCE's makes its later fixes easy to bring over. Merge them once the port is stable.
 

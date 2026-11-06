@@ -56,8 +56,6 @@ static void light_disconnect_from_map(long l) { CHECK(storage[l-100].connected,"
 static void light_reconnect_to_map(long l) { CHECK(!storage[l-100].connected,"connect requires disconnected light"); storage[l-100].connected=1; }
 void plasma_occlusion_submit(long l,long r) { submits++; }
 #include "under_test.inc"
-/* Within a float's last bits: the 32-bit harness's x87 rounds a product differently at run time and at compile time. */
-static int near_scaled(float color,float value,float scale){float d=color-value*scale;return d>-1e-6f&&d<1e-6f;}
 static void color_checks(void)
 {
  real_rgb_color authored={.6f,.8f,.5f},color;
@@ -73,10 +71,10 @@ static void color_checks(void)
  name="weapons\\fuel rod gun\\fuel rod";covenant_lighting_color(0,78,&color);
  CHECK(!memcmp(&color,&authored,sizeof(color)),"unrelated attached light untouched");
  covenant_lighting_color(0,77,&color);
- CHECK(near_scaled(color.red,authored.red,.30f)&&color.green==authored.green&&near_scaled(color.blue,authored.blue,.20f),"flight light is greener with unchanged green intensity");
+ CHECK(color.red==authored.red*.30f&&color.green==authored.green&&color.blue==authored.blue*.20f,"flight light is greener with unchanged green intensity");
  CHECK(authored.red==.6f&&authored.green==.8f&&authored.blue==.5f,"authored source remains unchanged");
  color=authored;covenant_lighting_color(0,77,&color);
- CHECK(near_scaled(color.red,authored.red,.30f)&&exhaust_queries==1,"fresh submissions do not compound and tag lookup is cached");
+ CHECK(color.red==authored.red*.30f&&exhaust_queries==1,"fresh submissions do not compound and tag lookup is cached");
  color.red=color.green=color.blue=0;covenant_lighting_color(0,77,&color);
  CHECK(color.red==0&&color.green==0&&color.blue==0,"authored dark intervals stay dark");
  covenant_lighting_forget();exhaust_tag=NONE;color=authored;covenant_lighting_color(0,77,&color);
@@ -85,7 +83,7 @@ static void color_checks(void)
  covenant_lighting_forget();exhaust_tag=78;covenant_lighting_color(0,77,&color);
  CHECK(!memcmp(&color,&authored,sizeof(color)),"old map handle is rejected after transition");
  covenant_lighting_color(0,78,&color);
- CHECK(near_scaled(color.red,authored.red,.30f)&&exhaust_queries==3,"new map handle is resolved after transition");
+ CHECK(color.red==authored.red*.30f&&exhaust_queries==3,"new map handle is resolved after transition");
 }
 int main(int argc,char **argv)
 {

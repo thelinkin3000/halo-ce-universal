@@ -106,7 +106,7 @@ void *ammo_counter_falloff_texture(long rasterizer, int radial, float transform[
 	if (!counter->texture[radial] && D3DDevice_CreateVolumeTexture(COUNTER_SIZE, COUNTER_SIZE,
 		COUNTER_SIZE, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &counter->texture[radial]) < 0)
 		return NULL;
-	if (IDirect3DVolumeTexture8_LockBox(counter->texture[radial], 0, &box, NULL, 0) < 0 || !box.pBits)
+	if (IDirect3DVolumeTexture8_LockBox(counter->texture[radial], 0, &box, NULL, D3DLOCK_NOOVERWRITE) < 0 || !box.pBits)
 		return NULL;
 	for (z = 0; z < COUNTER_SIZE; z++)
 		for (y = 0; y < COUNTER_SIZE; y++)

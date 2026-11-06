@@ -3,7 +3,7 @@ import re
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from harness import CHECK_FAILED, build, read, run
+from harness import SSE_MATH, CHECK_FAILED, build, read, run
 
 
 def test_owned_lights():
@@ -14,7 +14,7 @@ def test_owned_lights():
 
 def test_render_color_and_map_lifecycle():
     code = re.sub(r'^#include.*$', '', read('port/linux/game/covenant_lighting.c'), flags=re.M)
-    status, output = run(build('covenant_lighting', (('under_test.inc', code),)), 'color')
+    status, output = run(build('covenant_lighting', (('under_test.inc', code),), SSE_MATH), 'color')
     assert status == 0, output
 
 
