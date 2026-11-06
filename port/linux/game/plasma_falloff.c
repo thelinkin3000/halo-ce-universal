@@ -14,6 +14,8 @@
 enum { PLASMA_FALLOFF_SIZE = 64 };
 static IDirect3DVolumeTexture8 *plasma_falloff_texture;
 static boolean plasma_falloff_bound;
+/* port: the texture could not be made: not tried again until the next map */
+static boolean plasma_falloff_failed;
 static int plasma_falloff_stage;
 static int plasma_falloff_filter;
 static unsigned long plasma_specular_tint = 0x00FFFFFFUL;
@@ -89,8 +91,13 @@ static boolean plasma_falloff_create(void)
 		}
 	}
 	free(pixels);
-	if (!success)
-		plasma_falloff_dispose();
+	/* port: only the texture goes. plasma_falloff_dispose would also reset the
+	   occlusion fields in the middle of a view, and for every light after it. */
+	if (!success && plasma_falloff_texture)
+	{
+		D3DResource_Release((D3DResource *)plasma_falloff_texture);
+		plasma_falloff_texture = NULL;
+	}
 	return success;
 }
 
@@ -99,8 +106,16 @@ static void plasma_falloff_bind(long rasterizer_index, int stage, int stock_filt
 	D3DBaseTexture *occlusion;
 	if (!plasma_lighting_selected(rasterizer_index))
 		return;
-	if (!plasma_falloff_texture && !plasma_falloff_create())
-		return; /* allocation failure leaves the stock pass intact */
+	if (!plasma_falloff_texture)
+	{
+		if (plasma_falloff_failed)
+			return;
+		if (!plasma_falloff_create())
+		{
+			plasma_falloff_failed = TRUE;
+			return; /* allocation failure leaves the stock pass intact */
+		}
+	}
 	occlusion = plasma_occlusion_texture(rasterizer_index, stage == 1);
 	D3DDevice_SetTexture(stage, occlusion ? occlusion : (D3DBaseTexture *)plasma_falloff_texture);
 	D3DDevice_SetTextureState_Deferred(stage, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
@@ -136,4 +151,5 @@ void plasma_falloff_dispose(void)
 	if (plasma_falloff_texture)
 		D3DResource_Release((D3DResource *)plasma_falloff_texture);
 	plasma_falloff_texture = NULL;
+	plasma_falloff_failed = FALSE;
 }

@@ -181,8 +181,9 @@ void muzzle_lighting_update(void)
 		long definition;
 		if (!pulse->active)
 			continue;
+		/* port: a pending pulse waits for its first render however long that
+		   takes, or for a newer shot to replace it: a hitch keeps its flash. */
 		if (!lighting_config_boolean("display.muzzle_lighting") || game_time_get() < pulse->shot_tick ||
-			(pulse->pending && game_time_get() - pulse->shot_tick > 2) ||
 			!muzzle_position(pulse, &position))
 		{
 			muzzle_release(pulse);

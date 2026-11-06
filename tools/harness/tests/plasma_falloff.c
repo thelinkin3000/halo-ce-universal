@@ -27,7 +27,8 @@ static void D3DDevice_SetTextureState_Deferred(int stage,int state,int value) { 
 static void rasterizer_set_texture_direct(int stage,int bitmap,int mip) { restored_stage=stage; restores++; }
 static void D3DResource_Release(D3DResource *t) { releases++; }
 void *plasma_occlusion_texture(long index,int specular) { return NULL; }
-void plasma_occlusion_reset(void) {}
+static int occlusion_resets;
+void plasma_occlusion_reset(void) { occlusion_resets++; }
 void plasma_falloff_dispose(void);
 #include "under_test.inc"
 int main(int argc, char **argv)
@@ -93,6 +94,12 @@ int main(int argc, char **argv)
 	{
 		selected=1; fail_create=1; plasma_falloff_begin(0); plasma_falloff_end();
 		CHECK(!binds && !restores, "allocation failure retains stock rendering");
+		CHECK(!occlusion_resets, "a failed creation leaves the occlusion fields alone");
+		plasma_falloff_begin(1); plasma_falloff_specular_begin(2);
+		CHECK(creates==1, "a failed creation is not tried again for every light");
+		plasma_falloff_dispose(); fail_create=0;
+		plasma_falloff_begin(0);
+		CHECK(creates==2 && binds==1, "the next map tries again");
 	}
 	return 0;
 }

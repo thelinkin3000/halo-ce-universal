@@ -119,6 +119,12 @@ There are eight phases, and each one leaves all three platforms shippable with t
 - [ ] Lights aren't clipped at their scissor box.
 - [ ] Per-light GPU cost is recorded for each platform.
 
+**Status (Phase 2):** code paths read and the two fixes in, with harnesses. All three exit criteria need a device, so they stay open. What reading the code settled:
+
+- The falloff texture needs no new shader on either backend. It is a 3D texture on stage 2 (diffuse) or stage 1 (specular), which is what the stock distance attenuation already is, so the pixel key does not change. Only the sampler does: `plasma_falloff_bind` sets `MINFILTER` to linear over the stock `MAGFILTER` linear, and both backends read those states per draw (`sampler_state_make`, `sampler_make`).
+- deko3d's `dk_texture_reach` finds the falloff texture's own reach from its decoded texels, so its sphere clip fits it. Its table holds 16 textures: with more, a texture falls out and that draw loses the sphere clip, which costs fill but doesn't change the picture.
+- Enlarged radii reach both `rasterizer_environment_port_light_scissor` (through the submitted `light->radius`) and `port_dynamic_lights_choose` (through `light_compute_bounding_sphere`, after the radius is written). So bigger lights can displace stock ones under the 8-light cap, as the risk table says. No rank change has been made; that needs a device to judge.
+
 ### Phase 3: Model lighting on Vulkan, then deko3d
 
 **Build:** the backend work under "Renderer work". Finish Vulkan first, because it covers two platforms.
@@ -204,7 +210,7 @@ The GL images aren't shown, because they link the inert stub and never run this 
 
 ### World lighting: verify, don't rebuild
 
-`plasma_falloff.c` and `plasma_occlusion.c` only call the D3D8 API (`D3DDevice_CreateVolumeTexture`, `LockBox`, `SetTexture`). Our shared `port/linux/src/d3d8_resources.c` implements those calls. Vulkan has `VK_IMAGE_3D`, and deko3d has `DK_TEXTURE_3D`. The stock game already creates a volume texture in `rasterizer_xbox.c`, so the route has some use today.
+`plasma_falloff.c` and `plasma_occlusion.c` only call the D3D8 API (`D3DDevice_CreateVolumeTexture`, `LockBox`, `SetTexture`). Our shared `port/linux/src/d3d8_resources.c` implements those calls. Vulkan has `VK_IMAGE_3D`, and deko3d has `DK_TEXTURE_3D`. The stock attenuation is itself a volume texture on the same stage, so the route is used every frame today. Checked by reading both backends (not run): the sampler type comes from the texture's depth, the texels are unswizzled with the same bit order `rasterizer_xbox_bitmap_swizzle3d_long` writes, and the filter follows the stage's state.
 
 ### Model lighting: add to both backends
 
@@ -235,8 +241,8 @@ Fix these as each file arrives, because several matter more on our hardware than
 | Phase | Location | Problem | Fix | Status |
 | --- | --- | --- | --- | --- |
 | 1 | `lighting_settings_migration.inl:74` | Settings can reset on every launch if the marker never gets written | Don't import the file | Confirmed |
-| 2 | `muzzle_lighting.c:185` | A pulse is dropped if no render happens within 2 ticks, about 100 ms, so flashes vanish in hitches | Keep the pulse until it's rendered or replaced by a newer shot | Confirmed |
-| 2 | `plasma_falloff.c:93` | A failed texture creation resets occlusion mid-view and retries for every light | Release only the texture, and remember the failure until the next map | Confirmed |
+| 2 | `muzzle_lighting.c:185` | A pulse is dropped if no render happens within 2 ticks, about 100 ms, so flashes vanish in hitches | Keep the pulse until it's rendered or replaced by a newer shot | Fixed, with a harness case |
+| 2 | `plasma_falloff.c:93` | A failed texture creation resets occlusion mid-view and retries for every light | Release only the texture, and remember the failure until the next map | Fixed, with a harness case |
 | 4 | `lighting_menu.c:54` | A failed group save leaves earlier members changed | Restore earlier members on failure | Confirmed |
 | 4 | `needler_lighting.c:28` | Held Needler glow ignores `weapons\needler\mp_needler` | Add the tag, then check it on a CE map | Confirmed |
 | 4 | `covenant_emitter_lighting.c:396` | Teleporter lights may be blocked by their own model | Test with occlusion on; extend the ignore list if needed | Unconfirmed, depends on map tags |

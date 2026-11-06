@@ -17,7 +17,7 @@ def generated(fault=None):
     return (('under_test.inc', code),)
 
 
-@pytest.mark.parametrize('case', ['pulse', 'profiles', 'off', 'capacity', 'lifecycle', 'failures', 'world', 'move', 'warthog', 'scorpion'])
+@pytest.mark.parametrize('case', ['pulse', 'profiles', 'off', 'capacity', 'lifecycle', 'hitch', 'failures', 'world', 'move', 'warthog', 'scorpion'])
 def test_case(case):
     status, output = run(build('muzzle_lighting', generated()), case)
     assert status == 0, output
@@ -27,6 +27,7 @@ def test_case(case):
     ('real now = render_interpolation_game_time_sec(game_time_get());', 'real now = (real)game_time_get() / 30.0f;', 'pulse'),
     ('pulse->connected = FALSE;', 'pulse->connected = TRUE;', 'off'),
     ('light->position = *position;', '(void)position;', 'move'),
+    ('!muzzle_position(pulse, &position))', '(pulse->pending && game_time_get() - pulse->shot_tick > 2) || !muzzle_position(pulse, &position))', 'hitch'),
 ])
 def test_negative_control(before, after, case):
     # The connected assignment has two legitimate sites; mutate cleanup only.

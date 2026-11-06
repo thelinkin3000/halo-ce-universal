@@ -95,8 +95,16 @@ int main(int argc,char **argv)
   muzzle_lighting_shot(1,0);muzzle_lighting_update();held=2;muzzle_lighting_update();CHECK(deletes==1,"switch releases pulse");
   held=1;tick++;muzzle_lighting_shot(1,0);muzzle_lighting_update();present=0;muzzle_lighting_update();CHECK(deletes==2,"deleted owner releases pulse");
   present=1;tick++;muzzle_lighting_shot(1,0);muzzle_lighting_update();light=pulses[0].light;lights[light].definition_index=98;
-  on=0;muzzle_lighting_frame_end();CHECK(deletes==2,"stale light not deleted");on=1;tick++;muzzle_lighting_shot(1,0);tick+=3;muzzle_lighting_update();CHECK(allocs==3,"old undrawn event discarded");
-  muzzle_lighting_shot(1,0);muzzle_lighting_forget();muzzle_lighting_update();CHECK(allocs==3,"map reset discards pending events");
+  on=0;muzzle_lighting_frame_end();CHECK(deletes==2,"stale light not deleted");on=1;tick++;muzzle_lighting_shot(1,0);tick+=3;muzzle_lighting_update();CHECK(allocs==4,"a hitch keeps the undrawn flash");
+  tick++;muzzle_lighting_shot(1,0);muzzle_lighting_forget();muzzle_lighting_update();CHECK(allocs==4,"map reset discards pending events");
+ }
+ else if(!strcmp(name,"hitch"))
+ {
+  muzzle_lighting_shot(1,0);tick+=30;muzzle_lighting_update();
+  CHECK(allocs==1&&lights[0].color.red==1,"the first render after a hitch shows the flash from its start");
+  muzzle_lighting_frame_end();muzzle_lighting_forget();allocs=0;
+  muzzle_lighting_shot(1,0);tick+=30;muzzle_lighting_shot(1,0);tick+=30;muzzle_lighting_update();
+  CHECK(allocs==1&&pulses[0].shot_tick==tick-30&&!pulses[1].active,"a newer shot replaces the undrawn one");
  }
  else if(!strcmp(name,"failures"))
  {

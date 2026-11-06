@@ -28,6 +28,16 @@ def test_edge_negative_control():
     assert status == CHECK_FAILED, output
 
 
+@pytest.mark.parametrize('before,after', [
+    ('plasma_falloff_failed = TRUE;', '(void)0;'),
+    ('plasma_falloff_failed = FALSE;', '(void)0;'),
+    ('if (!success && plasma_falloff_texture)', 'if (!success) plasma_falloff_dispose(); if (0)'),
+])
+def test_failure_negative_controls(before, after):
+    status, output = run(build('plasma_falloff', generated((before, after))), 'failure')
+    assert status == CHECK_FAILED, output
+
+
 def test_tint_negative_control():
     status, output = run(build('plasma_falloff', generated(
         ('plasma_specular_tint = real_rgb_color_to_pixel32(&tint);',
