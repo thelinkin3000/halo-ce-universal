@@ -4604,7 +4604,13 @@ each begun a refresh after the last. 100 ms at most, should a present
 never come (a faulted queue presents nothing). */
 int host_dk_frame_pacing = 1;
 
-#define PACE_AHEAD 1
+/* debug.frame_pace_ahead: 0 waits instead for the present of the frame just
+handed over, so the next frame's input is read a refresh later and shown on
+the same refresh: 84 to 67 ms from the stick to the view on the Switch Lite,
+and the same frame rate on Blood Gulch with 47 bots, its game thread over a
+refresh by itself (55.9 fps against 56.2). The game no longer runs alongside
+the frame before's commands. true (1) is as above. */
+int host_dk_pace_ahead = 0;
 #define PACE_LIMIT_NS 100000000ULL
 
 static Mutex pace_lock;
@@ -4631,7 +4637,7 @@ void host_dk_pace(void)
 	mutexLock(&pace_lock);
 	pace_handed++;
 	start = slow_now_ns();
-	while ((int32_t)(pace_handed - pace_run) > PACE_AHEAD)
+	while ((int32_t)(pace_handed - pace_run) > host_dk_pace_ahead)
 	{
 		uint64_t waited = slow_now_ns() - start;
 
@@ -4644,7 +4650,7 @@ void host_dk_pace(void)
 					"presented); it goes on", (unsigned)pace_handed, (unsigned)pace_run);
 			}
 			/* (caught up, so as not to wait so again for the same) */
-			pace_run = pace_handed - PACE_AHEAD;
+			pace_run = pace_handed - (uint32_t)host_dk_pace_ahead;
 			break;
 		}
 		condvarWaitTimeout(&pace_presented, &pace_lock, PACE_LIMIT_NS - waited);

@@ -268,6 +268,8 @@ int host_dk_hud_decode(const unsigned char *data, uint32_t size, struct host_dk_
 the present of the frame before it (host_dk_pace, from the stand-in
 window's swap) */
 extern int host_dk_frame_pacing;
+/* debug.frame_pace_ahead: the frames the game may be ahead of the presents, 1 or 0 */
+extern int host_dk_pace_ahead;
 void host_dk_pace(void);
 /* debug.gpu_experiment: what-ifs that measure what part of the GPU's time a
 change could take back, comma-separated: "no_compression" (render targets

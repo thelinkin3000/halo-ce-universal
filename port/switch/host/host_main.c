@@ -1189,6 +1189,9 @@ static void *game_main(void *unused)
 		host_dk_capture = config_flag(path, "debug.gpu_capture");
 		host_dk_render_thread = config_flag_or(path, "debug.render_thread", 1);
 		host_dk_frame_pacing = config_flag_or(path, "debug.frame_pacing", 1);
+		host_dk_pace_ahead = config_flag_or(path, "debug.frame_pace_ahead", 0);
+		host_logf(HOST_LOG_INFO, "deko3d: the game runs up to %d frame(s) ahead of the presents (debug.frame_pace_ahead)",
+			host_dk_pace_ahead);
 		if (!host_dk_frame_pacing)
 			host_logf(HOST_LOG_WARN, "deko3d: frames are not paced to the presents (debug.frame_pacing)");
 		if (!host_dk_render_thread)
